@@ -1,5 +1,6 @@
 [package]
 name = "fnc-props"
+description = "Fennec property, content, hash and duplicate extraction."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

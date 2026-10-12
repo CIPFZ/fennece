@@ -1,5 +1,6 @@
 [package]
 name = "fnc-ipc"
+description = "Fennec IPC: native named-pipe protocol and the Everything 1.4 WM_COPYDATA compatibility layer."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

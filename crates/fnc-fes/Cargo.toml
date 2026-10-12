@@ -1,11 +1,23 @@
 [package]
 name = "fnc-fes"
+description = "fes — Fennec command-line search (es.exe compatible subset)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "fes"
+path = "src/main.rs"
+
 [dependencies]
+fnc-core.workspace = true
+fnc-index.workspace = true
+fnc-query.workspace = true
+fnc-exec.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

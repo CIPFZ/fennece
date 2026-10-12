@@ -2,16 +2,16 @@
   {
     "name": "index build from EFU (parse + bulk load)",
     "unit": "ms",
-    "p50": 1032.092384,
-    "p95": 1032.092384,
+    "p50": 1029.503255,
+    "p95": 1029.503255,
     "target": 60000.0,
     "results": 1000000
   },
   {
     "name": "name fast-sort index build",
     "unit": "ms",
-    "p50": 167.777059,
-    "p95": 167.777059,
+    "p50": 173.621635,
+    "p95": 173.621635,
     "target": null,
     "results": null
   },
@@ -26,192 +26,192 @@
   {
     "name": "folder path cache build",
     "unit": "ms",
-    "p50": 17.946307,
-    "p95": 17.946307,
+    "p50": 20.661967,
+    "p95": 20.661967,
     "target": null,
     "results": null
   },
   {
     "name": "query `a`",
     "unit": "ms",
-    "p50": 4.416101,
-    "p95": 5.1597040000000005,
+    "p50": 4.550427,
+    "p95": 5.689541999999999,
     "target": 50.0,
     "results": 429533
   },
   {
     "name": "query `abc`",
     "unit": "ms",
-    "p50": 4.9774199999999995,
-    "p95": 5.645164,
+    "p50": 5.4332579999999995,
+    "p95": 6.603522,
     "target": 50.0,
     "results": 143
   },
   {
     "name": "query `report`",
     "unit": "ms",
-    "p50": 4.803993,
-    "p95": 6.188931,
+    "p50": 4.870661,
+    "p95": 6.2568399999999995,
     "target": 50.0,
     "results": 10032
   },
   {
     "name": "query `*.jpg`",
     "unit": "ms",
-    "p50": 2.288278,
-    "p95": 3.16941,
+    "p50": 2.379707,
+    "p95": 3.055851,
     "target": 50.0,
     "results": 94159
   },
   {
     "name": "query `regex:^IMG_\\d{4}`",
     "unit": "ms",
-    "p50": 19.890873,
-    "p95": 22.944533,
+    "p50": 19.680948,
+    "p95": 22.817828,
     "target": null,
     "results": 22391
   },
   {
     "name": "query `ext:jpg size:>1mb dm:thisyear`",
     "unit": "ms",
-    "p50": 2.0589340000000003,
-    "p95": 2.969993,
+    "p50": 2.356867,
+    "p95": 2.8569950000000004,
     "target": null,
     "results": 12443
   },
   {
     "name": "query `ext:jpg;png;gif`",
     "unit": "ms",
-    "p50": 1.36612,
-    "p95": 1.915177,
+    "p50": 1.348549,
+    "p95": 2.219749,
     "target": null,
     "results": 160272
   },
   {
     "name": "query `folder:`",
     "unit": "ms",
-    "p50": 0.941979,
-    "p95": 0.999308,
+    "p50": 0.91434,
+    "p95": 1.017247,
     "target": null,
     "results": 111113
   },
   {
     "name": "query `windows\\`",
     "unit": "ms",
-    "p50": 10.641191,
-    "p95": 11.206068,
+    "p50": 11.088080999999999,
+    "p95": 12.425021,
     "target": null,
     "results": 125058
   },
   {
     "name": "query `c:\\users\\*`",
     "unit": "ms",
-    "p50": 21.108096,
-    "p95": 26.688871,
+    "p50": 20.626147,
+    "p95": 22.332358,
     "target": null,
     "results": 16
   },
   {
     "name": "query `季度`",
     "unit": "ms",
-    "p50": 4.2436940000000005,
-    "p95": 4.838252000000001,
+    "p50": 4.3993519999999995,
+    "p95": 5.449348,
     "target": 50.0,
     "results": 3130
   },
   {
     "name": "query `cafe`",
     "unit": "ms",
-    "p50": 4.895779999999999,
-    "p95": 5.925205999999999,
+    "p50": 4.785712999999999,
+    "p95": 5.485917,
     "target": 50.0,
     "results": 1075
   },
   {
     "name": "query `!a`",
     "unit": "ms",
-    "p50": 4.463149,
-    "p95": 5.6883919999999994,
+    "p50": 4.480238999999999,
+    "p95": 6.20911,
     "target": null,
     "results": 570467
   },
   {
     "name": "query `a b c`",
     "unit": "ms",
-    "p50": 7.041682,
-    "p95": 8.173715999999999,
+    "p50": 6.908276,
+    "p95": 8.153927,
     "target": null,
     "results": 29784
   },
   {
     "name": "query `ww:report`",
     "unit": "ms",
-    "p50": 15.410642000000001,
-    "p95": 17.484666999999998,
+    "p50": 15.040391999999999,
+    "p95": 17.524307,
     "target": null,
     "results": 8585
   },
   {
     "name": "narrowing a→ab→abc (3 queries, reuse)",
     "unit": "ms",
-    "p50": 7.362754,
-    "p95": 8.0243,
+    "p50": 6.952194,
+    "p95": 7.857932999999999,
     "target": null,
     "results": 143
   },
   {
     "name": "sort 1M by name (fast-sort ranks)",
     "unit": "ms",
-    "p50": 32.752584,
-    "p95": 35.861584,
+    "p50": 33.976588,
+    "p95": 34.312681,
     "target": 300.0,
     "results": 1000000
   },
   {
     "name": "sort 1M by size desc",
     "unit": "ms",
-    "p50": 42.253059,
-    "p95": 44.01915,
+    "p50": 44.249808,
+    "p95": 45.957329,
     "target": 300.0,
     "results": 1000000
   },
   {
     "name": "sort 1M by date modified desc",
     "unit": "ms",
-    "p50": 29.893268,
-    "p95": 30.2616,
+    "p50": 30.776679,
+    "p95": 34.645783,
     "target": 300.0,
     "results": 1000000
   },
   {
     "name": "sort 1M by path",
     "unit": "ms",
-    "p50": 43.272848,
-    "p95": 67.940083,
+    "p50": 43.820197,
+    "p95": 64.883445,
     "target": 300.0,
     "results": 1000000
   },
   {
     "name": "sort 1M by name (natural comparator, 1 thread)",
     "unit": "ms",
-    "p50": 568.4040660000001,
-    "p95": 571.687311,
+    "p50": 563.598067,
+    "p95": 569.523273,
     "target": null,
     "results": 1000000
   },
   {
     "name": "full path join, all entries (1 thread)",
     "unit": "ms",
-    "p50": 247.363301,
-    "p95": 251.217454,
+    "p50": 253.712008,
+    "p95": 256.86816699999997,
     "target": null,
     "results": 80656352
   },
   {
     "name": "full path join per entry",
     "unit": "ns",
-    "p50": 247.363301,
-    "p95": 251.217454,
+    "p50": 253.712008,
+    "p95": 256.86816699999997,
     "target": null,
     "results": null
   }

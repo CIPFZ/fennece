@@ -1564,6 +1564,13 @@ dependencies = [
 [[package]]
 name = "fnc-fes"
 version = "0.1.0"
+dependencies = [
+ "fnc-core",
+ "fnc-exec",
+ "fnc-index",
+ "fnc-query",
+ "tempfile",
+]
 
 [[package]]
 name = "fnc-http"

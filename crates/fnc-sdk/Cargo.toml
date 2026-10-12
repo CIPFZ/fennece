@@ -1,5 +1,6 @@
 [package]
 name = "fnc-sdk"
+description = "Fennec SDK (Rust API and C ABI fennec_sdk.dll)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,5 +1,6 @@
 [package]
 name = "fnc-semantic"
+description = "Fennec semantic search: embedder trait, chunking, vector index, fusion."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

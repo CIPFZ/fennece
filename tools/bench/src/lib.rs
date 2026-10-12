@@ -36,8 +36,5 @@ pub fn load_fixture(entries: usize) -> anyhow::Result<(IndexStore, Duration)> {
 pub fn run_query(s: &IndexStore, q: &str, caches: &Caches) -> ResultSet {
     let p = plan(&parse(q, &ParseEnv::default()).ast, &PlanEnv::default(), None);
     let cancel = CancelToken::new();
-    match execute(&p, s, &ExecCtx { cancel: &cancel, prev: None, caches }) {
-        Ok(r) => r,
-        Err(_) => ResultSet::default(),
-    }
+    execute(&p, s, &ExecCtx { cancel: &cancel, prev: None, caches }).unwrap_or_default()
 }

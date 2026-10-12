@@ -3,6 +3,9 @@
 //!
 //! Uses dhat's counting allocator in testing mode (one test per binary).
 
+// Test-only helpers outside `#[test]` functions.
+#![allow(clippy::unwrap_used)]
+
 use fnc_core::EntryId;
 use fnc_exec::Caches;
 use fnc_exec::eval::{Compiled, Scratch};

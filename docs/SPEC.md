@@ -889,6 +889,14 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | 插件/预处理器 | DLL 插件 | 不实现 DLL ABI | 安全/范围 |
 | `fuzzy:` | 无 | 扩展，默认关 | 本项目增强 |
 | `semantic:` / `sem:` | 无 | 新增（见第 5 章）| 语义搜索 |
+| 名称排序的非数字部分 | `CompareStringEx`（区域排序规则，如 zh-CN 拼音序）| 折叠键码点序 + 数字按数值 | 无区域依赖、可预测；M2 评估接入 OS 排序规则 |
+| `%VAR%` 展开结果 | 展开后再解析（运算符生效）| 展开结果视为字面文本 | 防止环境变量内容意外改变查询结构 |
+| 日期字段顺序 / 每周首日 | 跟随系统区域 | 默认 月/日/年、周一（设置可改）| 区域查询待 M2 接入 `GetLocaleInfoEx` |
+| `ext:` 与文件夹 | — | 文件夹无扩展名，`ext:` 永不匹配文件夹 | 与资源管理器"类型"一致 |
+| `junction:` / `symlink:` | 依据重解析标记 | 文件夹重解析点视为 junction、文件视为 symlink | 重解析标记未入索引（M3 属性索引补齐）|
+| NTFS 硬链接 | 每个文件名一个条目 | M1 仅首个名称（`FSCTL_ENUM_USN_DATA` 只返回一个）| M2 `$MFT` 解析路径补齐 |
+| ReFS 128 位文件 ID | 原样 | 折叠为 64 位（零扩展保持原值，否则 xxh3）| 索引 FRN 列为 u64 |
+| 命令行 `-filelist` / `-folder`，`fes -filelist` | 无 | 新增：挂载 EFU / 文件夹索引；`fes` 离线查询 | 便于脚本与测试 |
 
 ---
 

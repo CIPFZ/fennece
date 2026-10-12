@@ -113,10 +113,8 @@ fn main() -> anyhow::Result<()> {
         let Ok(r2) = execute(&p2, &store, &ExecCtx { cancel: &cancel, prev: Some(&r1), caches: &caches }) else {
             return 0;
         };
-        let t = Instant::now();
         let p3 = plan(&parse("abc", &pe).ast, &env, Some(&p2));
         let r3 = execute(&p3, &store, &ExecCtx { cancel: &cancel, prev: Some(&r2), caches: &caches });
-        let _ = t;
         r3.map(|r| r.len()).unwrap_or(0)
     });
     push("narrowing a→ab→abc (3 queries, reuse)", "ms", p50, p95, None, Some(n));
