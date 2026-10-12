@@ -1,0 +1,15 @@
+[package]
+name = "gen-icons"
+description = "Renders the Fennec icon (SPEC ch.0 §1.2) to SVG, PNG sizes, ICO and tray variants."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+png.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true

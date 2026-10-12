@@ -19,6 +19,7 @@ members = [
     "tools/gen-fixtures",
     "tools/bench",
     "tools/sem-eval",
+    "tools/gen-icons",
 ]
 
 [workspace.package]

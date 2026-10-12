@@ -21,7 +21,9 @@ pub mod paths;
 pub mod sort;
 
 pub use cache::{Caches, CancelToken, Cancelled};
-pub use engine::{EngineEvent, SearchEngine, SearchOptions, SearchOutcome, SearchRequest};
+pub use engine::{
+    EngineEvent, EngineHandle, SearchEngine, SearchOptions, SearchOutcome, SearchRequest, configure_threads,
+};
 pub use exec::{ExecCtx, ExecStats, ResultSet, execute};
 pub use highlight::Highlighter;
 pub use sort::{SortColumn, SortSpec, sort_ids};

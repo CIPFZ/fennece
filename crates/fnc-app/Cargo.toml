@@ -1,11 +1,49 @@
 [package]
 name = "fnc-app"
+description = "Fennec desktop application (fennec.exe): egui window, search box, result list, tray and hotkey."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "fennec"
+path = "src/main.rs"
+
 [dependencies]
+fnc-core.workspace = true
+fnc-index.workspace = true
+fnc-query.workspace = true
+fnc-exec.workspace = true
+fnc-platform.workspace = true
+fnc-ntfs.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui_extras.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+png.workspace = true
+fluent-bundle.workspace = true
+unic-langid.workspace = true
+chrono.workspace = true
+xxhash-rust.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+tray-icon.workspace = true
+global-hotkey.workspace = true
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[dev-dependencies]
+tempfile.workspace = true
+fluent-syntax = "0.12"
+egui_kittest = { workspace = true, features = ["eframe"] }
+gen-fixtures = { path = "../../tools/gen-fixtures" }
 
 [lints]
 workspace = true

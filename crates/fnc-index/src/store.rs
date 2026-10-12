@@ -232,6 +232,14 @@ impl IndexStore {
         self.volumes.get_mut(id.idx())
     }
 
+    /// Records the journal position reached for `id` without invalidating results.
+    pub fn set_journal_position(&mut self, id: VolumeId, journal_id: u64, next_usn: i64) {
+        if let Some(v) = self.volumes.get_mut(id.idx()) {
+            v.usn_journal_id = journal_id;
+            v.next_usn = next_usn;
+        }
+    }
+
     // ------------------------------------------------------------------ rows
 
     /// Appends one row; does not touch the FRN map or children index.

@@ -121,9 +121,37 @@ enum Cmd {
 
 /// Handle to the search thread.
 pub struct SearchEngine {
+    handle: EngineHandle,
+    thread: Option<JoinHandle<()>>,
+}
+
+/// Cloneable, thread-safe handle for submitting searches and refreshes.
+#[derive(Clone)]
+pub struct EngineHandle {
     tx: Sender<Cmd>,
     current: Arc<Mutex<CancelToken>>,
-    thread: Option<JoinHandle<()>>,
+}
+
+impl EngineHandle {
+    fn new_token(&self) -> CancelToken {
+        let tok = CancelToken::new();
+        let mut cur = self.current.lock();
+        cur.cancel();
+        *cur = tok.clone();
+        tok
+    }
+
+    /// Submits a search, cancelling any query in flight.
+    pub fn search(&self, req: SearchRequest) {
+        let tok = self.new_token();
+        let _ = self.tx.send(Cmd::Search(req, tok));
+    }
+
+    /// Re-runs the last search against the current index (after index changes).
+    pub fn refresh(&self) {
+        let tok = self.new_token();
+        let _ = self.tx.send(Cmd::Refresh(tok));
+    }
 }
 
 type Notify = Box<dyn Fn() + Send + Sync>;
@@ -177,38 +205,38 @@ impl SearchEngine {
         if thread.is_none() {
             tracing::error!("cannot spawn search thread");
         }
-        Self { tx, current: Arc::new(Mutex::new(CancelToken::new())), thread }
+        Self { handle: EngineHandle { tx, current: Arc::new(Mutex::new(CancelToken::new())) }, thread }
     }
 
-    fn new_token(&self) -> CancelToken {
-        let tok = CancelToken::new();
-        let mut cur = self.current.lock();
-        cur.cancel();
-        *cur = tok.clone();
-        tok
+    /// A cloneable handle (for the indexer, IPC, ...).
+    pub fn handle(&self) -> EngineHandle {
+        self.handle.clone()
     }
 
     /// Submits a search, cancelling any query in flight.
     pub fn search(&self, req: SearchRequest) {
-        let tok = self.new_token();
-        let _ = self.tx.send(Cmd::Search(req, tok));
+        self.handle.search(req);
     }
 
     /// Re-runs the last search against the current index (after index changes).
     pub fn refresh(&self) {
-        let tok = self.new_token();
-        let _ = self.tx.send(Cmd::Refresh(tok));
+        self.handle.refresh();
     }
 }
 
 impl Drop for SearchEngine {
     fn drop(&mut self) {
-        self.current.lock().cancel();
-        let _ = self.tx.send(Cmd::Shutdown);
+        self.handle.current.lock().cancel();
+        let _ = self.handle.tx.send(Cmd::Shutdown);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
     }
+}
+
+/// Sets the size of the global search thread pool (call once, before the first search).
+pub fn configure_threads(threads: usize) -> Result<(), rayon::ThreadPoolBuildError> {
+    rayon::ThreadPoolBuilder::new().num_threads(threads).thread_name(|i| format!("fennec-scan-{i}")).build_global()
 }
 
 fn worker(index: SharedIndex, rx: Receiver<Cmd>, events: Sender<EngineEvent>, notify: Notify) {
