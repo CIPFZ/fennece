@@ -1,0 +1,8 @@
+/target
+/tmp
+/fixtures/*.efu
+*.fnx
+*.fnx.tmp
+*.fnx.bak
+/logs
+/data

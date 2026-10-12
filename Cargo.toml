@@ -1,0 +1,109 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/fnc-core",
+    "crates/fnc-macros",
+    "crates/fnc-platform",
+    "crates/fnc-ntfs",
+    "crates/fnc-index",
+    "crates/fnc-query",
+    "crates/fnc-exec",
+    "crates/fnc-props",
+    "crates/fnc-semantic",
+    "crates/fnc-ipc",
+    "crates/fnc-http",
+    "crates/fnc-app",
+    "crates/fnc-fes",
+    "crates/fnc-service",
+    "crates/fnc-sdk",
+    "tools/gen-fixtures",
+    "tools/bench",
+    "tools/sem-eval",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/fennec-search/fennec"
+authors = ["Fennec contributors"]
+
+[workspace.dependencies]
+# internal
+fnc-core = { path = "crates/fnc-core" }
+fnc-macros = { path = "crates/fnc-macros" }
+fnc-platform = { path = "crates/fnc-platform" }
+fnc-ntfs = { path = "crates/fnc-ntfs" }
+fnc-index = { path = "crates/fnc-index" }
+fnc-query = { path = "crates/fnc-query" }
+fnc-exec = { path = "crates/fnc-exec" }
+fnc-props = { path = "crates/fnc-props" }
+fnc-semantic = { path = "crates/fnc-semantic" }
+fnc-ipc = { path = "crates/fnc-ipc" }
+fnc-http = { path = "crates/fnc-http" }
+fnc-sdk = { path = "crates/fnc-sdk" }
+
+# gui
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "wayland", "x11", "accesskit"] }
+egui = "0.36"
+egui_extras = { version = "0.36", default-features = false }
+egui_kittest = "0.36"
+
+# platform
+windows = "0.62"
+global-hotkey = "0.8"
+tray-icon = "0.26"
+interprocess = "2"
+
+# core
+rayon = "1.12"
+crossbeam-channel = "0.5"
+parking_lot = { version = "0.12", features = ["arc_lock", "send_guard"] }
+memchr = "2.8"
+regex = "1.13"
+fancy-regex = "0.19"
+unicode-normalization = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+memmap2 = "0.9"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+fluent-bundle = "0.16"
+unic-langid = "0.9"
+walkdir = "2.5"
+png = "0.18"
+
+# proc-macro
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+
+# dev
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+proptest = "1.12"
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+print_stdout = "warn"
+dbg_macro = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+debug = "line-tables-only"
+
+[profile.bench]
+inherits = "release"

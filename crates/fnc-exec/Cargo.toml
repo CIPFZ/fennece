@@ -1,0 +1,25 @@
+[package]
+name = "fnc-exec"
+description = "Fennec search executor: matching, parallel scans, sorting, highlighting, search service."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+fnc-core.workspace = true
+fnc-index.workspace = true
+fnc-query.workspace = true
+rayon.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+memchr.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
