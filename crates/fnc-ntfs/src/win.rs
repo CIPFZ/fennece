@@ -11,7 +11,7 @@ use std::io;
 use fnc_core::FileTime;
 use fnc_core::flags::attr;
 use fnc_index::Meta;
-use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
@@ -184,22 +184,28 @@ fn from_wide_nul(b: &[u16]) -> String {
 }
 
 /// Opens `\\.\X:` for MFT/USN access (requires administrator rights).
+///
+/// Read+write access is requested first (needed by `FSCTL_CREATE_USN_JOURNAL`, as in
+/// Microsoft's change-journal samples); read-only access is the fallback, which still
+/// allows enumeration and journal reads.
 pub fn open_volume(letter: char) -> io::Result<Handle> {
     let path = wide(&format!("\\\\.\\{letter}:"));
-    // SAFETY: `path` is NUL-terminated and outlives the call; no security attributes
-    // or template handle.
-    let h = unsafe {
-        CreateFileW(
-            PCWSTR(path.as_ptr()),
-            GENERIC_READ.0,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            None,
-            OPEN_EXISTING,
-            FILE_ATTRIBUTE_NORMAL,
-            None,
-        )
-    }
-    .map_err(to_io)?;
+    let open = |access: u32| {
+        // SAFETY: `path` is NUL-terminated and outlives the call; no security
+        // attributes or template handle.
+        unsafe {
+            CreateFileW(
+                PCWSTR(path.as_ptr()),
+                access,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                None,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                None,
+            )
+        }
+    };
+    let h = open(GENERIC_READ.0 | GENERIC_WRITE.0).or_else(|_| open(GENERIC_READ.0)).map_err(to_io)?;
     Ok(Handle(h))
 }
 

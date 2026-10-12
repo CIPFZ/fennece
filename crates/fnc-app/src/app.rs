@@ -407,11 +407,17 @@ impl FennecApp {
 
     fn search_bar(&mut self, ui: &mut egui::Ui) {
         let id = egui::Id::new(SEARCH_ID);
+        let precedence = self.options.precedence;
+        let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
+            let job = syntax_job(ui, buf.as_str(), precedence);
+            ui.fonts_mut(|f| f.layout_job(job))
+        };
         let edit = egui::TextEdit::singleline(&mut self.query)
             .id(id)
             .hint_text(t("search-hint"))
             .desired_width(f32::INFINITY)
-            .font(egui::TextStyle::Body);
+            .font(egui::TextStyle::Body)
+            .layouter(&mut layouter);
         let resp = ui.add(edit);
         if self.keep_focus {
             self.keep_focus = false;
@@ -643,6 +649,70 @@ enum RowAction {
 
 fn ui_weak_color(row: &Option<Row>) -> bool {
     row.as_ref().is_some_and(|r| r.offline)
+}
+
+/// Search-box syntax highlighting from the parser's spans (SPEC ch.3 §2): operators,
+/// modifiers, functions and macros get distinct colours; unclosed quotes/groups are
+/// underlined.
+fn syntax_job(ui: &egui::Ui, text: &str, precedence: fnc_core::settings::Precedence) -> LayoutJob {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let dark = ui.visuals().dark_mode;
+    let normal = ui.visuals().text_color();
+    let color = |k: fnc_query::SpanKind| match k {
+        fnc_query::SpanKind::Or | fnc_query::SpanKind::Not | fnc_query::SpanKind::Group => ACCENT,
+        fnc_query::SpanKind::Modifier => {
+            if dark {
+                Color32::from_rgb(0xC5, 0x86, 0xC0)
+            } else {
+                Color32::from_rgb(0x8E, 0x3B, 0x9A)
+            }
+        }
+        fnc_query::SpanKind::Function => {
+            if dark {
+                Color32::from_rgb(0x56, 0x9C, 0xD6)
+            } else {
+                Color32::from_rgb(0x1F, 0x5F, 0xB0)
+            }
+        }
+        fnc_query::SpanKind::Macro => {
+            if dark {
+                Color32::from_rgb(0x4E, 0xC9, 0xB0)
+            } else {
+                Color32::from_rgb(0x16, 0x7F, 0x6E)
+            }
+        }
+        fnc_query::SpanKind::Text => normal,
+    };
+    let env = fnc_query::ParseEnv { precedence, ..fnc_query::ParseEnv::default() };
+    let parsed = fnc_query::parse(text, &env);
+    // Per-byte colour, later spans (more specific) win; then emit runs.
+    let mut colors = vec![normal; text.len()];
+    for s in &parsed.spans {
+        for c in colors.iter_mut().take(s.range.end.min(text.len())).skip(s.range.start) {
+            *c = color(s.kind);
+        }
+    }
+    let mut underline = vec![false; text.len()];
+    for d in &parsed.diagnostics {
+        for u in underline.iter_mut().take(d.range.end.min(text.len())).skip(d.range.start) {
+            *u = true;
+        }
+    }
+    let mut job = LayoutJob::default();
+    let mut start = 0;
+    for i in 1..=text.len() {
+        let boundary = i == text.len()
+            || (text.is_char_boundary(i) && (colors[i] != colors[start] || underline[i] != underline[start]));
+        if boundary && text.is_char_boundary(i) {
+            let mut f = TextFormat { font_id: font.clone(), color: colors[start], ..Default::default() };
+            if underline[start] {
+                f.underline = egui::Stroke::new(1.0, ui.visuals().warn_fg_color);
+            }
+            job.append(&text[start..i], 0.0, f);
+            start = i;
+        }
+    }
+    job
 }
 
 fn highlighted(ui: &egui::Ui, prefix: &str, text: &str, ranges: &[Range<usize>], weak: bool) -> LayoutJob {
