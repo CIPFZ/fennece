@@ -1,0 +1,218 @@
+[
+  {
+    "name": "index build from EFU (parse + bulk load)",
+    "unit": "ms",
+    "p50": 1032.092384,
+    "p95": 1032.092384,
+    "target": 60000.0,
+    "results": 1000000
+  },
+  {
+    "name": "name fast-sort index build",
+    "unit": "ms",
+    "p50": 167.777059,
+    "p95": 167.777059,
+    "target": null,
+    "results": null
+  },
+  {
+    "name": "index heap memory",
+    "unit": "MiB",
+    "p50": 104.7271842956543,
+    "p95": 104.7271842956543,
+    "target": 150.0,
+    "results": null
+  },
+  {
+    "name": "folder path cache build",
+    "unit": "ms",
+    "p50": 17.946307,
+    "p95": 17.946307,
+    "target": null,
+    "results": null
+  },
+  {
+    "name": "query `a`",
+    "unit": "ms",
+    "p50": 4.416101,
+    "p95": 5.1597040000000005,
+    "target": 50.0,
+    "results": 429533
+  },
+  {
+    "name": "query `abc`",
+    "unit": "ms",
+    "p50": 4.9774199999999995,
+    "p95": 5.645164,
+    "target": 50.0,
+    "results": 143
+  },
+  {
+    "name": "query `report`",
+    "unit": "ms",
+    "p50": 4.803993,
+    "p95": 6.188931,
+    "target": 50.0,
+    "results": 10032
+  },
+  {
+    "name": "query `*.jpg`",
+    "unit": "ms",
+    "p50": 2.288278,
+    "p95": 3.16941,
+    "target": 50.0,
+    "results": 94159
+  },
+  {
+    "name": "query `regex:^IMG_\\d{4}`",
+    "unit": "ms",
+    "p50": 19.890873,
+    "p95": 22.944533,
+    "target": null,
+    "results": 22391
+  },
+  {
+    "name": "query `ext:jpg size:>1mb dm:thisyear`",
+    "unit": "ms",
+    "p50": 2.0589340000000003,
+    "p95": 2.969993,
+    "target": null,
+    "results": 12443
+  },
+  {
+    "name": "query `ext:jpg;png;gif`",
+    "unit": "ms",
+    "p50": 1.36612,
+    "p95": 1.915177,
+    "target": null,
+    "results": 160272
+  },
+  {
+    "name": "query `folder:`",
+    "unit": "ms",
+    "p50": 0.941979,
+    "p95": 0.999308,
+    "target": null,
+    "results": 111113
+  },
+  {
+    "name": "query `windows\\`",
+    "unit": "ms",
+    "p50": 10.641191,
+    "p95": 11.206068,
+    "target": null,
+    "results": 125058
+  },
+  {
+    "name": "query `c:\\users\\*`",
+    "unit": "ms",
+    "p50": 21.108096,
+    "p95": 26.688871,
+    "target": null,
+    "results": 16
+  },
+  {
+    "name": "query `季度`",
+    "unit": "ms",
+    "p50": 4.2436940000000005,
+    "p95": 4.838252000000001,
+    "target": 50.0,
+    "results": 3130
+  },
+  {
+    "name": "query `cafe`",
+    "unit": "ms",
+    "p50": 4.895779999999999,
+    "p95": 5.925205999999999,
+    "target": 50.0,
+    "results": 1075
+  },
+  {
+    "name": "query `!a`",
+    "unit": "ms",
+    "p50": 4.463149,
+    "p95": 5.6883919999999994,
+    "target": null,
+    "results": 570467
+  },
+  {
+    "name": "query `a b c`",
+    "unit": "ms",
+    "p50": 7.041682,
+    "p95": 8.173715999999999,
+    "target": null,
+    "results": 29784
+  },
+  {
+    "name": "query `ww:report`",
+    "unit": "ms",
+    "p50": 15.410642000000001,
+    "p95": 17.484666999999998,
+    "target": null,
+    "results": 8585
+  },
+  {
+    "name": "narrowing a→ab→abc (3 queries, reuse)",
+    "unit": "ms",
+    "p50": 7.362754,
+    "p95": 8.0243,
+    "target": null,
+    "results": 143
+  },
+  {
+    "name": "sort 1M by name (fast-sort ranks)",
+    "unit": "ms",
+    "p50": 32.752584,
+    "p95": 35.861584,
+    "target": 300.0,
+    "results": 1000000
+  },
+  {
+    "name": "sort 1M by size desc",
+    "unit": "ms",
+    "p50": 42.253059,
+    "p95": 44.01915,
+    "target": 300.0,
+    "results": 1000000
+  },
+  {
+    "name": "sort 1M by date modified desc",
+    "unit": "ms",
+    "p50": 29.893268,
+    "p95": 30.2616,
+    "target": 300.0,
+    "results": 1000000
+  },
+  {
+    "name": "sort 1M by path",
+    "unit": "ms",
+    "p50": 43.272848,
+    "p95": 67.940083,
+    "target": 300.0,
+    "results": 1000000
+  },
+  {
+    "name": "sort 1M by name (natural comparator, 1 thread)",
+    "unit": "ms",
+    "p50": 568.4040660000001,
+    "p95": 571.687311,
+    "target": null,
+    "results": 1000000
+  },
+  {
+    "name": "full path join, all entries (1 thread)",
+    "unit": "ms",
+    "p50": 247.363301,
+    "p95": 251.217454,
+    "target": null,
+    "results": 80656352
+  },
+  {
+    "name": "full path join per entry",
+    "unit": "ns",
+    "p50": 247.363301,
+    "p95": 251.217454,
+    "target": null,
+    "results": null
+  }
+]

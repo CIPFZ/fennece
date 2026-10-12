@@ -260,6 +260,7 @@ pub fn load_efu<R: BufRead>(store: &mut IndexStore, mut reader: R, source: &str)
     }
     let stats = loader.bulk.finish()?;
     store.set_volume_online(vol, false);
+    store.shrink_to_fit();
     Ok((vol, stats))
 }
 

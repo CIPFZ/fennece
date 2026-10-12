@@ -1,11 +1,27 @@
 [package]
 name = "fnc-ntfs"
+description = "Fennec NTFS/ReFS backend: MFT enumeration and USN journal monitoring."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+fnc-core.workspace = true
+fnc-index.workspace = true
+fnc-platform.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+xxhash-rust.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+] }
 
 [lints]
 workspace = true

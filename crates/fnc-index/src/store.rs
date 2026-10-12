@@ -153,6 +153,25 @@ impl IndexStore {
         self.attr.reserve(entries);
     }
 
+    /// Releases excess capacity of all columns (call after bulk loading).
+    pub fn shrink_to_fit(&mut self) {
+        self.names.shrink_to_fit();
+        self.folds.shrink_to_fit();
+        self.parent.shrink_to_fit();
+        self.volume.shrink_to_fit();
+        self.flags.shrink_to_fit();
+        self.frn.shrink_to_fit();
+        self.ext.shrink_to_fit();
+        self.size.shrink_to_fit();
+        self.dm.shrink_to_fit();
+        self.dc.shrink_to_fit();
+        if let Some(da) = &mut self.da {
+            da.shrink_to_fit();
+        }
+        self.attr.shrink_to_fit();
+        self.scratch = Vec::new();
+    }
+
     // ------------------------------------------------------------------ volumes
 
     /// Registers a volume. With `root_frn = Some(frn)` its root entry (named after

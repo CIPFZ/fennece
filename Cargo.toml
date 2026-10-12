@@ -88,6 +88,7 @@ proc-macro2 = "1"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 proptest = "1.12"
 tempfile = "3"
+dhat = "0.3"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

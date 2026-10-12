@@ -1,12 +1,32 @@
 [package]
 name = "bench"
+description = "Fennec benchmarks: criterion suites and the baseline report generator (bench/results.md)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[[bin]]
+name = "bench-report"
+path = "src/main.rs"
+
+[[bench]]
+name = "search"
+harness = false
+
 [dependencies]
+fnc-core.workspace = true
+fnc-index.workspace = true
+fnc-query.workspace = true
+fnc-exec.workspace = true
+gen-fixtures = { path = "../gen-fixtures" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json = "1"
+
+[dev-dependencies]
+criterion.workspace = true
 
 [lints]
 workspace = true

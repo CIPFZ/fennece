@@ -18,12 +18,14 @@ const EMPTY: u32 = u32::MAX;
 /// Adaptive FRN map.
 #[derive(Clone, Debug)]
 pub enum FrnMap {
-    /// Indexed by MFT record number.
+    /// Indexed by MFT record number (or by the id itself for small synthetic ids).
     Dense {
-        /// `slots[record]` = entry id or `EMPTY`.
+        /// `slots[key]` = entry id or `EMPTY`.
         slots: Vec<u32>,
-        /// Records too far beyond `slots.len()` to grow the table for.
+        /// Keys too far beyond `slots.len()` to grow the table for.
         overflow: HashMap<u64, EntryId>,
+        /// `true`: key = FRN without the sequence bits (NTFS); `false`: key = FRN.
+        masked: bool,
     },
     /// Keyed by full FRN.
     Sparse(HashMap<u64, EntryId>),
@@ -36,31 +38,38 @@ impl Default for FrnMap {
 }
 
 impl FrnMap {
-    /// Builds the best representation for `(frn, id)` pairs. `ntfs_like` enables the
-    /// dense representation when record numbers are compact.
+    /// Builds the best representation for `(frn, id)` pairs. The dense representation
+    /// is used when keys are compact: NTFS record numbers (`ntfs_like`, sequence bits
+    /// masked off) or small synthetic ids.
     pub fn build(pairs: &[(u64, EntryId)], ntfs_like: bool) -> Self {
-        let max_rec = pairs.iter().map(|&(f, _)| f & RECORD_MASK).max().unwrap_or(0);
-        if ntfs_like && (max_rec as usize) < pairs.len().saturating_mul(4) + 4096 {
-            let mut slots = vec![EMPTY; max_rec as usize + 1];
+        let key = |f: u64| if ntfs_like { f & RECORD_MASK } else { f };
+        let max_key = pairs.iter().map(|&(f, _)| key(f)).max().unwrap_or(0);
+        if max_key < (pairs.len() as u64).saturating_mul(4) + 4096 {
+            let mut slots = vec![EMPTY; max_key as usize + 1];
             for &(frn, id) in pairs {
-                slots[(frn & RECORD_MASK) as usize] = id.0;
+                slots[key(frn) as usize] = id.0;
             }
-            FrnMap::Dense { slots, overflow: HashMap::new() }
+            FrnMap::Dense { slots, overflow: HashMap::new(), masked: ntfs_like }
         } else {
             FrnMap::Sparse(pairs.iter().copied().collect())
         }
+    }
+
+    #[inline]
+    fn key(masked: bool, frn: u64) -> u64 {
+        if masked { frn & RECORD_MASK } else { frn }
     }
 
     /// Candidate entry for `frn` (verify the full FRN before use in dense mode).
     #[inline]
     pub fn get(&self, frn: u64) -> Option<EntryId> {
         match self {
-            FrnMap::Dense { slots, overflow } => {
-                let rec = frn & RECORD_MASK;
-                match slots.get(rec as usize) {
+            FrnMap::Dense { slots, overflow, masked } => {
+                let k = Self::key(*masked, frn);
+                match usize::try_from(k).ok().and_then(|k| slots.get(k)) {
                     Some(&id) if id != EMPTY => Some(EntryId(id)),
                     Some(_) => None,
-                    None => overflow.get(&rec).copied(),
+                    None => overflow.get(&k).copied(),
                 }
             }
             FrnMap::Sparse(m) => m.get(&frn).copied(),
@@ -70,15 +79,15 @@ impl FrnMap {
     /// Inserts or replaces.
     pub fn insert(&mut self, frn: u64, id: EntryId) {
         match self {
-            FrnMap::Dense { slots, overflow } => {
-                let rec = (frn & RECORD_MASK) as usize;
-                if rec < slots.len() {
-                    slots[rec] = id.0;
-                } else if rec < slots.len().saturating_mul(2) + 65_536 {
-                    slots.resize(rec + 1, EMPTY);
-                    slots[rec] = id.0;
+            FrnMap::Dense { slots, overflow, masked } => {
+                let k = Self::key(*masked, frn);
+                if k < slots.len() as u64 {
+                    slots[k as usize] = id.0;
+                } else if k < (slots.len() as u64).saturating_mul(2) + 65_536 {
+                    slots.resize(k as usize + 1, EMPTY);
+                    slots[k as usize] = id.0;
                 } else {
-                    overflow.insert(rec as u64, id);
+                    overflow.insert(k, id);
                 }
             }
             FrnMap::Sparse(m) => {
@@ -90,17 +99,17 @@ impl FrnMap {
     /// Removes `frn` if it currently maps to `id`.
     pub fn remove(&mut self, frn: u64, id: EntryId) {
         match self {
-            FrnMap::Dense { slots, overflow } => {
-                let rec = frn & RECORD_MASK;
-                match slots.get_mut(rec as usize) {
+            FrnMap::Dense { slots, overflow, masked } => {
+                let k = Self::key(*masked, frn);
+                match usize::try_from(k).ok().and_then(|k| slots.get_mut(k)) {
                     Some(slot) => {
                         if *slot == id.0 {
                             *slot = EMPTY;
                         }
                     }
                     None => {
-                        if overflow.get(&rec) == Some(&id) {
-                            overflow.remove(&rec);
+                        if overflow.get(&k) == Some(&id) {
+                            overflow.remove(&k);
                         }
                     }
                 }
@@ -116,7 +125,7 @@ impl FrnMap {
     /// Heap bytes (approximate).
     pub fn heap_bytes(&self) -> usize {
         match self {
-            FrnMap::Dense { slots, overflow } => slots.capacity() * 4 + overflow.capacity() * 16,
+            FrnMap::Dense { slots, overflow, .. } => slots.capacity() * 4 + overflow.capacity() * 16,
             FrnMap::Sparse(m) => m.capacity() * 16,
         }
     }

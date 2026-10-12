@@ -1,12 +1,24 @@
 [package]
 name = "gen-fixtures"
+description = "Generates synthetic Everything file lists (EFU) with realistic distributions for tests and benchmarks."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[lib]
+name = "gen_fixtures"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gen-fixtures"
+path = "src/main.rs"
+
 [dependencies]
+fnc-core.workspace = true
+fnc-index.workspace = true
+anyhow.workspace = true
 
 [lints]
 workspace = true
