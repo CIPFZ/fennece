@@ -19,3 +19,10 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 - [M0][fnc-exec] matchers, parallel scans with cancellation, sorting, highlighting, search engine; dhat zero-allocation test for hot paths.
 - [M0][tools] `gen-fixtures` (1 M synthetic entries), `bench` (criterion + baseline report), `gen-icons` (SVG/PNG/ICO/tray).
 - [M0][docs] ADR-001…009.
+
+## M1 — fixes from two independent code reviews (2026-10-13)
+- [M1][fnc-query] `< >` nesting limit; comparison `<`/`>` only after known functions; no panics on non-ASCII / absurd dates; huge sizes clamp.
+- [M1][fnc-index] batch-order-independent `apply` (retry unresolved); FrnMap overflow migration; `$Orphans` keeps dense maps; bounded walks; clones get a new instance id.
+- [M1][fnc-ntfs] enumerate with HighUsn = MAX; every USN record upserts (self-healing); device-gone → offline; root id via FileIdInfo; fixed drives only (removable in M2).
+- [M1][fnc-exec] submit under the token lock (no lost searches); per-query panic containment.
+- [M1][fnc-app] concurrent back-fill and journal watch; single instance kept alive on Windows; tray/close-to-tray/start-hidden fixes; run count off the UI thread; exact-modifier shortcuts.
