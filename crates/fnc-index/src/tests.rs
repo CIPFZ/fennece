@@ -155,6 +155,40 @@ fn moving_folder_into_itself_is_rejected() {
 }
 
 #[test]
+fn batch_order_does_not_matter_for_parents() {
+    // A file moved into a folder created later in the same batch, and a create whose
+    // parent appears later: both resolve on the retry pass.
+    let (mut s, vol) = sample();
+    let st = s.apply(vec![
+        Change::Create { volume: vol, frn: 61, parent: EntryRef::Frn(vol, 60), name: u16s("late.txt"), meta: file(1) },
+        Change::Rename { target: EntryRef::Frn(vol, 21), new_name: u16s("a.txt"), new_parent: EntryRef::Frn(vol, 60) },
+        Change::Create { volume: vol, frn: 60, parent: EntryRef::Frn(vol, 5), name: u16s("new"), meta: dir() },
+        Change::Delete(EntryRef::Frn(vol, 99_999)),
+    ]);
+    assert_eq!((st.created, st.renamed, st.unresolved), (2, 1, 1));
+    assert_eq!(path(&s, s.resolve(EntryRef::Frn(vol, 61)).unwrap()), "C:\\new\\late.txt");
+    assert_eq!(path(&s, s.resolve(EntryRef::Frn(vol, 21)).unwrap()), "C:\\new\\a.txt");
+}
+
+#[test]
+fn compact_keeps_dense_frn_maps_with_orphans() {
+    let mut s = IndexStore::default();
+    let vol = s.add_volume(VolumeInfo::new(VolumeKind::Ntfs, "C:\\"), Some(5)).unwrap();
+    let mut b = s.bulk_load(vol);
+    for i in 0..1000u64 {
+        b.push(100 + i, 5, &u16s(&format!("f{i}")), &file(1)).unwrap();
+    }
+    b.push(2_000, 1_999, &u16s("orphan"), &file(1)).unwrap();
+    b.finish().unwrap();
+    s.compact();
+    assert!(matches!(s.frn_maps[vol.idx()], crate::frnmap::FrnMap::Dense { .. }));
+    assert!(s.resolve(EntryRef::Frn(vol, 500)).is_some());
+    assert!(s.resolve(EntryRef::Frn(vol, crate::store::ORPHANS_FRN)).is_some());
+    let c = s.clone();
+    assert_ne!(c.instance(), s.instance(), "clones are separate id spaces");
+}
+
+#[test]
 fn idx03_rename_folder_with_100k_children() {
     let mut s = IndexStore::default();
     let vol = s.add_volume(VolumeInfo::new(VolumeKind::Ntfs, "C:\\"), Some(5)).unwrap();

@@ -639,7 +639,7 @@ impl Cx<'_> {
     /// Span of a scalar value for numeric property `prop`.
     fn span(&self, prop: NumProp, text: &str) -> Option<(i64, i64)> {
         match prop {
-            NumProp::Size => parse_size(text).map(|s| (s.lo as i64, clamp_u64(s.hi))),
+            NumProp::Size => parse_size(text).map(|s| (clamp_u64(s.lo), clamp_u64(s.hi))),
             NumProp::Date(_) => parse_date(text, &self.env.date).map(|s| (s.lo, s.hi)),
             _ => {
                 let t = text.trim();

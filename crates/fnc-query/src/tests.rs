@@ -479,6 +479,55 @@ fn result_set_reuse() {
     assert_eq!(back.input, InputSet::All);
 }
 
+#[test]
+fn hostile_inputs_do_not_panic_or_overflow() {
+    // Deep nesting is bounded (no stack overflow even on small thread stacks).
+    let deep = "<".repeat(100_000) + "a" + &">".repeat(100_000);
+    let t = std::thread::Builder::new().stack_size(256 * 1024).spawn(move || {
+        let p = parse(&deep, &ParseEnv::default());
+        let _ = crate::display::to_query_string(&p.ast, Precedence::Or);
+        let _ = plan(&p.ast, &PlanEnv::default(), None);
+        p.diagnostics.iter().any(|d| d.kind == DiagKind::TooDeep)
+    });
+    assert!(t.unwrap().join().unwrap(), "deep nesting must be reported");
+    // Non-ASCII and absurd date values plan to "invalid", never panic.
+    for q in [
+        "dm:今天",
+        "dm:中中",
+        "dm:123é456",
+        "dm:100000000days",
+        "dm:200000000weeks",
+        "dm:30000years",
+        "dm:4294967295years",
+        "dm:99999999",
+        "dc:0000-00-00",
+        "dm:2026-13-45T99:99",
+        "dm:..",
+        "dm:>",
+    ] {
+        let _ = plan(&parse(q, &ParseEnv::default()).ast, &PlanEnv::default(), None);
+    }
+    // Sizes beyond i64::MAX clamp instead of wrapping to "match everything".
+    match plan_of("size:>9000pb") {
+        Node::Leaf(Pred::Num(_, p)) => assert!(p.ranges.iter().all(|&(lo, _)| lo > 0), "{p:?}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+mod fuzz_values {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// Any function value plans without panicking.
+        #[test]
+        fn function_values_never_panic(f in prop_oneof![Just("dm"), Just("size"), Just("depth"), Just("attrib"), Just("ext"), Just("childcount")], v in "\\PC{0,16}") {
+            let q = format!("{f}:{v}");
+            let _ = plan(&parse(&q, &ParseEnv::default()).ast, &PlanEnv::default(), None);
+        }
+    }
+}
+
 mod roundtrip {
     use super::*;
     use crate::display::to_query_string;

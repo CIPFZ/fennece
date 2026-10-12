@@ -49,13 +49,14 @@ pub fn fold_records<'a>(volume: VolumeId, records: impl IntoIterator<Item = UsnR
         let frn = r.frn;
         let existing = by_frn.get(&frn).copied();
         if r.reason & reason::FILE_DELETE != 0 {
+            // A deleted file needs no metadata refresh.
+            if refresh_set.remove(&frn).is_some() {
+                refresh.retain(|&f| f != frn);
+            }
             match existing {
                 Some(i) if matches!(slots[i].1, Slot::Upsert { created: true, .. }) => {
                     slots[i].1 = Slot::Removed;
                     by_frn.remove(&frn);
-                    if refresh_set.remove(&frn).is_some() {
-                        refresh.retain(|&f| f != frn);
-                    }
                 }
                 Some(i) => slots[i].1 = Slot::Delete,
                 None => {
@@ -200,6 +201,27 @@ mod tests {
         ]);
         assert!(matches!(f.changes[0], Change::Delete(EntryRef::Frn(_, 40))));
         assert_eq!(f.changes.len(), 1);
+        assert!(f.refresh.is_empty(), "no refresh for a deleted file");
+    }
+
+    #[test]
+    fn move_into_folder_created_later_in_batch() {
+        // File 61 is created at the root, folder 60 is created, then 61 moves into 60:
+        // the upsert of 61 precedes 60 in the output, the index resolves it on retry.
+        let mut s = fnc_index::IndexStore::default();
+        let vol = s.add_volume(fnc_index::VolumeInfo::new(fnc_index::VolumeKind::Ntfs, "C:\\"), Some(5)).unwrap();
+        let f = fold(&[
+            encode_v2(61, 5, 1, reason::FILE_CREATE | reason::CLOSE, 0x20, "a.txt"),
+            encode_v2(60, 5, 2, reason::FILE_CREATE, 0x10, "dir"),
+            encode_v2(61, 5, 3, reason::RENAME_OLD_NAME, 0x20, "a.txt"),
+            encode_v2(61, 60, 4, reason::RENAME_NEW_NAME, 0x20, "a.txt"),
+        ]);
+        let st = s.apply(f.changes);
+        assert_eq!((st.created, st.unresolved), (2, 0));
+        let id = s.resolve(EntryRef::Frn(vol, 61)).unwrap();
+        let mut p = String::new();
+        s.full_path(id, &mut p);
+        assert_eq!(p, "C:\\dir\\a.txt");
     }
 
     #[test]

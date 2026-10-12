@@ -145,12 +145,15 @@ fn relative(t: &str, env: &DateEnv) -> Option<DateSpan> {
     }
     let n: u32 = t[..digits].parse().ok()?;
     let unit = &t[digits..];
+    let n64 = i64::from(n);
+    // All arithmetic is checked: absurd values (`dm:100000000days`) simply don't parse.
+    let back = |d: Option<Duration>| d.and_then(|d| env.now.checked_sub_signed(d));
     let start = match unit {
-        "sec" | "secs" | "second" | "seconds" | "s" => env.now - Duration::seconds(i64::from(n)),
-        "min" | "mins" | "minute" | "minutes" => env.now - Duration::minutes(i64::from(n)),
-        "hour" | "hours" | "h" => env.now - Duration::hours(i64::from(n)),
-        "day" | "days" | "d" => env.now - Duration::days(i64::from(n)),
-        "week" | "weeks" | "w" => env.now - Duration::weeks(i64::from(n)),
+        "sec" | "secs" | "second" | "seconds" | "s" => back(Duration::try_seconds(n64))?,
+        "min" | "mins" | "minute" | "minutes" => back(Duration::try_minutes(n64))?,
+        "hour" | "hours" | "h" => back(Duration::try_hours(n64))?,
+        "day" | "days" | "d" => back(Duration::try_days(n64))?,
+        "week" | "weeks" | "w" => back(Duration::try_weeks(n64))?,
         "month" | "months" => env.now.checked_sub_months(Months::new(n))?,
         "year" | "years" | "y" => env.now.checked_sub_months(Months::new(n.checked_mul(12)?))?,
         _ => return None,
@@ -173,6 +176,10 @@ enum DateGran {
 }
 
 fn parse_date_part(d: &str, order: DateOrder) -> Option<DateGran> {
+    // Every accepted form is ASCII; this also makes the byte slicing below safe.
+    if !d.is_ascii() {
+        return None;
+    }
     let parts: Vec<&str> = d.split(['-', '/', '.']).collect();
     match parts.as_slice() {
         [y] if y.len() == 4 => Some(DateGran::Year(num(y)? as i32)),

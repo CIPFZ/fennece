@@ -86,6 +86,15 @@ impl FrnMap {
                 } else if k < (slots.len() as u64).saturating_mul(2) + 65_536 {
                     slots.resize(k as usize + 1, EMPTY);
                     slots[k as usize] = id.0;
+                    // Keys that now fall inside the table must live in it, because
+                    // `get` only consults `overflow` beyond the table.
+                    let len = slots.len() as u64;
+                    let moved: Vec<u64> = overflow.keys().copied().filter(|&o| o < len).collect();
+                    for o in moved {
+                        if let Some(e) = overflow.remove(&o) {
+                            slots[o as usize] = e.0;
+                        }
+                    }
                 } else {
                     overflow.insert(k, id);
                 }
@@ -151,6 +160,21 @@ mod tests {
         assert_eq!(m.get(42), Some(EntryId(42)), "remove only if it maps to the id");
         m.remove(42, EntryId(42));
         assert_eq!(m.get(42), None);
+    }
+
+    #[test]
+    fn overflow_keys_survive_table_growth() {
+        let pairs: Vec<_> = (0..100u64).map(|r| (r, EntryId(r as u32))).collect();
+        let mut m = FrnMap::build(&pairs, false);
+        m.insert(100_000, EntryId(7)); // beyond growth limit → overflow
+        assert_eq!(m.get(100_000), Some(EntryId(7)));
+        m.insert(60_000, EntryId(8)); // grows the table to 60_001
+        m.insert(100_001, EntryId(9)); // grows past 100_000
+        assert_eq!(m.get(100_000), Some(EntryId(7)));
+        assert_eq!(m.get(100_001), Some(EntryId(9)));
+        assert_eq!(m.get(60_000), Some(EntryId(8)));
+        m.remove(100_000, EntryId(7));
+        assert_eq!(m.get(100_000), None);
     }
 
     #[test]

@@ -24,6 +24,9 @@ pub const MAX_DEPTH: usize = 1024;
 /// Name of the hidden folder that collects entries whose parent is unknown.
 pub const ORPHANS_NAME: &str = "$Orphans";
 
+/// Synthetic FRN of the `$Orphans` folder (outside any NTFS record range).
+pub const ORPHANS_FRN: u64 = u64::MAX - 1;
+
 /// Which optional columns are maintained.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub struct IndexOptions {
@@ -56,7 +59,6 @@ pub struct IndexStats {
 /// Row `i` of every column describes `EntryId(i)`. Deleted entries keep their row
 /// as a tombstone ([`EntryFlags::DELETED`]) so result sets never dangle; rows are
 /// reclaimed by [`IndexStore::compact`].
-#[derive(Clone)]
 pub struct IndexStore {
     pub(crate) volumes: Vec<Volume>,
     pub(crate) names: NameArena,
@@ -90,6 +92,41 @@ static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 
 fn next_instance() -> u64 {
     NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Clone for IndexStore {
+    /// A clone is an independent id space: it gets a fresh [`IndexStore::instance`], so
+    /// caches keyed by `(instance, generation)` never mix up diverging copies.
+    fn clone(&self) -> Self {
+        Self {
+            volumes: self.volumes.clone(),
+            names: self.names.clone(),
+            folds: self.folds.clone(),
+            parent: self.parent.clone(),
+            volume: self.volume.clone(),
+            flags: self.flags.clone(),
+            frn: self.frn.clone(),
+            ext: self.ext.clone(),
+            size: self.size.clone(),
+            dm: self.dm.clone(),
+            dc: self.dc.clone(),
+            da: self.da.clone(),
+            attr: self.attr.clone(),
+            run: self.run.clone(),
+            recent: self.recent.clone(),
+            ext_dict: self.ext_dict.clone(),
+            children: self.children.clone(),
+            frn_maps: self.frn_maps.clone(),
+            orphans: self.orphans.clone(),
+            name_order: self.name_order.clone(),
+            generation: self.generation,
+            tree_generation: self.tree_generation,
+            instance: next_instance(),
+            live: self.live,
+            folders: self.folders,
+            scratch: Vec::new(),
+        }
+    }
 }
 
 impl Default for IndexStore {
@@ -499,10 +536,17 @@ impl IndexStore {
         self.children.candidates(dir).filter(move |&c| self.parent(c) == dir && self.is_live(c))
     }
 
-    /// Visits `root` and all live descendants (depth-first, iterative).
+    /// Visits `root` and all live descendants (depth-first, iterative). Visits at most
+    /// `len()` entries, so even a corrupt (cyclic) tree cannot loop forever.
     pub fn for_each_descendant(&self, root: EntryId, mut f: impl FnMut(EntryId)) {
         let mut stack = vec![root];
+        let mut budget = self.len();
         while let Some(d) = stack.pop() {
+            if budget == 0 {
+                tracing::error!(?root, "descendant walk exceeded the entry count (cycle?)");
+                return;
+            }
+            budget -= 1;
             f(d);
             if self.is_dir(d) {
                 stack.extend(self.children(d));
@@ -636,50 +680,85 @@ impl IndexStore {
 
     /// Applies a batch of changes. Callers keep batches small enough that the write
     /// lock is held < 5 ms (SPEC ch.0 §4.3).
+    ///
+    /// Changes whose target or parent is not (yet) known are retried after the rest of
+    /// the batch, repeatedly while progress is made, so a batch does not need to be
+    /// ordered parents-first (e.g. a file moved into a folder created later in the
+    /// same USN batch).
     pub fn apply(&mut self, batch: ChangeBatch) -> ApplyStats {
         let mut stats = ApplyStats::default();
         let now = FileTime::now();
         let mut tree_changed = false;
-        for change in batch {
-            match change {
-                Change::Create { volume, frn, parent, name, meta } => {
-                    tree_changed |= self.apply_create(volume, frn, parent, &name, &meta, now, &mut stats);
+        let mut pending = batch;
+        loop {
+            let before = pending.len();
+            let mut deferred = Vec::new();
+            for change in pending {
+                if self.is_resolvable(&change) {
+                    tree_changed |= self.apply_one(change, now, &mut stats);
+                } else {
+                    deferred.push(change);
                 }
-                Change::Delete(target) => match self.resolve(target) {
-                    Some(id) => {
-                        tree_changed |= self.is_dir(id);
-                        stats.deleted += self.delete_subtree(id, now);
-                    }
-                    None => stats.unresolved += 1,
-                },
-                Change::Rename { target, new_name, new_parent } => {
-                    match (self.resolve(target), self.resolve(new_parent)) {
-                        (Some(id), Some(p)) if !self.flags(id).contains(EntryFlags::ROOT) => {
-                            if self.is_ancestor_or_self(id, p) {
-                                stats.unresolved += 1;
-                                continue;
-                            }
-                            tree_changed |= self.is_dir(id);
-                            self.rename(id, &new_name, p, now);
-                            stats.renamed += 1;
-                        }
-                        _ => stats.unresolved += 1,
-                    }
-                }
-                Change::Meta { target, meta } => match self.resolve(target) {
-                    Some(id) => {
-                        self.update_meta(id, &meta);
-                        self.recent.insert(id, now);
-                        stats.updated += 1;
-                    }
-                    None => stats.unresolved += 1,
-                },
             }
+            if deferred.is_empty() || deferred.len() == before {
+                stats.unresolved += deferred.len();
+                break;
+            }
+            pending = deferred;
         }
         if stats.changed() {
             self.bump(tree_changed);
         }
         stats
+    }
+
+    /// `true` if every entry the change refers to exists.
+    fn is_resolvable(&self, change: &Change) -> bool {
+        match change {
+            Change::Create { parent, .. } => self.resolve(*parent).is_some(),
+            Change::Delete(t) | Change::Meta { target: t, .. } => self.resolve(*t).is_some(),
+            Change::Rename { target, new_parent, .. } => {
+                self.resolve(*target).is_some() && self.resolve(*new_parent).is_some()
+            }
+        }
+    }
+
+    /// Applies one resolvable change; returns `true` if the folder tree changed.
+    fn apply_one(&mut self, change: Change, now: FileTime, stats: &mut ApplyStats) -> bool {
+        let mut tree_changed = false;
+        match change {
+            Change::Create { volume, frn, parent, name, meta } => {
+                tree_changed |= self.apply_create(volume, frn, parent, &name, &meta, now, stats);
+            }
+            Change::Delete(target) => match self.resolve(target) {
+                Some(id) => {
+                    tree_changed |= self.is_dir(id);
+                    stats.deleted += self.delete_subtree(id, now);
+                }
+                None => stats.unresolved += 1,
+            },
+            Change::Rename { target, new_name, new_parent } => match (self.resolve(target), self.resolve(new_parent)) {
+                (Some(id), Some(p)) if !self.flags(id).contains(EntryFlags::ROOT) => {
+                    if self.is_ancestor_or_self(id, p) {
+                        stats.unresolved += 1;
+                    } else {
+                        tree_changed |= self.is_dir(id);
+                        self.rename(id, &new_name, p, now);
+                        stats.renamed += 1;
+                    }
+                }
+                _ => stats.unresolved += 1,
+            },
+            Change::Meta { target, meta } => match self.resolve(target) {
+                Some(id) => {
+                    self.update_meta(id, &meta);
+                    self.recent.insert(id, now);
+                    stats.updated += 1;
+                }
+                None => stats.unresolved += 1,
+            },
+        }
+        tree_changed
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -727,10 +806,12 @@ impl IndexStore {
         }
     }
 
+    /// `true` if `ancestor` is `node` or one of its ancestors. Chains deeper than
+    /// [`MAX_DEPTH`] are treated as "yes" so a move can never create a cycle.
     fn is_ancestor_or_self(&self, ancestor: EntryId, mut node: EntryId) -> bool {
         let mut steps = 0;
-        while node.is_some() && steps < MAX_DEPTH {
-            if node == ancestor {
+        while node.is_some() {
+            if node == ancestor || steps >= MAX_DEPTH {
                 return true;
             }
             node = self.parent(node);
@@ -878,12 +959,19 @@ impl IndexStore {
         }
         self.orphans = self.orphans.iter().map(|o| o.map(map_id).filter(|e| e.is_some())).collect();
         for (vi, m) in self.frn_maps.iter_mut().enumerate() {
+            // The `$Orphans` folder's synthetic FRN would force the hash-map
+            // representation; it is inserted afterwards (into the overflow map).
+            let in_vol = |n: &usize| self.volume[*n].idx() == vi;
             let pairs: Vec<(u64, EntryId)> = (0..order.len())
-                .filter(|&n| self.volume[n].idx() == vi)
+                .filter(in_vol)
+                .filter(|&n| self.frn[n] != ORPHANS_FRN)
                 .map(|n| (self.frn[n], EntryId(n as u32)))
                 .collect();
             let ntfs_like = matches!(self.volumes[vi].info.kind, VolumeKind::Ntfs);
             *m = FrnMap::build(&pairs, ntfs_like);
+            for n in (0..order.len()).filter(in_vol).filter(|&n| self.frn[n] == ORPHANS_FRN) {
+                m.insert(ORPHANS_FRN, EntryId(n as u32));
+            }
         }
         self.rebuild_children();
         self.name_order = self.name_order.remapped(&remap, order.len());
@@ -899,8 +987,7 @@ impl IndexStore {
         let root = *self.volumes[vol.idx()].roots.first().ok_or(IndexError::NoRoot)?;
         let units: Vec<u16> = ORPHANS_NAME.encode_utf16().collect();
         let attrs = fnc_core::flags::attr::DIRECTORY | fnc_core::flags::attr::HIDDEN | fnc_core::flags::attr::SYSTEM;
-        // Synthetic FRN outside the NTFS record range so it never collides.
-        let id = self.push_row(vol, u64::MAX - 1, root, &units, &Meta::attrs(attrs), EntryFlags::empty())?;
+        let id = self.push_row(vol, ORPHANS_FRN, root, &units, &Meta::attrs(attrs), EntryFlags::empty())?;
         self.children.add(root, id);
         self.orphans[vol.idx()] = Some(id);
         Ok(id)

@@ -133,24 +133,26 @@ pub struct EngineHandle {
 }
 
 impl EngineHandle {
-    fn new_token(&self) -> CancelToken {
+    /// Cancels the query in flight and enqueues `make(new_token)`. The send happens
+    /// while holding the lock, so a concurrent submit cannot cancel this command's
+    /// token before it is queued (which would silently drop the request).
+    fn submit(&self, make: impl FnOnce(CancelToken) -> Cmd) {
         let tok = CancelToken::new();
         let mut cur = self.current.lock();
         cur.cancel();
         *cur = tok.clone();
-        tok
+        // Unbounded channel: never blocks while the lock is held.
+        let _ = self.tx.send(make(tok));
     }
 
     /// Submits a search, cancelling any query in flight.
     pub fn search(&self, req: SearchRequest) {
-        let tok = self.new_token();
-        let _ = self.tx.send(Cmd::Search(req, tok));
+        self.submit(|tok| Cmd::Search(req, tok));
     }
 
     /// Re-runs the last search against the current index (after index changes).
     pub fn refresh(&self) {
-        let tok = self.new_token();
-        let _ = self.tx.send(Cmd::Refresh(tok));
+        self.submit(Cmd::Refresh);
     }
 }
 
@@ -200,6 +202,8 @@ impl SearchEngine {
         let (tx, rx) = crossbeam_channel::unbounded();
         let thread = std::thread::Builder::new()
             .name("fennec-search".into())
+            // Generous stack: parsing and planning recurse over the (bounded) AST.
+            .stack_size(8 << 20)
             .spawn(move || worker(index, rx, events, notify))
             .ok();
         if thread.is_none() {
@@ -267,15 +271,29 @@ fn worker(index: SharedIndex, rx: Receiver<Cmd>, events: Sender<EngineEvent>, no
             }
         }
         let (Some((tok, allow_reuse)), Some(req)) = (job, latest.clone()) else { continue };
-        match run(&index, &caches, &req, &tok, if allow_reuse { last.as_ref() } else { None }) {
-            Ok((outcome, plan)) => {
+        // A bug in one query must not kill the search thread (every later search would
+        // be silently dropped), so panics are contained and reported as errors.
+        let prev = if allow_reuse { last.as_ref() } else { None };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&index, &caches, &req, &tok, prev)));
+        match outcome {
+            Ok(Ok((outcome, plan))) => {
                 last = Some(Last { req, plan, results: outcome.results.clone() });
                 if events.send(EngineEvent::Done(outcome)).is_err() {
                     return;
                 }
                 notify();
             }
-            Err(Cancelled) => tracing::trace!(id = req.id, "search cancelled"),
+            Ok(Err(Cancelled)) => tracing::trace!(id = req.id, "search cancelled"),
+            Err(panic) => {
+                let msg = panic
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                tracing::error!(id = req.id, text = %req.text, panic = %msg, "search panicked");
+                caches.clear();
+                last = None;
+            }
         }
     }
 }

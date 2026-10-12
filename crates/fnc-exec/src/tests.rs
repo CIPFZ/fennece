@@ -308,6 +308,30 @@ fn engine_refresh_after_index_change() {
 }
 
 #[test]
+fn engine_concurrent_search_and_refresh_never_drop_the_last_search() {
+    let (engine, rx, _) = engine_with(store());
+    let handle = engine.handle();
+    let refresher = std::thread::spawn(move || {
+        for _ in 0..500 {
+            handle.refresh();
+        }
+    });
+    for i in 1..=200 {
+        engine.search(req(i, if i % 2 == 0 { "img" } else { "txt" }));
+    }
+    refresher.join().unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let EngineEvent::Done(o) = rx.recv_timeout(Duration::from_secs(10)).expect("final search lost");
+        if o.id == 200 && o.text == "img" {
+            assert_eq!(o.results.len(), 2);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+    }
+}
+
+#[test]
 fn engine_filter_and_regex_all() {
     let (engine, rx, _) = engine_with(store());
     let mut r = req(1, "0001");

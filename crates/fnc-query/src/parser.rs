@@ -27,6 +27,9 @@ use crate::funcs::{
 /// Maximum macro expansion depth (SPEC ch.2 §6).
 pub const MAX_MACRO_DEPTH: usize = 8;
 
+/// Maximum `< >` nesting; deeper `<` are ignored (keeps recursion bounded).
+pub const MAX_GROUP_DEPTH: usize = 64;
+
 /// A user-defined macro (from a filter's "macro" field).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserMacro {
@@ -94,6 +97,8 @@ pub enum DiagKind {
     StrayClose,
     /// Macro recursion deeper than [`MAX_MACRO_DEPTH`].
     MacroTooDeep(String),
+    /// `<` nesting deeper than [`MAX_GROUP_DEPTH`] (the extra `<` was ignored).
+    TooDeep,
 }
 
 /// A diagnostic with its location.
@@ -276,12 +281,19 @@ impl Lexer<'_, '_> {
     }
 
     /// `true` if `<`/`>` at this point belongs to a function value's comparison
-    /// operator (`size:>1mb`, `dm:<=2026`).
+    /// operator (`size:>1mb`, `dm:<=2026`, `len:>20`): the term so far must end in a
+    /// known function or modifier name, a colon and only operator characters.
     fn operator_position(out: &[Ch]) -> bool {
-        match out.iter().rposition(|ch| ch.c == ':' && !ch.lit) {
-            Some(colon) => out[colon + 1..].iter().all(|ch| !ch.lit && matches!(ch.c, '<' | '>' | '=' | '!')),
-            None => false,
+        let Some(colon) = out.iter().rposition(|ch| ch.c == ':' && !ch.lit) else { return false };
+        if !out[colon + 1..].iter().all(|ch| !ch.lit && matches!(ch.c, '<' | '>' | '=' | '!')) {
+            return false;
         }
+        let start =
+            out[..colon].iter().rposition(|ch| ch.lit || !(is_ident_char(ch.c) || ch.c == '*')).map_or(0, |p| p + 1);
+        let ident: String = out[start..colon].iter().map(|ch| ch.c).filter(|&c| c != '*').collect();
+        let mut norm = String::new();
+        normalize_name(&ident, &mut norm);
+        !norm.is_empty() && (lookup_function(&norm).is_some() || lookup_modifier(&norm).is_some())
     }
 
     fn read_term(&mut self) -> Tok {
@@ -576,6 +588,13 @@ impl Parser<'_> {
 
     fn parse_primary(&mut self, depth: usize) -> Option<Expr> {
         match self.peek()?.clone() {
+            Tok::Open(pos) if depth >= MAX_GROUP_DEPTH => {
+                // Pathologically deep nesting: ignore further `<` instead of recursing
+                // (bounded stack usage for any input).
+                self.j += 1;
+                self.diags.push(Diag { range: pos..pos + 1, kind: DiagKind::TooDeep });
+                None
+            }
             Tok::Open(pos) => {
                 self.j += 1;
                 let e = self.parse_seq(depth + 1);

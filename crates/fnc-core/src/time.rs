@@ -28,9 +28,18 @@ impl FileTime {
         self.0 != i64::MIN
     }
 
-    /// Converts from Unix seconds + nanoseconds.
+    /// Converts from Unix seconds + nanoseconds, saturating outside the FILETIME range.
     pub const fn from_unix(secs: i64, nanos: u32) -> Self {
-        FileTime(UNIX_EPOCH_TICKS + secs * TICKS_PER_SECOND + (nanos / 100) as i64)
+        let t = UNIX_EPOCH_TICKS as i128 + secs as i128 * TICKS_PER_SECOND as i128 + (nanos / 100) as i128;
+        let t = if t > i64::MAX as i128 {
+            i64::MAX
+        } else if t <= i64::MIN as i128 {
+            // `i64::MIN` is reserved for UNKNOWN.
+            i64::MIN + 1
+        } else {
+            t as i64
+        };
+        FileTime(t)
     }
 
     /// Converts a [`std::time::SystemTime`]; times before 1601 clamp to 0.
@@ -53,7 +62,7 @@ impl FileTime {
 
     /// Unix seconds (floor).
     pub const fn unix_secs(self) -> i64 {
-        (self.0 - UNIX_EPOCH_TICKS).div_euclid(TICKS_PER_SECOND)
+        (self.0.saturating_sub(UNIX_EPOCH_TICKS)).div_euclid(TICKS_PER_SECOND)
     }
 
     /// UTC date-time, `None` if unknown or out of chrono's range.
@@ -61,7 +70,7 @@ impl FileTime {
         if !self.is_known() {
             return None;
         }
-        let rel = self.0 - UNIX_EPOCH_TICKS;
+        let rel = self.0.saturating_sub(UNIX_EPOCH_TICKS);
         let secs = rel.div_euclid(TICKS_PER_SECOND);
         let nanos = (rel.rem_euclid(TICKS_PER_SECOND) * 100) as u32;
         DateTime::from_timestamp(secs, nanos)
