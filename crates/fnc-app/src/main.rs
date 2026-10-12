@@ -49,7 +49,7 @@ fn run() -> anyhow::Result<()> {
 
     let paths = DataPaths::resolve(&cli.instance);
     let settings_path = paths.settings_file();
-    let (mut settings, settings_error) = match Settings::load(&settings_path) {
+    let (settings, settings_error) = match Settings::load(&settings_path) {
         Ok(s) => (s, None),
         Err(e) => (Settings::default(), Some(e)),
     };
@@ -81,7 +81,7 @@ fn run() -> anyhow::Result<()> {
             }
         }
     };
-    let commands_rx = if settings.single_instance && !cli.first_instance {
+    let primary = if settings.single_instance && !cli.first_instance {
         match acquire(&cli.instance, &raw_args, Box::new(wake.clone())) {
             Ok(Instance::Secondary) => {
                 tracing::info!("forwarded command line to the running instance");
@@ -140,13 +140,14 @@ fn run() -> anyhow::Result<()> {
         index_tx,
         Arc::new(wake.clone()),
     );
-    settings.close_to_tray &= settings.show_tray_icon;
 
     let viewport = egui::ViewportBuilder::default()
         .with_title(i18n::t("app-title"))
         .with_inner_size([1000.0, 600.0])
         .with_min_inner_size([400.0, 200.0])
-        .with_app_id("fennec");
+        .with_app_id("fennec")
+        // `-startup` / `-minimized`: create the window hidden (no flash).
+        .with_visible(!cli.start_hidden);
     let viewport = match icon::app_icon() {
         Some(i) => viewport.with_icon(Arc::new(i)),
         None => viewport,
@@ -157,7 +158,7 @@ fn run() -> anyhow::Result<()> {
         engine,
         engine_rx,
         index_rx,
-        commands_rx: commands_rx.map(|p| p.commands().clone()),
+        instance: primary,
         indexer,
         settings,
         settings_path,

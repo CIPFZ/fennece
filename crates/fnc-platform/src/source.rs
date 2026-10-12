@@ -103,6 +103,13 @@ pub trait MetaSink {
     fn meta(&mut self, dir: EntryId, name: &[u16], meta: Meta);
 }
 
+/// A metadata reader independent of its source, so the back-fill can run while the
+/// source is watching for changes.
+pub trait MetadataFetcher: Send {
+    /// Same contract as [`VolumeSource::fetch_metadata`].
+    fn fetch(&self, dirs: &[(EntryId, String)], out: &mut dyn MetaSink, stop: &StopFlag) -> Result<(), SourceError>;
+}
+
 /// An index source: an NTFS/ReFS volume, a folder index root, ...
 pub trait VolumeSource: Send {
     /// Static volume description.
@@ -120,6 +127,11 @@ pub trait VolumeSource: Send {
         out: &mut dyn MetaSink,
         stop: &StopFlag,
     ) -> Result<(), SourceError>;
+    /// An independent fetcher for [`VolumeSource::fetch_metadata`], if the source can
+    /// back-fill concurrently with [`VolumeSource::watch`].
+    fn metadata_fetcher(&self) -> Option<Box<dyn MetadataFetcher>> {
+        None
+    }
     /// `true` if [`VolumeSource::enumerate`] already delivers sizes and dates.
     fn enumerates_metadata(&self) -> bool;
     /// Journal id and next USN captured before enumeration (NTFS/ReFS).

@@ -14,10 +14,10 @@ use fnc_index::Meta;
 use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FILE_STANDARD_INFO, FIND_FIRST_EX_LARGE_FETCH, FileBasicInfo, FileIdType, FileStandardInfo,
-    FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW, GetDriveTypeW,
-    GetFileInformationByHandle, GetFileInformationByHandleEx, GetLogicalDrives, GetVolumeInformationW,
+    FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_STANDARD_INFO, FIND_FIRST_EX_LARGE_FETCH, FileBasicInfo, FileIdInfo, FileIdType,
+    FileStandardInfo, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW,
+    GetDriveTypeW, GetFileInformationByHandle, GetFileInformationByHandleEx, GetLogicalDrives, GetVolumeInformationW,
     GetVolumeNameForVolumeMountPointW, OPEN_EXISTING, OpenFileById, WIN32_FIND_DATAW,
 };
 use windows::Win32::System::IO::DeviceIoControl;
@@ -41,6 +41,12 @@ pub mod code {
     pub const JOURNAL_NOT_ACTIVE: u32 = 1179;
     /// `ERROR_JOURNAL_ENTRY_DELETED`
     pub const JOURNAL_ENTRY_DELETED: u32 = 1181;
+    /// `ERROR_NOT_READY` (media removed)
+    pub const NOT_READY: u32 = 21;
+    /// `ERROR_DEV_NOT_EXIST`
+    pub const DEV_NOT_EXIST: u32 = 55;
+    /// `ERROR_DEVICE_NOT_CONNECTED`
+    pub const DEVICE_NOT_CONNECTED: u32 = 1167;
 }
 
 /// Win32 error code carried by a `windows` error (0 if not a Win32 HRESULT).
@@ -209,7 +215,11 @@ pub fn open_volume(letter: char) -> io::Result<Handle> {
     Ok(Handle(h))
 }
 
-/// FRN of the root folder of `X:\` (record 5 with its sequence number).
+/// FRN of the root folder of `X:\` (record 5 with its sequence number on NTFS).
+///
+/// Read as the 128-bit `FileIdInfo` id and folded like `USN_RECORD_V3` ids, so the root
+/// matches the parent ids of top-level records on ReFS too; falls back to the 64-bit
+/// `nFileIndex` where `FileIdInfo` is unavailable.
 pub fn root_frn(letter: char) -> io::Result<u64> {
     let path = wide(&format!("{letter}:\\"));
     // SAFETY: as in `open_volume`; BACKUP_SEMANTICS is required to open a directory.
@@ -226,6 +236,21 @@ pub fn root_frn(letter: char) -> io::Result<u64> {
     }
     .map_err(to_io)?;
     let h = Handle(h);
+    let mut id_info = FILE_ID_INFO::default();
+    // SAFETY: `id_info` is an owned FILE_ID_INFO, the size passed is its exact size, and
+    // `h` is an open handle.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            h.0,
+            FileIdInfo,
+            std::ptr::from_mut(&mut id_info).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    }
+    .is_ok();
+    if ok {
+        return Ok(crate::record::fold_file_id(&id_info.FileId.Identifier));
+    }
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     // SAFETY: `info` is a valid out-structure; `h` is an open handle.
     unsafe { GetFileInformationByHandle(h.0, &mut info) }.map_err(to_io)?;
@@ -371,8 +396,11 @@ pub fn read_journal(
         StartUsn: start,
         ReasonMask: reason::ALL,
         ReturnOnlyOnClose: 0,
-        // SPEC-GAP: documented as seconds; with BytesToWaitFor = 1 the call returns as
-        // soon as one record arrives, otherwise after the timeout.
+        // With BytesToWaitFor = 1 the call returns as soon as a record arrives; the
+        // timeout is repeated while none are available, so the call blocks (event-driven,
+        // no polling). SPEC-GAP: a stop request is therefore observed after the next
+        // change; cancelling the wait (CancelSynchronousIo) comes with volume
+        // removal/rebuild handling in M2.
         Timeout: u64::from(wait),
         BytesToWaitFor: u64::from(wait),
         UsnJournalID: journal_id,
@@ -391,7 +419,11 @@ pub fn read_journal(
             code::JOURNAL_ENTRY_DELETED | 0x0000_0057 /* ERROR_INVALID_PARAMETER: journal id mismatch */ => {
                 Err(ReadError::Reset)
             }
-            code::JOURNAL_DELETE_IN_PROGRESS | code::JOURNAL_NOT_ACTIVE => Err(ReadError::Unavailable),
+            code::JOURNAL_DELETE_IN_PROGRESS
+            | code::JOURNAL_NOT_ACTIVE
+            | code::NOT_READY
+            | code::DEVICE_NOT_CONNECTED
+            | code::DEV_NOT_EXIST => Err(ReadError::Unavailable),
             _ => Err(ReadError::Io(to_io(e))),
         },
     }
@@ -402,6 +434,9 @@ fn filetime(low: u32, high: u32) -> FileTime {
 }
 
 /// Size, dates and attributes of the file with `frn` (no path needed).
+// SPEC-GAP: genuine 128-bit ReFS ids are stored folded (see `record::fold_file_id`) and
+// cannot be reopened with `FileIdType`; such refreshes fail quietly until the index
+// keeps 128-bit ids (M2, with `ExtendedFileIdType`).
 pub fn stat_frn(volume: &Handle, frn: u64) -> io::Result<Meta> {
     let desc = FILE_ID_DESCRIPTOR {
         dwSize: std::mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,

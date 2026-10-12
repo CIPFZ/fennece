@@ -62,12 +62,21 @@ fn build_tray(ctx: &egui::Context, tx: &Sender<ShellEvent>) -> Option<TrayIcon> 
         }
     }));
     let (tx_icon, ctx_icon) = (tx.clone(), ctx.clone());
-    TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
-        if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e {
+    TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| match e {
+        TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } => {
             send(&tx_icon, &ctx_icon, ShellEvent::Toggle);
         }
+        TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } => send(&tx_icon, &ctx_icon, ShellEvent::Show),
+        _ => {}
     }));
-    match TrayIconBuilder::new().with_icon(icon).with_tooltip(t("app-title")).with_menu(Box::new(menu)).build() {
+    // Left click toggles the window; the menu is on the right button only.
+    match TrayIconBuilder::new()
+        .with_icon(icon)
+        .with_tooltip(t("app-title"))
+        .with_menu(Box::new(menu))
+        .with_menu_on_left_click(false)
+        .build()
+    {
         Ok(t) => Some(t),
         Err(e) => {
             tracing::warn!(error = %e, "cannot create tray icon");

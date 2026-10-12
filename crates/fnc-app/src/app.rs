@@ -21,6 +21,7 @@ use fnc_exec::{
     SortSpec,
 };
 use fnc_index::SharedIndex;
+use fnc_platform::instance::Primary;
 use fnc_query::DiagKind;
 use fnc_query::plan::PlanDiag;
 
@@ -42,8 +43,9 @@ pub struct AppDeps {
     pub engine_rx: Receiver<EngineEvent>,
     /// Indexer progress.
     pub index_rx: Receiver<IndexEvent>,
-    /// Command lines forwarded by later launches.
-    pub commands_rx: Option<Receiver<Vec<String>>>,
+    /// Single-instance ownership (mutex + command pipe); kept alive for the process
+    /// lifetime. Forwarded command lines arrive on it.
+    pub instance: Option<Primary>,
     /// Indexer handle (stopped on exit).
     pub indexer: Indexer,
     /// Settings.
@@ -74,7 +76,7 @@ pub struct FennecApp {
     engine: SearchEngine,
     engine_rx: Receiver<EngineEvent>,
     index_rx: Receiver<IndexEvent>,
-    commands_rx: Option<Receiver<Vec<String>>>,
+    instance: Option<Primary>,
     indexer: Indexer,
     settings: Settings,
     settings_path: PathBuf,
@@ -102,6 +104,11 @@ pub struct FennecApp {
     focus_search: bool,
     keep_focus: bool,
     hidden: bool,
+    /// Exiting for real (tray "Exit", `-exit`): skip close-to-tray.
+    quitting: bool,
+    /// Last tray toggle, to debounce double clicks.
+    #[cfg(windows)]
+    last_toggle: Option<Instant>,
     #[cfg(windows)]
     integration: Option<crate::tray::Integration>,
 }
@@ -125,7 +132,7 @@ impl FennecApp {
             engine: deps.engine,
             engine_rx: deps.engine_rx,
             index_rx: deps.index_rx,
-            commands_rx: deps.commands_rx,
+            instance: deps.instance,
             indexer: deps.indexer,
             settings: deps.settings,
             settings_path: deps.settings_path,
@@ -149,13 +156,15 @@ impl FennecApp {
             message: None,
             focus_search: true,
             keep_focus: false,
+            // Start-hidden is applied by `main` via `ViewportBuilder::with_visible(false)`
+            // (no flash of the window).
             hidden: deps.start_hidden,
+            quitting: false,
+            #[cfg(windows)]
+            last_toggle: None,
             #[cfg(windows)]
             integration,
         };
-        if app.hidden {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-        }
         app.send_search();
         app
     }
@@ -205,18 +214,26 @@ impl FennecApp {
             }
         }
         let forwarded: Vec<Vec<String>> =
-            self.commands_rx.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
+            self.instance.as_ref().map(|p| p.commands().try_iter().collect()).unwrap_or_default();
         for args in forwarded {
             let cli = crate::cli::parse(args);
             if cli.exit {
                 self.quit(ctx);
                 return;
             }
+            if !cli.file_lists.is_empty() || !cli.folders.is_empty() {
+                // Index sources are fixed at start-up in M1.
+                tracing::warn!("forwarded -filelist/-folder ignored by the running instance");
+                self.message = Some((t("msg-restart-required"), Instant::now()));
+            }
             if let Some(s) = cli.search {
                 self.query = s;
                 self.send_search();
             }
-            self.show_window(ctx);
+            // A second `-startup` launch (e.g. autostart) must not pop the window up.
+            if !cli.start_hidden {
+                self.show_window(ctx);
+            }
         }
         #[cfg(windows)]
         {
@@ -226,6 +243,11 @@ impl FennecApp {
                 match e {
                     crate::tray::ShellEvent::Show => self.show_window(ctx),
                     crate::tray::ShellEvent::Toggle => {
+                        // The second click of a double click must not undo the first.
+                        if self.last_toggle.is_some_and(|t| t.elapsed() < Duration::from_millis(500)) {
+                            continue;
+                        }
+                        self.last_toggle = Some(Instant::now());
                         if self.hidden {
                             self.show_window(ctx);
                         } else {
@@ -264,11 +286,7 @@ impl FennecApp {
     }
 
     fn quit(&mut self, ctx: &egui::Context) {
-        self.indexer.stop();
-        if let Err(e) = self.settings.save(&self.settings_path) {
-            tracing::warn!(error = %e, "cannot save settings");
-        }
-        self.settings.close_to_tray = false;
+        self.quitting = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
@@ -293,8 +311,13 @@ impl FennecApp {
         match r {
             Ok(()) => {
                 if !reveal {
-                    self.shared.write().record_run(id);
-                    self.engine.refresh();
+                    // The write lock may wait for a running search: never take it on
+                    // the UI thread.
+                    let (shared, engine) = (self.shared.clone(), self.engine.handle());
+                    let _ = std::thread::Builder::new().name("fennec-run-count".into()).spawn(move || {
+                        shared.write().record_run(id);
+                        engine.refresh();
+                    });
                 }
             }
             Err(e) => {
@@ -336,21 +359,20 @@ impl FennecApp {
         let (mut enter, mut ctrl_enter, mut esc, mut f5, mut focus) = (false, false, false, false, false);
         let (mut copy_path, mut copy_name) = (false, false);
         ctx.input_mut(|i| {
-            down = i.consume_key(Modifiers::NONE, Key::ArrowDown);
-            up = i.consume_key(Modifiers::NONE, Key::ArrowUp);
-            pgdn = i.consume_key(Modifiers::NONE, Key::PageDown);
-            pgup = i.consume_key(Modifiers::NONE, Key::PageUp);
-            home = i.consume_key(Modifiers::CTRL, Key::Home);
-            end = i.consume_key(Modifiers::CTRL, Key::End);
-            ctrl_enter = i.consume_key(Modifiers::CTRL, Key::Enter);
-            enter = i.consume_key(Modifiers::NONE, Key::Enter);
-            esc = i.consume_key(Modifiers::NONE, Key::Escape);
-            f5 = i.consume_key(Modifiers::NONE, Key::F5);
-            focus = i.consume_key(Modifiers::CTRL, Key::F)
-                || i.consume_key(Modifiers::NONE, Key::F3)
-                || i.consume_key(Modifiers::ALT, Key::D);
-            copy_path = i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::C);
-            copy_name = i.consume_key(Modifiers::CTRL | Modifiers::ALT, Key::C);
+            let mut take = |m: Modifiers, k: Key| take_key(i, m, k);
+            down = take(Modifiers::NONE, Key::ArrowDown);
+            up = take(Modifiers::NONE, Key::ArrowUp);
+            pgdn = take(Modifiers::NONE, Key::PageDown);
+            pgup = take(Modifiers::NONE, Key::PageUp);
+            home = take(Modifiers::CTRL, Key::Home);
+            end = take(Modifiers::CTRL, Key::End);
+            ctrl_enter = take(Modifiers::CTRL, Key::Enter);
+            enter = take(Modifiers::NONE, Key::Enter);
+            esc = take(Modifiers::NONE, Key::Escape);
+            f5 = take(Modifiers::NONE, Key::F5);
+            focus = take(Modifiers::CTRL, Key::F) || take(Modifiers::NONE, Key::F3) || take(Modifiers::ALT, Key::D);
+            copy_path = take(Modifiers::CTRL | Modifiers::SHIFT, Key::C);
+            copy_name = take(Modifiers::CTRL | Modifiers::ALT, Key::C);
         });
         let page = 20;
         if down {
@@ -647,6 +669,18 @@ enum RowAction {
     Reveal,
 }
 
+/// Consumes a key press whose Ctrl/Shift/Alt state matches `mods` exactly (egui's
+/// `consume_key` ignores extra Shift/Alt, which would swallow e.g. Shift+Up meant for
+/// text selection in the search box).
+fn take_key(i: &mut egui::InputState, mods: Modifiers, key: Key) -> bool {
+    let exact = |m: &Modifiers| m.ctrl == mods.ctrl && m.shift == mods.shift && m.alt == mods.alt;
+    let before = i.events.len();
+    i.events.retain(
+        |e| !matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key && exact(modifiers)),
+    );
+    i.events.len() != before
+}
+
 fn ui_weak_color(row: &Option<Row>) -> bool {
     row.as_ref().is_some_and(|r| r.offline)
 }
@@ -787,7 +821,11 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
 impl eframe::App for FennecApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_channels(ctx);
-        if ctx.input(|i| i.viewport().close_requested()) && self.settings.close_to_tray && self.can_hide_to_tray() {
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.quitting
+            && self.settings.close_to_tray
+            && self.can_hide_to_tray()
+        {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.hide_window(ctx);
         }

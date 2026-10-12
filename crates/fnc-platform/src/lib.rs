@@ -18,4 +18,4 @@ pub mod shell;
 pub mod source;
 pub mod walk;
 
-pub use source::{ChangeSink, EntrySink, MetaSink, RawEntry, SourceError, StopFlag, VolumeSource};
+pub use source::{ChangeSink, EntrySink, MetaSink, MetadataFetcher, RawEntry, SourceError, StopFlag, VolumeSource};

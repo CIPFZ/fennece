@@ -32,3 +32,4 @@ diag-invalid = Invalid value for { $name }: { $value }
 diag-pattern = Invalid pattern: { $message }
 diag-quote = Unclosed quote
 diag-group = Unclosed <
+msg-restart-required = Restart Fennec to change the indexed folders and file lists.

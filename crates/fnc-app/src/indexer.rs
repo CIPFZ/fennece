@@ -265,21 +265,47 @@ fn run(
     let emit = Arc::new(emit);
     let total_meta = needs_meta.len();
     let done_meta = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // Reports "ready" once the last volume's back-fill finished.
+    let meta_finished = {
+        let (shared, emit, done_meta) = (shared.clone(), emit.clone(), done_meta.clone());
+        Arc::new(move || {
+            let finished = done_meta.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if finished == total_meta {
+                let entries = shared.snapshot().live_count();
+                emit.status(IndexStatus::Ready { entries, seconds: t0.elapsed().as_secs_f64() });
+            }
+        })
+    };
     for (vol, mut src) in volumes {
         let shared = shared.clone();
         let stop = stop.clone();
         let emit = emit.clone();
         let refresher = refresher.clone();
-        let done_meta = done_meta.clone();
         let wants_meta = needs_meta.contains(&vol);
+        // Back-fill concurrently with journal monitoring when the source allows it, so
+        // the journal is read from the start (no risk of it wrapping during a long
+        // back-fill).
+        // SPEC-GAP: a folder listed by the back-fill after a USN-triggered refresh of one
+        // of its files can overwrite that refresh with slightly older size/dates until
+        // the file changes again; M2 tags metadata with the index generation.
+        let fetcher = if wants_meta { src.metadata_fetcher() } else { None };
+        let inline_meta = wants_meta && fetcher.is_none();
+        if let Some(fetcher) = fetcher {
+            let (shared, stop, emit, refresher, done) =
+                (shared.clone(), stop.clone(), emit.clone(), refresher.clone(), meta_finished.clone());
+            let r = std::thread::Builder::new().name(format!("fennec-meta-{}", vol.0)).spawn(move || {
+                fill_metadata(&|d, o, s| fetcher.fetch(d, o, s), vol, &shared, &stop, &emit, &refresher);
+                done();
+            });
+            if let Err(e) = r {
+                tracing::error!(error = %e, "cannot start metadata thread");
+            }
+        }
+        let done = meta_finished.clone();
         let r = std::thread::Builder::new().name(format!("fennec-volume-{}", vol.0)).spawn(move || {
-            if wants_meta {
-                fill_metadata(&*src, vol, &shared, &stop, &emit, &refresher);
-                let finished = done_meta.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                if finished == total_meta {
-                    let entries = shared.snapshot().live_count();
-                    emit.status(IndexStatus::Ready { entries, seconds: t0.elapsed().as_secs_f64() });
-                }
+            if inline_meta {
+                fill_metadata(&|d, o, s| src.fetch_metadata(d, o, s), vol, &shared, &stop, &emit, &refresher);
+                done();
             }
             let name = src.info().display_name;
             let mut sink = WatchSink { shared: shared.clone(), refresher, vol };
@@ -375,8 +401,12 @@ impl MetaSink for MetaCollector {
     }
 }
 
+/// Folder lister used by the back-fill (`VolumeSource::fetch_metadata` or a detached
+/// `MetadataFetcher`).
+type FetchFn<'a> = &'a dyn Fn(&[(EntryId, String)], &mut dyn MetaSink, &StopFlag) -> Result<(), SourceError>;
+
 fn fill_metadata(
-    src: &dyn VolumeSource,
+    fetch: FetchFn<'_>,
     vol: VolumeId,
     shared: &SharedIndex,
     stop: &StopFlag,
@@ -414,7 +444,7 @@ fn fill_metadata(
                 }
             }
         }
-        if src.fetch_metadata(chunk, &mut collector, stop).is_err() {
+        if fetch(chunk, &mut collector, stop).is_err() {
             return;
         }
         let mut batch = std::mem::take(&mut collector.out);

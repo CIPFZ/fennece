@@ -39,13 +39,32 @@ fn pipe_name(instance: &str) -> String {
     if instance.is_empty() { "Fennec..cmd".to_string() } else { format!("Fennec.{instance}.cmd") }
 }
 
-fn send(name: &str, args: &[String]) -> io::Result<()> {
+fn send_once(name: &str, args: &[String]) -> io::Result<()> {
     let ns = name.to_ns_name::<GenericNamespaced>()?;
     let mut conn = Stream::connect(ns)?;
     let mut line = serde_json::to_string(args).map_err(io::Error::other)?;
     line.push('\n');
     conn.write_all(line.as_bytes())?;
     conn.flush()
+}
+
+/// Forwards `args`, retrying for ~2 s: the primary may hold the mutex but not be
+/// listening yet (it is still starting up).
+fn send(name: &str, args: &[String]) -> io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match send_once(name, args) {
+            Ok(()) => return Ok(()),
+            Err(e) if std::time::Instant::now() >= deadline => return Err(e),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
+}
+
+/// `true` if creating the listener failed because another process owns the name.
+/// Windows reports an existing first-instance pipe as access denied.
+fn name_in_use(e: &io::Error) -> bool {
+    matches!(e.kind(), io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied)
 }
 
 fn serve(listener: interprocess::local_socket::Listener, tx: Sender<Vec<String>>, notify: Box<dyn Fn() + Send>) {
@@ -65,6 +84,7 @@ fn serve(listener: interprocess::local_socket::Listener, tx: Sender<Vec<String>>
 
 /// Becomes primary for `instance` or forwards `args` to the running primary.
 /// `notify` is called (from a background thread) whenever a command arrives.
+/// The returned [`Primary`] must be kept alive for the whole process lifetime.
 pub fn acquire(instance: &str, args: &[String], notify: Box<dyn Fn() + Send>) -> io::Result<Instance> {
     let name = pipe_name(instance);
     #[cfg(windows)]
@@ -78,7 +98,7 @@ pub fn acquire(instance: &str, args: &[String], notify: Box<dyn Fn() + Send>) ->
     let ns = name.as_str().to_ns_name::<GenericNamespaced>()?;
     let listener = match ListenerOptions::new().name(ns).create_sync() {
         Ok(l) => l,
-        Err(e) if e.kind() == io::ErrorKind::AddrInUse => {
+        Err(e) if name_in_use(&e) => {
             send(&name, args)?;
             return Ok(Instance::Secondary);
         }

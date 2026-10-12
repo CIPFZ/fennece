@@ -29,3 +29,4 @@ diag-invalid = { $name } 的值无效：{ $value }
 diag-pattern = 无效的模式：{ $message }
 diag-quote = 引号未闭合
 diag-group = < 未闭合
+msg-restart-required = 更改索引的文件夹与文件列表需要重新启动 Fennec。

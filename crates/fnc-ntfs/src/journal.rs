@@ -21,7 +21,6 @@ use crate::record::{UsnRecord, reason};
 enum Slot {
     Upsert { parent: u64, name: Vec<u16>, attributes: u32, created: bool },
     Delete,
-    Attributes(u32),
     Removed,
 }
 
@@ -69,41 +68,34 @@ pub fn fold_records<'a>(volume: VolumeId, records: impl IntoIterator<Item = UsnR
         if r.reason & reason::RENAME_OLD_NAME != 0 && r.reason & (reason::RENAME_NEW_NAME | reason::FILE_CREATE) == 0 {
             continue;
         }
-        if r.reason & (reason::RENAME_NEW_NAME | reason::FILE_CREATE) != 0 {
-            r.name_into(&mut name);
-            let created = r.reason & reason::FILE_CREATE != 0;
-            match existing.map(|i| &mut slots[i].1) {
-                Some(Slot::Upsert { parent, name: n, attributes, created: c }) => {
-                    *parent = r.parent_frn;
-                    n.clone_from(&name);
-                    *attributes = r.attributes;
-                    *c |= created;
-                }
-                Some(slot @ (Slot::Attributes(_) | Slot::Delete)) => {
-                    *slot =
-                        Slot::Upsert { parent: r.parent_frn, name: name.clone(), attributes: r.attributes, created };
-                }
-                Some(Slot::Removed) | None => {
-                    by_frn.insert(frn, slots.len());
-                    slots.push((
-                        frn,
-                        Slot::Upsert { parent: r.parent_frn, name: name.clone(), attributes: r.attributes, created },
-                    ));
-                }
+        // Every other record carries the entry's current name and parent, so it becomes
+        // an upsert: entries the index missed (e.g. modified while the MFT was being
+        // enumerated) heal themselves, and known entries just get their attributes.
+        let structural = r.reason & (reason::RENAME_NEW_NAME | reason::FILE_CREATE) != 0;
+        let created = r.reason & reason::FILE_CREATE != 0;
+        r.name_into(&mut name);
+        match existing.map(|i| &mut slots[i].1) {
+            Some(Slot::Upsert { parent, name: n, attributes, created: c }) => {
+                *parent = r.parent_frn;
+                n.clone_from(&name);
+                *attributes = r.attributes;
+                *c |= created;
             }
-            if created && refresh_set.insert(frn, ()).is_none() {
-                refresh.push(frn);
+            // Only a create/rename revives an FRN deleted earlier in the batch.
+            Some(Slot::Delete) if !structural => {}
+            Some(slot @ Slot::Delete) => {
+                *slot = Slot::Upsert { parent: r.parent_frn, name: name.clone(), attributes: r.attributes, created };
             }
-        } else {
-            match existing.map(|i| &mut slots[i].1) {
-                Some(Slot::Upsert { attributes, .. }) => *attributes = r.attributes,
-                Some(Slot::Attributes(a)) => *a = r.attributes,
-                Some(Slot::Delete | Slot::Removed) => {}
-                None => {
-                    by_frn.insert(frn, slots.len());
-                    slots.push((frn, Slot::Attributes(r.attributes)));
-                }
+            Some(Slot::Removed) | None => {
+                by_frn.insert(frn, slots.len());
+                slots.push((
+                    frn,
+                    Slot::Upsert { parent: r.parent_frn, name: name.clone(), attributes: r.attributes, created },
+                ));
             }
+        }
+        if created && refresh_set.insert(frn, ()).is_none() {
+            refresh.push(frn);
         }
         if r.reason & reason::CLOSE != 0 && r.reason & reason::METADATA != 0 && refresh_set.insert(frn, ()).is_none() {
             refresh.push(frn);
@@ -120,7 +112,6 @@ pub fn fold_records<'a>(volume: VolumeId, records: impl IntoIterator<Item = UsnR
                 meta: Meta::attrs(attributes),
             }),
             Slot::Delete => Some(Change::Delete(EntryRef::Frn(volume, frn))),
-            Slot::Attributes(a) => Some(Change::Meta { target: EntryRef::Frn(volume, frn), meta: Meta::attrs(a) }),
             Slot::Removed => None,
         })
         .collect();
@@ -192,7 +183,8 @@ mod tests {
     fn modify_requests_refresh_only_on_close_and_delete_wins() {
         let f = fold(&[encode_v2(40, 5, 1, reason::DATA_EXTEND, 0x20, "log.txt")]);
         assert!(f.refresh.is_empty());
-        assert!(matches!(f.changes[0], Change::Meta { .. }));
+        // A modification is an upsert (heals entries the index missed).
+        assert_eq!(name(&f.changes[0]), "log.txt");
         let f = fold(&[encode_v2(40, 5, 1, reason::DATA_EXTEND | reason::CLOSE, 0x20, "log.txt")]);
         assert_eq!(f.refresh, vec![40]);
         let f = fold(&[
@@ -232,6 +224,22 @@ mod tests {
             encode_v2(50, 5, 3, reason::RENAME_NEW_NAME, 0x10, "dir2"),
         ]);
         assert_eq!(f.changes.iter().map(name).collect::<Vec<_>>(), vec!["dir2", "child"]);
+    }
+
+    #[test]
+    fn modification_of_unknown_entry_heals_the_index() {
+        // The entry was written while the MFT was enumerated and missed; its later
+        // DATA_EXTEND record carries name + parent, so it is inserted.
+        let mut s = fnc_index::IndexStore::default();
+        let vol = s.add_volume(fnc_index::VolumeInfo::new(fnc_index::VolumeKind::Ntfs, "C:\\"), Some(5)).unwrap();
+        let f = fold(&[encode_v2(70, 5, 1, reason::DATA_EXTEND | reason::CLOSE, 0x20, "missed.log")]);
+        let st = s.apply(f.changes);
+        assert_eq!(st.created, 1);
+        assert!(s.resolve(EntryRef::Frn(vol, 70)).is_some());
+        // Applying the same modification again is idempotent.
+        let f = fold(&[encode_v2(70, 5, 2, reason::DATA_EXTEND | reason::CLOSE, 0x20, "missed.log")]);
+        let st = s.apply(f.changes);
+        assert_eq!((st.created, s.live_count()), (0, 2));
     }
 
     #[test]

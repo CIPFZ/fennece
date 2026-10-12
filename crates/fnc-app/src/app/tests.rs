@@ -38,7 +38,7 @@ fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedIndex) -> AppDe
         engine,
         engine_rx,
         index_rx,
-        commands_rx: None,
+        instance: None,
         indexer,
         settings: Settings { show_tray_icon: false, hotkey_show_window: String::new(), ..Settings::default() },
         settings_path: dir.join("settings.toml"),
@@ -75,6 +75,10 @@ fn typing_searches_and_keyboard_navigates() {
     h.step();
     assert_eq!(h.state().selected, Some(0));
     h.key_press(egui::Key::ArrowDown);
+    h.step();
+    assert_eq!(h.state().selected, Some(1));
+    // Shift+Down belongs to the text box (selection), not to the result list.
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowDown);
     h.step();
     assert_eq!(h.state().selected, Some(1));
 

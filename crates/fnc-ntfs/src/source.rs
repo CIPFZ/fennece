@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use fnc_core::{EntryId, VolumeId};
 use fnc_index::{Change, ChangeBatch, EntryRef, VolumeInfo, VolumeKind};
-use fnc_platform::{ChangeSink, EntrySink, MetaSink, RawEntry, SourceError, StopFlag, VolumeSource};
+use fnc_platform::{ChangeSink, EntrySink, MetaSink, MetadataFetcher, RawEntry, SourceError, StopFlag, VolumeSource};
 
 use crate::journal::fold_records;
 use crate::record::records;
@@ -34,12 +34,12 @@ impl Default for NtfsOptions {
     }
 }
 
-/// Lists local NTFS and ReFS volumes (fixed and removable drives).
+/// Lists local NTFS and ReFS volumes on fixed drives.
+// SPEC-GAP: removable NTFS drives are skipped until device-arrival/removal handling
+// (WM_DEVICECHANGE, DBT_DEVICEQUERYREMOVE) lands in M2; holding their volume handle
+// would block safe removal.
 pub fn list_volumes() -> Vec<DriveInfo> {
-    win::drives()
-        .into_iter()
-        .filter(|d| matches!(d.fs_name.as_str(), "NTFS" | "ReFS") && matches!(d.drive_type, 2 | 3))
-        .collect()
+    win::drives().into_iter().filter(|d| matches!(d.fs_name.as_str(), "NTFS" | "ReFS") && d.drive_type == 3).collect()
 }
 
 /// One NTFS/ReFS volume opened for indexing.
@@ -118,7 +118,9 @@ impl VolumeSource for NtfsSource {
         let mut failed: Option<SourceError> = None;
         let mut done = 0u64;
         let t0 = Instant::now();
-        win::enum_mft(&self.handle, self.journal.next_usn, |r| {
+        // HighUsn = MAX: records modified while enumerating are included (not skipped);
+        // replaying the journal from the position captured in `open` is idempotent.
+        win::enum_mft(&self.handle, i64::MAX, |r| {
             if stop.is_stopped() {
                 failed = Some(SourceError::Stopped);
                 return false;
@@ -163,9 +165,11 @@ impl VolumeSource for NtfsSource {
             };
             if len == 0 {
                 sink.idle();
-                // Guard against a non-blocking read returning immediately.
+                // The read normally blocks until a record arrives (event-driven). If it
+                // ever returns immediately without data, fall back to polling at the
+                // configured interval instead of spinning.
                 if t.elapsed() < Duration::from_millis(50) {
-                    std::thread::sleep(self.opts.poll_interval.min(Duration::from_millis(250)));
+                    std::thread::sleep(self.opts.poll_interval);
                 }
                 next = new_next.max(next);
                 continue;
@@ -198,6 +202,28 @@ impl VolumeSource for NtfsSource {
         out: &mut dyn MetaSink,
         stop: &StopFlag,
     ) -> Result<(), SourceError> {
+        DirLister.fetch(dirs, out, stop)
+    }
+
+    fn metadata_fetcher(&self) -> Option<Box<dyn MetadataFetcher>> {
+        Some(Box::new(DirLister))
+    }
+
+    fn enumerates_metadata(&self) -> bool {
+        false
+    }
+
+    fn journal_position(&self) -> Option<(u64, i64)> {
+        Some((self.journal.id, self.resume_usn))
+    }
+}
+
+/// Size/date back-fill by listing folders (`FindFirstFileExW`); needs no volume handle,
+/// so it runs concurrently with journal monitoring.
+struct DirLister;
+
+impl MetadataFetcher for DirLister {
+    fn fetch(&self, dirs: &[(EntryId, String)], out: &mut dyn MetaSink, stop: &StopFlag) -> Result<(), SourceError> {
         for (id, path) in dirs {
             if stop.is_stopped() {
                 return Err(SourceError::Stopped);
@@ -207,13 +233,5 @@ impl VolumeSource for NtfsSource {
             }
         }
         Ok(())
-    }
-
-    fn enumerates_metadata(&self) -> bool {
-        false
-    }
-
-    fn journal_position(&self) -> Option<(u64, i64)> {
-        Some((self.journal.id, self.resume_usn))
     }
 }
