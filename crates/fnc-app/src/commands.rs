@@ -212,6 +212,8 @@ commands! {
     ThemeDark = "theme-dark",
     /// Follow the OS theme.
     ThemeSystem = "theme-system",
+    /// High-contrast theme.
+    ThemeHighContrast = "theme-high-contrast",
     /// Zoom in.
     ZoomIn = "zoom-in",
     /// Zoom out.

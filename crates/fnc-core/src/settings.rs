@@ -196,6 +196,8 @@ choice_setting!(
         Light => "light",
         /// Dark.
         Dark => "dark",
+        /// High contrast (accessibility, SPEC ch.3 §14).
+        HighContrast => "high-contrast",
     }
 );
 

@@ -140,3 +140,16 @@ fn sidebar_folder_click_toolbar_and_back_forward() {
     h.run();
     assert!(h.query_by_label("◀").is_some() && h.query_by_label("⟳").is_some());
 }
+
+#[test]
+fn high_contrast_theme() {
+    let mut h = harness(deps_for(None, SharedIndex::default()));
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Command::ThemeHighContrast);
+    h.run();
+    assert_eq!(h.ctx.theme(), egui::Theme::Dark);
+    assert_eq!(h.ctx.style().visuals.panel_fill, egui::Color32::BLACK);
+    h.state_mut().run(&ctx, Command::ThemeDark);
+    h.run();
+    assert_ne!(h.ctx.style().visuals.panel_fill, egui::Color32::BLACK, "plain dark restored");
+}

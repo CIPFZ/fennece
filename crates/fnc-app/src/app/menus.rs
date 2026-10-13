@@ -161,6 +161,7 @@ impl FennecApp {
                     self.check(ui, K::ThemeSystem, self.settings.theme == Theme::System, &mut out);
                     self.check(ui, K::ThemeLight, self.settings.theme == Theme::Light, &mut out);
                     self.check(ui, K::ThemeDark, self.settings.theme == Theme::Dark, &mut out);
+                    self.check(ui, K::ThemeHighContrast, self.settings.theme == Theme::HighContrast, &mut out);
                 });
                 ui.menu_button(t("menu-zoom"), |ui| {
                     for c in [K::ZoomIn, K::ZoomOut, K::ZoomReset] {

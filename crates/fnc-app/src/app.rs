@@ -1036,10 +1036,11 @@ impl FennecApp {
                     self.v.scroll_to = Some(i);
                 }
             }
-            K::ThemeLight | K::ThemeDark | K::ThemeSystem => {
+            K::ThemeLight | K::ThemeDark | K::ThemeSystem | K::ThemeHighContrast => {
                 self.settings.theme = match cmd {
                     K::ThemeLight => Theme::Light,
                     K::ThemeDark => Theme::Dark,
+                    K::ThemeHighContrast => Theme::HighContrast,
                     _ => Theme::System,
                 };
                 apply_theme(ctx, self.settings.theme);
@@ -1959,11 +1960,50 @@ fn diagnostics_text(o: &SearchOutcome) -> Vec<String> {
 }
 
 fn apply_theme(ctx: &egui::Context, theme: Theme) {
+    // Reset the dark palette first (it may hold the high-contrast one).
+    ctx.set_visuals_of(egui::Theme::Dark, egui::Visuals::dark());
     ctx.set_theme(match theme {
         Theme::System => egui::ThemePreference::System,
         Theme::Light => egui::ThemePreference::Light,
-        Theme::Dark => egui::ThemePreference::Dark,
+        Theme::Dark | Theme::HighContrast => egui::ThemePreference::Dark,
     });
+    if theme == Theme::HighContrast {
+        ctx.set_visuals_of(egui::Theme::Dark, high_contrast_visuals());
+    }
+}
+
+/// Black background, white text, yellow selection, thick outlines.
+fn high_contrast_visuals() -> egui::Visuals {
+    use egui::{Color32, Stroke};
+    let mut v = egui::Visuals::dark();
+    let (fg, sel) = (Color32::WHITE, Color32::from_rgb(255, 255, 0));
+    v.override_text_color = Some(fg);
+    v.panel_fill = Color32::BLACK;
+    v.window_fill = Color32::BLACK;
+    v.extreme_bg_color = Color32::BLACK;
+    v.faint_bg_color = Color32::from_gray(24);
+    v.hyperlink_color = Color32::from_rgb(0, 255, 255);
+    v.warn_fg_color = sel;
+    v.error_fg_color = Color32::from_rgb(255, 96, 96);
+    v.selection.bg_fill = sel;
+    v.selection.stroke = Stroke::new(2.0, Color32::BLACK);
+    v.window_stroke = Stroke::new(2.0, fg);
+    for w in [
+        &mut v.widgets.noninteractive,
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+    ] {
+        w.fg_stroke = Stroke::new(1.5, fg);
+        w.bg_stroke = Stroke::new(1.5, fg);
+        w.bg_fill = Color32::BLACK;
+        w.weak_bg_fill = Color32::BLACK;
+    }
+    v.widgets.hovered.bg_fill = Color32::from_gray(40);
+    v.widgets.hovered.weak_bg_fill = Color32::from_gray(40);
+    v.widgets.active.bg_fill = Color32::from_rgb(0, 0, 160);
+    v
 }
 
 impl FennecApp {

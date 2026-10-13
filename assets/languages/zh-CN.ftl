@@ -446,3 +446,4 @@ cmd-toggle-toolbar = 工具栏
 sidebar-folders = 文件夹
 sidebar-bookmarks = 书签
 sidebar-no-bookmarks = 还没有书签（书签 → 添加到书签）。
+cmd-theme-high-contrast = 高对比度
