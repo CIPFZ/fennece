@@ -891,7 +891,7 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | `semantic:` / `sem:` | 无 | 新增（见第 5 章）| 语义搜索 |
 | 名称排序的非数字部分 | `CompareStringEx`（区域排序规则，如 zh-CN 拼音序）| 设置 `name_collation`：`auto`（默认；中文界面按拼音，否则按码点）/ `pinyin` / `codepoint`；拼音序下汉字按首个读音（不带声调）再按码点比较，拉丁字母与数字排在汉字前，数字按数值；排序名次列记录所用规则，规则变化时重建 | 只实现拼音，不依赖 OS 区域 |
 | `%VAR%` 展开结果 | 展开后再解析（运算符生效）| 展开结果视为字面文本 | 防止环境变量内容意外改变查询结构 |
-| 日期字段顺序 / 每周首日 | 跟随系统区域 | 默认 月/日/年、周一（设置可改）| 区域查询待 M2 接入 `GetLocaleInfoEx` |
+| 日期字段顺序 / 每周首日 | 跟随系统区域 | 设置 `date_input_order`、`week_start` 默认 `auto`：Windows 取 `GetLocaleInfoEx(LOCALE_SSHORTDATE / LOCALE_IFIRSTDAYOFWEEK)`，其他平台按 `LC_TIME`/`LANG` 推断；可改为固定值 | — |
 | `ext:` 与文件夹 | — | 文件夹无扩展名，`ext:` 永不匹配文件夹 | 与资源管理器"类型"一致 |
 | `junction:` / `symlink:` | 依据重解析标记 | 文件夹重解析点视为 junction、文件视为 symlink | 重解析标记未入索引（M3 属性索引补齐）|
 | NTFS 硬链接 | 每个文件名一个条目 | 每个名称一个条目：MFT 枚举得到一个名称，其余名称由大小/日期补齐阶段的目录列举（带文件 ID）补全；删除多链接文件的单个名称暂不检测（该别名保留到文件删除/重建）| `FSCTL_ENUM_USN_DATA` 每个文件只返回一个名称（ADR-010）|

@@ -188,6 +188,34 @@ macro_rules! choice_setting {
 }
 
 choice_setting!(
+    /// Order of numbers in dates typed into searches (`dm:3/4/2026`).
+    DateInputOrder {
+        /// From the system's short date format.
+        Auto => "auto",
+        /// Month/day/year.
+        Mdy => "mdy",
+        /// Day/month/year.
+        Dmy => "dmy",
+        /// Year/month/day.
+        Ymd => "ymd",
+    }
+);
+
+choice_setting!(
+    /// First day of the week for `thisweek`, `lastweek`, ….
+    WeekStart {
+        /// From the system settings.
+        Auto => "auto",
+        /// Monday.
+        Monday => "monday",
+        /// Sunday.
+        Sunday => "sunday",
+        /// Saturday.
+        Saturday => "saturday",
+    }
+);
+
+choice_setting!(
     /// Order of names that are not digits.
     NameCollation {
         /// Pinyin for a Chinese user interface, else code point.
@@ -389,6 +417,12 @@ pub struct Settings {
     /// Sort keys: `column-ascending|descending;...` (up to three).
     #[setting(key = "sort", default = "name-ascending", page = "view")]
     pub sort: String,
+    /// Order of numbers in typed dates (`auto` = the system short date format).
+    #[setting(key = "date_input_order", default = DateInputOrder::Auto, page = "search")]
+    pub date_input_order: DateInputOrder,
+    /// First day of the week for date keywords (`auto` = the system setting).
+    #[setting(key = "week_start", default = WeekStart::Auto, page = "search")]
+    pub week_start: WeekStart,
     /// Name order: `auto` (pinyin for a Chinese interface), `codepoint`, `pinyin`.
     #[setting(key = "name_collation", default = NameCollation::Auto, page = "results")]
     pub name_collation: NameCollation,

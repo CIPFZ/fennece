@@ -29,13 +29,35 @@ pub struct DateEnv {
     pub week_start: Weekday,
 }
 
+/// Process-wide defaults for [`DateEnv::now`] (the app sets them from the OS locale or
+/// the settings): `order` 0 = M/D/Y, 1 = D/M/Y, 2 = Y/M/D; `week` 0 = Monday … 6 = Sunday.
+static ORDER: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static WEEK_START: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Sets the date field order and first day of the week used by [`DateEnv::now`].
+pub fn set_locale_defaults(order: DateOrder, week_start: Weekday) {
+    let o = match order {
+        DateOrder::Mdy => 0,
+        DateOrder::Dmy => 1,
+        DateOrder::Ymd => 2,
+    };
+    ORDER.store(o, std::sync::atomic::Ordering::Relaxed);
+    WEEK_START.store(week_start.num_days_from_monday() as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
 impl DateEnv {
-    /// Current time with defaults.
-    // SPEC-GAP: date order and week start should come from the OS locale
-    // (`GetLocaleInfoEx`); Fennec defaults to month/day/year and Monday.
+    /// Current time with the locale defaults ([`set_locale_defaults`]; M/D/Y and Monday
+    /// unless set).
     pub fn now() -> Self {
         let now = FileTime::now().to_local().unwrap_or_default();
-        Self { now, order: DateOrder::Mdy, week_start: Weekday::Mon }
+        let order = match ORDER.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => DateOrder::Dmy,
+            2 => DateOrder::Ymd,
+            _ => DateOrder::Mdy,
+        };
+        let w = WEEK_START.load(std::sync::atomic::Ordering::Relaxed);
+        let week_start = Weekday::try_from(w).unwrap_or(Weekday::Mon);
+        Self { now, order, week_start }
     }
 }
 

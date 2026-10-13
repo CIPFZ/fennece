@@ -99,6 +99,7 @@ fn run() -> anyhow::Result<()> {
     }
     i18n::init(&settings.language);
     i18n::apply_collation(settings.name_collation);
+    i18n::apply_date_locale(settings.date_input_order, settings.week_start);
 
     if let Some(action) = cli.service {
         return service_command(action, &cli.instance);

@@ -1882,6 +1882,9 @@ impl FennecApp {
             crate::columns::set_custom_columns(&s.custom_columns);
             self.v.rows.clear();
         }
+        if old.date_input_order != s.date_input_order || old.week_start != s.week_start {
+            crate::i18n::apply_date_locale(s.date_input_order, s.week_start);
+        }
         if old.name_collation != s.name_collation {
             crate::i18n::apply_collation(s.name_collation);
             // Ranks were built with the old order: rebuild them off the UI thread.

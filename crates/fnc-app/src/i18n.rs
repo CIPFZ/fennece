@@ -87,6 +87,32 @@ pub fn apply_collation(c: fnc_core::settings::NameCollation) {
     set_collation(if pinyin { Collation::Pinyin } else { Collation::CodePoint });
 }
 
+/// Applies the date field order and first day of the week used when parsing searches.
+pub fn apply_date_locale(order: fnc_core::settings::DateInputOrder, week: fnc_core::settings::WeekStart) {
+    use fnc_core::settings::{DateInputOrder as O, WeekStart as W};
+    use fnc_platform::locale::DateFieldOrder as F;
+    use fnc_query::date::DateOrder;
+    let order = match order {
+        O::Mdy => DateOrder::Mdy,
+        O::Dmy => DateOrder::Dmy,
+        O::Ymd => DateOrder::Ymd,
+        O::Auto => match fnc_platform::locale::date_order() {
+            Some(F::Dmy) => DateOrder::Dmy,
+            Some(F::Ymd) => DateOrder::Ymd,
+            _ => DateOrder::Mdy,
+        },
+    };
+    let week = match week {
+        W::Monday => chrono::Weekday::Mon,
+        W::Sunday => chrono::Weekday::Sun,
+        W::Saturday => chrono::Weekday::Sat,
+        W::Auto => fnc_platform::locale::first_day_of_week()
+            .and_then(|d| chrono::Weekday::try_from(d).ok())
+            .unwrap_or(chrono::Weekday::Mon),
+    };
+    fnc_query::date::set_locale_defaults(order, week);
+}
+
 /// Tag of the active language (`en` before [`init`]).
 pub fn active_language() -> &'static str {
     I18N.get().map_or("en", |i| i.tag)
