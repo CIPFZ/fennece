@@ -71,6 +71,11 @@ fn find_bar_jumps_without_changing_results() {
     deps.settings.findbar_ctrl_f = true;
     let mut h = harness(deps);
     wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.v.results.len() >= 3);
+    // Let late refreshes settle (a new result set re-maps the cursor).
+    for _ in 0..20 {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let ctx = h.ctx.clone();
     let n = h.state().v.results.len();
     h.state_mut().v.focus = Focus::Results;
@@ -78,25 +83,25 @@ fn find_bar_jumps_without_changing_results() {
     h.run();
     assert!(h.state().v.find.open);
     assert!(h.query_by_label("Find:").is_some());
+    // Names of the selected row (ids are stable across result sets, row indices are not).
+    let sel = |a: &FennecApp| a.v.selected_id.map(|id| a.shared.snapshot().name_string(id).to_lowercase());
     h.state_mut().v.find.text = "img_000".into();
     assert!(h.state_mut().find_step(true));
-    let first = h.state().v.selected.unwrap();
-    let name = |a: &FennecApp, i: usize| a.shared.snapshot().name_string(a.v.results.ids[i]);
-    assert!(name(h.state(), first).to_lowercase().starts_with("img_000"));
+    let first = sel(h.state()).unwrap();
+    assert!(first.starts_with("img_000"), "{first}");
     h.state_mut().run(&ctx, Command::FindNext);
-    let second = h.state().v.selected.unwrap();
-    assert_ne!(first, second);
-    assert!(name(h.state(), second).to_lowercase().starts_with("img_000"));
+    let second = sel(h.state()).unwrap();
+    assert!(second.starts_with("img_000") && second != first, "{second}");
     // Wraps around; the result set is unchanged.
     h.state_mut().run(&ctx, Command::FindNext);
-    assert_eq!(h.state().v.selected, Some(first));
+    assert_eq!(sel(h.state()).as_deref(), Some(first.as_str()));
     h.state_mut().run(&ctx, Command::FindPrevious);
-    assert_eq!(h.state().v.selected, Some(second));
+    assert_eq!(sel(h.state()).as_deref(), Some(second.as_str()));
     assert_eq!(h.state().v.results.len(), n);
-    // Case-sensitive: no match.
+    // Case-sensitive: no match, the selection stays.
     h.state_mut().v.find.case = true;
     h.state_mut().run(&ctx, Command::FindNext);
-    assert_eq!(h.state().v.selected, Some(second));
+    assert_eq!(sel(h.state()).as_deref(), Some(second.as_str()));
 }
 
 #[test]
