@@ -16,6 +16,7 @@ mod i18n;
 mod icon;
 mod indexer;
 mod journal;
+mod thumbs;
 #[cfg(windows)]
 mod tray;
 

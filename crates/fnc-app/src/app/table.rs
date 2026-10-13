@@ -1,6 +1,7 @@
 //! The result table (SPEC ch.3 §4): configurable columns, multi-level sorting from
 //! the header, multi-selection, in-place rename, context menu and dragging files out.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use egui_extras::{Column, TableBuilder};
@@ -168,7 +169,16 @@ impl FennecApp {
                 h.path_ranges(&cells[i], &mut path_hl);
             }
         }
-        let row = Row { cells, is_dir, offline: s.flags(id).contains(EntryFlags::OFFLINE), name_hl, path_hl };
+        let mut full = String::new();
+        s.full_path(id, &mut full);
+        let row = Row {
+            cells,
+            path: PathBuf::from(full),
+            is_dir,
+            offline: s.flags(id).contains(EntryFlags::OFFLINE),
+            name_hl,
+            path_hl,
+        };
         if self.rows.len() > 4096 {
             self.rows.clear();
         }
@@ -264,8 +274,22 @@ impl FennecApp {
                                             rename_done = Some(ui.input(|i| !i.key_pressed(egui::Key::Escape)));
                                         }
                                     } else {
-                                        let icon = if r.is_dir { "🗀 " } else { "🗋 " };
-                                        ui.label(highlighted(ui, icon, text, &r.name_hl, weak));
+                                        let px = (16.0 * ui.ctx().pixels_per_point()).round() as u32;
+                                        let tex = self.settings.show_icons.then(|| {
+                                            self.thumbs.get(crate::thumbs::icon_key(&r.path, r.is_dir, px), &r.path)
+                                        });
+                                        match tex.flatten() {
+                                            Some(tex) => {
+                                                ui.add(
+                                                    egui::Image::new(&tex).fit_to_exact_size(egui::vec2(16.0, 16.0)),
+                                                );
+                                                ui.label(highlighted(ui, "", text, &r.name_hl, weak));
+                                            }
+                                            None => {
+                                                let icon = if r.is_dir { "🗀 " } else { "🗋 " };
+                                                ui.label(highlighted(ui, icon, text, &r.name_hl, weak));
+                                            }
+                                        }
                                     }
                                 }
                                 ColumnId::Path | ColumnId::FullPath => {

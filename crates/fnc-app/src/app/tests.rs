@@ -292,3 +292,53 @@ fn window_rect_setting() {
     assert_eq!(super::parse_window_rect("-30000,0,1000,600"), None, "off screen");
     assert_eq!(super::parse_window_rect("0,0,10,10"), None, "too small");
 }
+
+/// Preview panel shows text files; thumbnail view lays results out in a grid.
+#[test]
+fn preview_text_and_thumbnail_grid() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "quarterly plan line one\nline two").unwrap();
+    std::fs::write(dir.path().join("pic.png"), b"\x89PNG broken").unwrap();
+    let shared = SharedIndex::default();
+    let mut deps = deps_for(None, shared.clone());
+    {
+        let mut store = fnc_index::IndexStore::default();
+        let mut src = fnc_platform::walk::FolderSource::new(dir.path());
+        let vol = store.add_volume(fnc_platform::VolumeSource::info(&src), Some(1)).unwrap();
+        struct Sink<'a>(fnc_index::BulkLoader<'a>);
+        impl fnc_platform::EntrySink for Sink<'_> {
+            fn entry(&mut self, e: &fnc_platform::RawEntry<'_>) -> Result<(), fnc_platform::SourceError> {
+                self.0
+                    .push(e.frn, e.parent_frn, e.name, &e.meta)
+                    .map(|_| ())
+                    .map_err(|e| fnc_platform::SourceError::io("push", std::io::Error::other(e)))
+            }
+        }
+        let mut sink = Sink(store.bulk_load(vol));
+        fnc_platform::VolumeSource::enumerate(&mut src, &mut sink, &fnc_platform::StopFlag::new()).unwrap();
+        sink.0.finish().unwrap();
+        store.rebuild_name_order();
+        shared.replace(store);
+    }
+    deps.settings.show_preview = true;
+    let mut h = harness(deps);
+    h.get_by_role(Role::TextInput).type_text("notes");
+    wait_until(&mut h, "notes", |a| a.results.len() == 1 && a.sent_query.as_deref() == Some("notes"));
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Command::MoveDown);
+    let t = Instant::now();
+    while h.query_by_label_contains("quarterly plan line one").is_none() {
+        assert!(t.elapsed() < Duration::from_secs(10), "text preview never appeared");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Grid view with a broken picture: the item still shows (placeholder), no panic.
+    h.state_mut().set_query(String::new());
+    wait_until(&mut h, "all", |a| a.results.len() >= 3);
+    h.state_mut().run(&ctx, Command::ViewLarge);
+    h.run_steps(5);
+    h.state_mut().run(&ctx, Command::MoveDown);
+    assert_eq!(h.state().selected, Some(h.state().grid_cols.min(h.state().results.len() - 1)), "down moves a row");
+    h.state_mut().run(&ctx, Command::ViewDetails);
+    h.run_steps(2);
+}

@@ -9,9 +9,11 @@
 
 mod complete;
 mod dialogs;
+mod grid;
 mod menus;
 mod options;
-mod table;
+mod preview;
+pub(super) mod table;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -75,6 +77,8 @@ pub struct AppDeps {
 struct Row {
     /// One text per visible column.
     cells: Vec<String>,
+    /// Full path (icons, thumbnails).
+    path: PathBuf,
     is_dir: bool,
     offline: bool,
     name_hl: Vec<Range<usize>>,
@@ -193,6 +197,12 @@ pub struct FennecApp {
     hwnd: isize,
     /// Alt pressed while the menu bar is hidden: show it temporarily.
     menu_peek: bool,
+    /// Icons and thumbnails.
+    thumbs: crate::thumbs::Thumbs,
+    /// Columns of the thumbnail grid last frame (arrow keys move by rows).
+    grid_cols: usize,
+    /// Preview panel.
+    preview: preview::PreviewState,
     /// Last known window rectangle (outer position, inner size) and maximised state.
     window_geometry: Option<(egui::Rect, bool)>,
 
@@ -237,6 +247,14 @@ impl FennecApp {
         let sort = sort_from_settings(&deps.settings);
         let columns = crate::columns::parse_columns(&deps.settings.columns);
         let (worker_tx, worker_rx) = crossbeam_channel::unbounded();
+        let thumb_dir =
+            (deps.settings.thumbnail_cache_mb > 0).then(|| crate::filters::data_file(&deps.settings_path, "thumbs"));
+        if let Some(dir) = thumb_dir.clone() {
+            let limit = u64::from(deps.settings.thumbnail_cache_mb) << 20;
+            let _ = std::thread::Builder::new()
+                .name("fennec-thumb-trim".into())
+                .spawn(move || crate::thumbs::trim_disk_cache(&dir, limit));
+        }
         if deps.settings.pause_updates {
             deps.indexer.set_paused(true);
         }
@@ -292,6 +310,9 @@ impl FennecApp {
             hwnd: 0,
             menu_peek: false,
             window_geometry: None,
+            thumbs: crate::thumbs::Thumbs::new(2, thumb_dir),
+            grid_cols: 1,
+            preview: preview::PreviewState::default(),
             worker_tx,
             worker_rx,
             quitting: false,
@@ -594,10 +615,14 @@ impl FennecApp {
         match cmd {
             K::FocusSearch => self.focus_search = true,
             K::Refresh => self.engine.refresh(),
-            K::MoveDown => self.move_cursor(1, MoveMode::Select),
-            K::MoveUp => self.move_cursor(-1, MoveMode::Select),
+            K::MoveDown => self.move_cursor(self.row_step(), MoveMode::Select),
+            K::MoveUp => self.move_cursor(-self.row_step(), MoveMode::Select),
             K::ExtendDown => self.move_cursor(1, MoveMode::Extend),
             K::ExtendUp => self.move_cursor(-1, MoveMode::Extend),
+            // Left/Right step through items in thumbnail views only.
+            K::FocusNext if self.row_step() > 1 => self.move_cursor(1, MoveMode::Select),
+            K::FocusPrev if self.row_step() > 1 => self.move_cursor(-1, MoveMode::Select),
+            K::FocusNext | K::FocusPrev => {}
             K::FocusDown => self.move_cursor(1, MoveMode::FocusOnly),
             K::FocusUp => self.move_cursor(-1, MoveMode::FocusOnly),
             K::PageDown => self.move_cursor(page, MoveMode::Select),
@@ -772,6 +797,19 @@ impl FennecApp {
             K::ToggleMenuBar => self.settings.show_menu_bar = !self.settings.show_menu_bar,
             K::ToggleStatusBar => self.settings.show_status_bar = !self.settings.show_status_bar,
             K::ToggleFilterBar => self.settings.show_filter_bar = !self.settings.show_filter_bar,
+            K::TogglePreview => self.settings.show_preview = !self.settings.show_preview,
+            K::ViewDetails | K::ViewMedium | K::ViewLarge | K::ViewExtraLarge => {
+                use fnc_core::settings::ViewMode;
+                self.settings.view_mode = match cmd {
+                    K::ViewMedium => ViewMode::Medium,
+                    K::ViewLarge => ViewMode::Large,
+                    K::ViewExtraLarge => ViewMode::ExtraLarge,
+                    _ => ViewMode::Details,
+                };
+                if let Some(i) = self.selected {
+                    self.scroll_to = Some(i);
+                }
+            }
             K::ThemeLight | K::ThemeDark | K::ThemeSystem => {
                 self.settings.theme = match cmd {
                     K::ThemeLight => Theme::Light,
@@ -844,6 +882,15 @@ impl FennecApp {
         self.spawn_op(t_args("msg-deleted", &[("count", n.into())]), move || {
             fnc_platform::fileops::delete(owner, &paths, permanent).map(|_| ())
         });
+    }
+
+    /// Up/Down move one row: one entry in details view, a row of the grid otherwise.
+    fn row_step(&self) -> isize {
+        if self.settings.view_mode == fnc_core::settings::ViewMode::Details {
+            1
+        } else {
+            self.grid_cols.max(1) as isize
+        }
     }
 
     fn toggle_setting(&mut self, f: impl Fn(&mut Settings) -> &mut bool) {
@@ -1722,7 +1769,22 @@ impl eframe::App for FennecApp {
         if self.settings.show_status_bar {
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         }
-        egui::CentralPanel::default().show(ui, |ui| self.results_table(ui));
+        self.thumbs.poll(&ctx);
+        if self.settings.show_preview {
+            let r = egui::Panel::right("preview")
+                .resizable(true)
+                .default_size(self.settings.preview_width.clamp(160.0, 1200.0))
+                .size_range(160.0..=1200.0)
+                .show(ui, |ui| self.preview_panel(ui));
+            self.settings.preview_width = r.response.rect.width();
+        }
+        egui::CentralPanel::default().show(ui, |ui| {
+            if self.settings.view_mode == fnc_core::settings::ViewMode::Details {
+                self.results_table(ui);
+            } else {
+                self.results_grid(ui);
+            }
+        });
         self.dialogs(&ctx);
         self.options_viewport(&ctx);
         for cmd in std::mem::take(&mut self.pending) {

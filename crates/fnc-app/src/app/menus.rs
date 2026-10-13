@@ -117,6 +117,16 @@ impl FennecApp {
                 self.check(ui, K::ToggleMenuBar, self.settings.show_menu_bar, &mut out);
                 self.check(ui, K::ToggleFilterBar, self.settings.show_filter_bar, &mut out);
                 self.check(ui, K::ToggleStatusBar, self.settings.show_status_bar, &mut out);
+                self.check(ui, K::TogglePreview, self.settings.show_preview, &mut out);
+                ui.separator();
+                {
+                    use fnc_core::settings::ViewMode;
+                    let v = self.settings.view_mode;
+                    self.check(ui, K::ViewDetails, v == ViewMode::Details, &mut out);
+                    self.check(ui, K::ViewMedium, v == ViewMode::Medium, &mut out);
+                    self.check(ui, K::ViewLarge, v == ViewMode::Large, &mut out);
+                    self.check(ui, K::ViewExtraLarge, v == ViewMode::ExtraLarge, &mut out);
+                }
                 ui.separator();
                 ui.menu_button(t("menu-theme"), |ui| {
                     use fnc_core::settings::Theme;

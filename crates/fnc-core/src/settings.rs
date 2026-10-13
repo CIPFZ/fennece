@@ -238,6 +238,20 @@ choice_setting!(
 );
 
 choice_setting!(
+    /// Result view (Ctrl+Shift+1..4).
+    ViewMode {
+        /// Details (columns).
+        Details => "details",
+        /// Medium thumbnails (96 px).
+        Medium => "medium",
+        /// Large thumbnails (160 px).
+        Large => "large",
+        /// Extra large thumbnails (256 px).
+        ExtraLarge => "extra-large",
+    }
+);
+
+choice_setting!(
     /// Whether folders are listed before files when sorting.
     FoldersFirst {
         /// Folders first when sorting ascending only.
@@ -370,6 +384,21 @@ pub struct Settings {
     /// Size format of the size column.
     #[setting(key = "size_format", default = SizeFormat::Auto, page = "view")]
     pub size_format: SizeFormat,
+    /// Result view: details or thumbnails.
+    #[setting(key = "view_mode", default = ViewMode::Details, page = "view")]
+    pub view_mode: ViewMode,
+    /// Show file icons in the result list (Windows shell icons).
+    #[setting(key = "show_icons", default = true, page = "view")]
+    pub show_icons: bool,
+    /// Show the preview panel (Ctrl+P).
+    #[setting(key = "show_preview", default = false, page = "view")]
+    pub show_preview: bool,
+    /// Preview panel width in points.
+    #[setting(key = "preview_width", default = 360.0, page = "view")]
+    pub preview_width: f32,
+    /// Thumbnail disk cache limit in MiB (0 = memory only).
+    #[setting(key = "thumbnail_cache_mb", default = 256, page = "view")]
+    pub thumbnail_cache_mb: u32,
 
     // ---- keyboard ----
     /// Key binding overrides: `context:command=Ctrl+Shift+X` (context `search`, `results`

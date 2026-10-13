@@ -90,6 +90,10 @@ commands! {
     ExtendDown = "extend-down",
     /// Extend the selection up.
     ExtendUp = "extend-up",
+    /// Next item (thumbnail views: right).
+    FocusNext = "next-item",
+    /// Previous item (thumbnail views: left).
+    FocusPrev = "previous-item",
     /// Move the focus down without selecting.
     FocusDown = "focus-down",
     /// Move the focus up without selecting.
@@ -152,6 +156,16 @@ commands! {
     ToggleStatusBar = "toggle-status-bar",
     /// Show/hide the filter bar.
     ToggleFilterBar = "toggle-filter-bar",
+    /// Show/hide the preview panel.
+    TogglePreview = "toggle-preview",
+    /// Details view.
+    ViewDetails = "view-details",
+    /// Medium thumbnails.
+    ViewMedium = "view-medium-thumbnails",
+    /// Large thumbnails.
+    ViewLarge = "view-large-thumbnails",
+    /// Extra large thumbnails.
+    ViewExtraLarge = "view-extra-large-thumbnails",
     /// Light theme.
     ThemeLight = "theme-light",
     /// Dark theme.
@@ -341,6 +355,11 @@ fn defaults() -> Vec<(KeyCtx, Chord, Command)> {
         (G, Chord::new(C, N, C, Key::Num0), K::ZoomReset),
         (G, Chord::new(C, N, N, Key::Q), K::Exit),
         (G, Chord::new(N, N, N, Key::F1), K::Help),
+        (G, Chord::new(C, N, N, Key::P), K::TogglePreview),
+        (G, Chord::new(C, C, N, Key::Num1), K::ViewDetails),
+        (G, Chord::new(C, C, N, Key::Num2), K::ViewMedium),
+        (G, Chord::new(C, C, N, Key::Num3), K::ViewLarge),
+        (G, Chord::new(C, C, N, Key::Num4), K::ViewExtraLarge),
     ];
     let nums = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
     let filters =
@@ -367,6 +386,8 @@ fn defaults() -> Vec<(KeyCtx, Chord, Command)> {
     v.extend([
         (S, Chord::new(C, N, N, Key::Home), K::First),
         (S, Chord::new(C, N, N, Key::End), K::Last),
+        (R, Chord::new(N, N, N, Key::ArrowRight), K::FocusNext),
+        (R, Chord::new(N, N, N, Key::ArrowLeft), K::FocusPrev),
         (R, Chord::new(N, N, N, Key::Home), K::First),
         (R, Chord::new(N, N, N, Key::End), K::Last),
         (R, Chord::new(N, C, N, Key::ArrowDown), K::ExtendDown),

@@ -18,6 +18,7 @@ pub mod locale;
 pub mod privilege;
 pub mod shell;
 pub mod source;
+pub mod thumb;
 pub mod walk;
 
 pub use source::{ChangeSink, EntrySink, MetaSink, MetadataFetcher, RawEntry, SourceError, StopFlag, VolumeSource};
