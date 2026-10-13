@@ -60,6 +60,53 @@ fn last_component(t: &str) -> &str {
     t.rsplit(['\\', '/']).next().unwrap_or(t)
 }
 
+/// Link kind of `id` from the index alone (`None`: not a link, never read): `.lnk` and
+/// `.url` files and reparse points that are not cloud or dedup placeholders.
+pub fn link_kind(s: &IndexStore, id: EntryId) -> Option<LinkKind> {
+    if !s.is_dir(id)
+        && let Some(k) = std::str::from_utf8(ext_of(s.fold(id))).ok().and_then(LinkKind::of_ext)
+    {
+        return Some(k);
+    }
+    (s.flags(id).contains(EntryFlags::REPARSE) && fnc_core::flags::attr::is_link_reparse(s.attributes(id)))
+        .then_some(LinkKind::Reparse)
+}
+
+/// The recycle bin item `id` belongs to: the top-level `$R…` entry in
+/// `<root>\$Recycle.Bin\<SID>\` that is `id` or one of its ancestors (index only).
+pub fn recycle_item(s: &IndexStore, id: EntryId) -> Option<EntryId> {
+    let mut x = id;
+    for _ in 0..fnc_index::store::MAX_DEPTH {
+        if !x.is_some() {
+            return None;
+        }
+        let sid = s.parent(x);
+        if recycle::is_data_name(s.fold(x)) && sid.is_some() {
+            let bin = s.parent(sid);
+            if bin.is_some()
+                && s.fold(bin) == recycle::BIN_FOLDER_FOLD.as_bytes()
+                && s.flags(s.parent(bin)).contains(EntryFlags::ROOT)
+            {
+                return Some(x);
+            }
+        }
+        x = sid;
+    }
+    None
+}
+
+/// Original path of the recycle bin item whose `$R…` data is at `item` (from its `$I`
+/// record).
+pub fn recycle_origin(src: &dyn OnDemand, item: &Path) -> Option<String> {
+    let data = src.head(Path::new(&info_path(item.to_str()?)?), recycle::MAX_INFO_BYTES)?;
+    recycle::parse_info(&data).map(|i| i.original_path)
+}
+
+/// File signature of `path` (`fsi:` names; `Some("")` = unknown, `None` = unreadable).
+pub fn file_signature(src: &dyn OnDemand, path: &Path) -> Option<String> {
+    read_signature(src, path)
+}
+
 impl TargetLeaf {
     /// Link kind of `id` from the index alone (`None`: not a link, never read).
     fn kind(&self, s: &IndexStore, id: EntryId) -> Option<LinkKind> {
@@ -174,10 +221,7 @@ impl RecycledLeaf {
         if let Some(v) = self.slow.recycled.lock().get(&top.0) {
             return v.clone();
         }
-        let v = self.slow.file_text(s, top, FileText::RecycleOrigin, sc, |src, p| {
-            let data = src.head(Path::new(&info_path(p.to_str()?)?), recycle::MAX_INFO_BYTES)?;
-            recycle::parse_info(&data).map(|i| i.original_path)
-        });
+        let v = self.slow.file_text(s, top, FileText::RecycleOrigin, sc, recycle_origin);
         self.slow.recycled.lock().insert(top.0, v.clone());
         v
     }
