@@ -320,7 +320,9 @@ fn search(a: &Args, env: &Env, out: &mut dyn Write, conn: &mut Conn) -> Result<u
     if !to_file && opts.newline.is_none() {
         opts.newline = env.stdout_newline;
     }
-    if a.highlight && opts.format == Format::Plain && !to_file && env.stdout_is_terminal {
+    // es only highlights on a console; redirected or exported output is plain text.
+    let highlight = a.highlight && opts.format == Format::Plain && !to_file && env.stdout_is_terminal;
+    if highlight {
         opts.ansi_highlight = Some(a.highlight_color);
     }
     let footer = a.footer == Some(true) && opts.format == Format::Plain;
@@ -337,7 +339,7 @@ fn search(a: &Args, env: &Env, out: &mut dyn Write, conn: &mut Conn) -> Result<u
         offset: a.offset,
         limit: want.min(PAGE),
         columns: cols,
-        highlight: a.highlight,
+        highlight,
         // es -timeout only bounds waiting for the database; queries use the server limit.
         timeout_ms: 0,
     };

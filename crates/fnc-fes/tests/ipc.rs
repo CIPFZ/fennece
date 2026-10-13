@@ -83,7 +83,10 @@ fn options_over_ipc() {
     let (_, out, _) = fes(&inst, &["-sort", "run-count", "-n", "1", "-run-count", "-name"]);
     assert_eq!(out, "      1 notes.txt\r\n");
     let (_, out, _) = fes(&inst, &["-highlight", "-name", "notes"]);
-    assert_eq!(out, "*notes*.txt\r\n");
+    assert_eq!(out, "notes.txt\r\n", "es does not highlight redirected output");
+    // es 1.1.0.38 style `-n` (`count:` filter) works too.
+    let (_, out, _) = fes(&inst, &["-sort", "size", "-name", "<", "count:2", ">", "<", "iso", ">"]);
+    assert_eq!(out, "disk4.iso\r\ndisk3.iso\r\n");
 }
 
 #[test]

@@ -2,7 +2,7 @@
 //! `es.exe`/SDK clients and the reference for the app's Win32 plumbing.
 //!
 //! ```text
-//! cargo run -p fnc-ipc --example compat_window -- <instance> [index.efu]
+//! cargo run -p fnc-ipc --example compat_window -- <instance | -> [index.efu]
 //! es.exe -instance <instance> -n 10 abc
 //! es.exe -instance <instance> -get-everything-version
 //! ```
@@ -92,7 +92,9 @@ mod win {
 
     pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut args = std::env::args().skip(1);
-        let instance = args.next().unwrap_or_else(|| "fennec-test".into());
+        // `-` = the default instance (class `EVERYTHING_TASKBAR_NOTIFICATION`).
+        let instance =
+            args.next().map(|a| if a == "-" { String::new() } else { a }).unwrap_or_else(|| "fennec-test".into());
         let mut store = IndexStore::default();
         match args.next() {
             Some(efu) => {

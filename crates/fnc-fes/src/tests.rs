@@ -168,7 +168,7 @@ fn highlight_output() {
     let a = parse_args(strings(&["-highlight", "-name", "report"])).unwrap();
     let mut out = Vec::new();
     run_args(&a, &env(), &mut out, Some(&mut local())).unwrap();
-    assert_eq!(String::from_utf8(out).unwrap(), "*Report*, \"final\".txt\r\n", "markup when not a terminal");
+    assert_eq!(String::from_utf8(out).unwrap(), "Report, \"final\".txt\r\n", "no highlighting when redirected (es)");
     let mut out = Vec::new();
     let tty = Env { stdout_is_terminal: true, ..env() };
     run_args(&a, &tty, &mut out, Some(&mut local())).unwrap();
