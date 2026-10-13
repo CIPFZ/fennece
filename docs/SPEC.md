@@ -1341,7 +1341,7 @@ Response { id, status, payload: Columns as arrays (列式) }
 
 - ETP = FTP 子集 + `SITE` 扩展（Everything 定义：`EVERYTHING SEARCH <text>`, `EVERYTHING CASE 0|1`, `EVERYTHING WHOLE_WORD`, `EVERYTHING PATH`, `EVERYTHING REGEX`, `EVERYTHING DIACRITICS`, `EVERYTHING OFFSET n`, `EVERYTHING COUNT n`, `EVERYTHING SORT <col>`, `EVERYTHING QUERY` → 以 `200-` 多行返回 `RESULT_COUNT`/`PATH`/`FILE`/`FOLDER`/`SIZE`/`DATE_MODIFIED` 等）。
 - 客户端：工具 → 连接到 ETP 服务器，远程结果以只读卷形式进入当前窗口。
-- 优先级低于 HTTP；若实现需 TLS 选项。
+- 优先级低于 HTTP。不提供 TLS：Everything 的 ETP 本身无 TLS，其客户端也无法使用；跨网络请经 VPN 或 SSH 隧道（ADR-036）。
 
 ---
 

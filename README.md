@@ -3,7 +3,7 @@
 *Find anything in a blink.* — a local file search engine for Windows written in Rust and egui, modelled on
 voidtools Everything 1.5, with local semantic search (EmbeddingGemma-2) on top (see `docs/SPEC.md`).
 
-Status: **M0–M6** — see `docs/reports/` (one acceptance report per milestone) and `docs/CHANGELOG.md`.
+Status: **M0–M6** plus the after-M6 gap closing (`docs/reports/after-M6.md`) — see `docs/reports/` and `docs/CHANGELOG.md`.
 
 ![search](docs/screenshots/m1-search-highlight.png)
 
@@ -30,7 +30,7 @@ GPU offload.
   file list; on Linux/macOS the home folder is indexed by default.
 - `fes -n 10 -sort size-descending *.iso` — es.exe-compatible command line (talks to the running app; `-offline`
   reads `index.fnx`). The official `es.exe` and `Everything64.dll` work against Fennec too.
-- HTTP server, properties/content indexes, semantic search: off by default, see Options.
+- HTTP and ETP/FTP servers, properties/content indexes, semantic search: off by default, see Options.
 
 The search syntax follows Everything 1.5 (`ext:jpg;png size:>1mb dm:thisyear`, `a b|c`, `!x`, `<...>`,
 `regex:`, `case:`, `path:`, wildcards, macros such as `audio:`, `width:>4000`, `content:`, `dupe:`,
