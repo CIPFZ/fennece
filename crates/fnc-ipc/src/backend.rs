@@ -572,6 +572,7 @@ impl IndexBackend {
                 date: fnc_query::date::DateEnv::now(),
                 pinyin_default: options.pinyin_default,
                 omit: None,
+                indexed_props: Vec::new(),
             };
             self.caches.set_type_names(options.type_names.clone());
             let planned = plan(&ast, &env, None);
