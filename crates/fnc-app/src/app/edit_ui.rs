@@ -96,6 +96,23 @@ impl FennecApp {
         });
     }
 
+    /// Pastes the clipboard's files into `dest`, recorded for undo.
+    pub(super) fn paste_recorded(&mut self, dest: PathBuf) {
+        let owner = self.owner();
+        self.spawn_recorded(t("msg-pasted"), move || {
+            let r = fnc_platform::fileops::paste_files_recorded(owner, &dest)?;
+            let ops = r
+                .items
+                .into_iter()
+                .map(
+                    |x| if r.moved { Op::Move { from: x.from, to: x.to } } else { Op::Copy { from: x.from, to: x.to } },
+                )
+                .collect();
+            let label = t(if r.moved { "undo-move" } else { "undo-copy" });
+            Ok(Recorded::Did(Action { label, ops }))
+        });
+    }
+
     /// Creates a folder, recorded for undo.
     pub(super) fn new_folder_recorded(&mut self, parent: PathBuf, name: String) {
         let owner = self.owner();

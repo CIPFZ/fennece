@@ -612,3 +612,5 @@ col-custom = Benutzerdefiniert { $n }
 cmd-rebuild-index = Index neu aufbauen
 msg-rebuilding-index = Der Index wird neu aufgebaut; bis dahin wird der aktuelle durchsucht
 options-password-set = (gesetzt – zum Ändern eingeben)
+undo-copy = Kopieren
+undo-move = Verschieben

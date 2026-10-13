@@ -63,6 +63,29 @@ pub fn set_clipboard_files(paths: &[PathBuf], cut: bool) -> io::Result<()> {
 
 /// Pastes files from the clipboard into `dest` (copy, or move after a cut).
 pub fn paste_files(owner: Owner, dest: &Path) -> io::Result<()> {
+    paste_files_recorded(owner, dest).map(|_| ())
+}
+
+/// One item a copy or move created: `(source, result)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Transferred {
+    /// The item before (original of a copy, old place of a move).
+    pub from: PathBuf,
+    /// The item created (copy) or its new place (move).
+    pub to: PathBuf,
+}
+
+/// What a paste did, for undo: `moved` (cut + paste) or copied, and the items.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PasteResult {
+    /// The clipboard held cut files (moved) rather than copied ones.
+    pub moved: bool,
+    /// Items transferred.
+    pub items: Vec<Transferred>,
+}
+
+/// [`paste_files`] reporting each transferred item.
+pub fn paste_files_recorded(owner: Owner, dest: &Path) -> io::Result<PasteResult> {
     imp::paste_files(owner, dest)
 }
 
@@ -419,7 +442,7 @@ mod imp {
         Ok(())
     }
 
-    pub fn paste_files(owner: Owner, dest: &Path) -> io::Result<()> {
+    pub fn paste_files(owner: Owner, dest: &Path) -> io::Result<PasteResult> {
         let _com = Com::init();
         // SAFETY: returns the clipboard's data object (owned).
         let data = unsafe { OleGetClipboard() }.map_err(to_io)?;
@@ -444,15 +467,19 @@ mod imp {
         let flags = FOF_ALLOWUNDO.0 | FOFX_ADDUNDORECORD.0 | FOF_NOCONFIRMMKDIR.0 | FOF_RENAMEONCOLLISION.0;
         let op = file_operation(owner, flags)?;
         let dest = shell_item(dest)?;
+        let transferred = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink: windows::Win32::UI::Shell::IFileOperationProgressSink =
+            DeleteSink { recycled: std::rc::Rc::default(), transferred: transferred.clone() }.into();
+        // SAFETY: valid operation and sink; unadvised before the sink drops.
+        let cookie = unsafe { op.Advise(&sink) }.map_err(to_io)?;
         // SAFETY: valid operation, data object and destination folder.
-        unsafe {
-            if moving {
-                op.MoveItems(&data, &dest).map_err(to_io)?;
-            } else {
-                op.CopyItems(&data, &dest).map_err(to_io)?;
-            }
-        }
-        perform(&op).map(|_| ())
+        let r = unsafe { if moving { op.MoveItems(&data, &dest) } else { op.CopyItems(&data, &dest) } }
+            .map_err(to_io)
+            .and_then(|()| perform(&op));
+        // SAFETY: `cookie` came from `Advise` on this operation.
+        let _ = unsafe { op.Unadvise(cookie) };
+        r?;
+        Ok(PasteResult { moved: moving, items: transferred.borrow().clone() })
     }
 
     #[implement(IDropSource)]
@@ -531,6 +558,19 @@ mod imp {
     #[implement(windows::Win32::UI::Shell::IFileOperationProgressSink)]
     struct DeleteSink {
         recycled: std::rc::Rc<std::cell::RefCell<Vec<Recycled>>>,
+        /// Copies and moves (`PostCopyItem` / `PostMoveItem`).
+        transferred: std::rc::Rc<std::cell::RefCell<Vec<Transferred>>>,
+    }
+
+    impl DeleteSink {
+        fn record(&self, hr: HRESULT, item: windows::core::Ref<IShellItem>, new: windows::core::Ref<IShellItem>) {
+            if hr.is_ok()
+                && let (Some(item), Some(new)) = (item.as_ref(), new.as_ref())
+                && let (Some(from), Some(to)) = (item_path(item), item_path(new))
+            {
+                self.transferred.borrow_mut().push(Transferred { from, to });
+            }
+        }
     }
 
     fn item_path(item: &IShellItem) -> Option<PathBuf> {
@@ -576,12 +616,13 @@ mod imp {
         fn PostMoveItem(
             &self,
             _f: u32,
-            _i: windows::core::Ref<IShellItem>,
+            item: windows::core::Ref<IShellItem>,
             _d: windows::core::Ref<IShellItem>,
             _n: &PCWSTR,
-            _hr: HRESULT,
-            _new: windows::core::Ref<IShellItem>,
+            hr: HRESULT,
+            new: windows::core::Ref<IShellItem>,
         ) -> windows::core::Result<()> {
+            self.record(hr, item, new);
             Ok(())
         }
         fn PreCopyItem(
@@ -596,12 +637,13 @@ mod imp {
         fn PostCopyItem(
             &self,
             _f: u32,
-            _i: windows::core::Ref<IShellItem>,
+            item: windows::core::Ref<IShellItem>,
             _d: windows::core::Ref<IShellItem>,
             _n: &PCWSTR,
-            _hr: HRESULT,
-            _new: windows::core::Ref<IShellItem>,
+            hr: HRESULT,
+            new: windows::core::Ref<IShellItem>,
         ) -> windows::core::Result<()> {
+            self.record(hr, item, new);
             Ok(())
         }
         fn PreDeleteItem(&self, _f: u32, _i: windows::core::Ref<IShellItem>) -> windows::core::Result<()> {
@@ -656,7 +698,7 @@ mod imp {
         let op = file_operation(owner, FOF_ALLOWUNDO.0 | FOFX_RECYCLEONDELETE.0 | FOFX_ADDUNDORECORD.0)?;
         let recycled = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink: windows::Win32::UI::Shell::IFileOperationProgressSink =
-            DeleteSink { recycled: recycled.clone() }.into();
+            DeleteSink { recycled: recycled.clone(), transferred: std::rc::Rc::default() }.into();
         let items = item_array(paths)?;
         // SAFETY: valid operation, sink and items; the sink is unadvised before it drops.
         let cookie = unsafe { op.Advise(&sink) }.map_err(to_io)?;
@@ -795,7 +837,7 @@ mod imp {
         unsupported("copying files to the clipboard")
     }
 
-    pub fn paste_files(_o: Owner, _dest: &Path) -> io::Result<()> {
+    pub fn paste_files(_o: Owner, _dest: &Path) -> io::Result<PasteResult> {
         unsupported("pasting files")
     }
 

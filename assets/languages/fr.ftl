@@ -627,3 +627,5 @@ col-custom = Personnalisée { $n }
 cmd-rebuild-index = Reconstruire l’index
 msg-rebuilding-index = Reconstruction de l’index ; l’index actuel reste utilisé jusqu’à la fin
 options-password-set = (défini — saisir pour modifier)
+undo-copy = la copie
+undo-move = le déplacement

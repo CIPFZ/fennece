@@ -561,3 +561,5 @@ col-custom = 自定义 { $n }
 cmd-rebuild-index = 重建索引
 msg-rebuilding-index = 正在重建索引；完成前搜索仍使用当前索引
 options-password-set = （已设置——输入以更改）
+undo-copy = 复制
+undo-move = 移动

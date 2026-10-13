@@ -980,8 +980,7 @@ impl FennecApp {
             }
             K::Paste => {
                 if let Some(dest) = self.paste_target() {
-                    let owner = self.owner();
-                    self.spawn_op(t("msg-pasted"), move || fnc_platform::fileops::paste_files(owner, &dest));
+                    self.paste_recorded(dest);
                 }
             }
             K::CopyFullPath => self.copy_text(ctx, TextKind::FullPath),

@@ -1,8 +1,9 @@
 //! Undo system (SPEC ch.3 §10): file operations started in Fennec record how to reverse
 //! them; Ctrl+Z / Ctrl+Y run the reverse / the original again. Renames are reversed by
 //! renaming back, recycled items are restored from the recycle bin, created folders go
-//! to the recycle bin. Permanent deletions and moves/copies through the shell clipboard
-//! or drag and drop (whose results the shell does not report) are not recorded.
+//! to the recycle bin, pasted copies go to the recycle bin and pasted moves move back.
+//! Permanent deletions and drops onto other programs (they keep their own undo) are not
+//! recorded.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,20 @@ pub enum Op {
     Recycle(Recycled),
     /// Folder created.
     CreateFolder(PathBuf),
+    /// Copied `from` → `to` (paste of copied files).
+    Copy {
+        /// Original.
+        from: PathBuf,
+        /// The copy.
+        to: PathBuf,
+    },
+    /// Moved `from` → `to` (paste of cut files).
+    Move {
+        /// Place before.
+        from: PathBuf,
+        /// Place after.
+        to: PathBuf,
+    },
 }
 
 /// A user action: one or more steps, undone together (in reverse order).
@@ -111,6 +126,17 @@ pub fn undo(owner: Owner, a: &Action) -> io::Result<Action> {
             Op::CreateFolder(p) => {
                 fileops::delete_to_recycle_bin(owner, std::slice::from_ref(p))?;
             }
+            Op::Copy { to, .. } => {
+                fileops::delete_to_recycle_bin(owner, std::slice::from_ref(to))?;
+            }
+            Op::Move { from, to } => {
+                fileops::transfer(owner, std::slice::from_ref(to), parent_of(from)?, true)?;
+                // A move into a folder with a clash was renamed ("x (2)"); restore the name.
+                let back = parent_of(from)?.join(to.file_name().unwrap_or_default());
+                if back != *from && back.exists() {
+                    fileops::rename(owner, &back, &name_of(from)?)?;
+                }
+            }
         }
     }
     Ok(a.clone())
@@ -131,6 +157,14 @@ pub fn redo(owner: Owner, a: &Action) -> io::Result<Action> {
             }
             Op::CreateFolder(p) => {
                 fileops::new_folder(owner, parent_of(p)?, &name_of(p)?)?;
+                ops.push(op.clone());
+            }
+            Op::Copy { from, to } => {
+                fileops::transfer(owner, std::slice::from_ref(from), parent_of(to)?, false)?;
+                ops.push(op.clone());
+            }
+            Op::Move { from, to } => {
+                fileops::transfer(owner, std::slice::from_ref(from), parent_of(to)?, true)?;
                 ops.push(op.clone());
             }
         }
@@ -192,5 +226,32 @@ mod tests {
         assert!(!b.exists());
         undo(o, &redone).unwrap();
         assert!(b.exists());
+    }
+
+    #[test]
+    fn pasted_copies_and_moves_are_undone() {
+        let d = tempfile::tempdir().unwrap();
+        let o = Owner(0);
+        let (src, dst) = (d.path().join("src"), d.path().join("dst"));
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("a.txt"), "a").unwrap();
+        // Copy.
+        fileops::transfer(o, &[src.join("a.txt")], &dst, false).unwrap();
+        let act =
+            Action { label: "copy".into(), ops: vec![Op::Copy { from: src.join("a.txt"), to: dst.join("a.txt") }] };
+        let again = undo(o, &act).unwrap();
+        assert!(src.join("a.txt").exists() && !dst.join("a.txt").exists());
+        redo(o, &again).unwrap();
+        assert!(dst.join("a.txt").exists());
+        std::fs::remove_file(dst.join("a.txt")).unwrap();
+        // Move.
+        fileops::transfer(o, &[src.join("a.txt")], &dst, true).unwrap();
+        let act =
+            Action { label: "move".into(), ops: vec![Op::Move { from: src.join("a.txt"), to: dst.join("a.txt") }] };
+        let again = undo(o, &act).unwrap();
+        assert!(src.join("a.txt").exists() && !dst.join("a.txt").exists());
+        redo(o, &again).unwrap();
+        assert!(!src.join("a.txt").exists() && dst.join("a.txt").exists());
     }
 }
