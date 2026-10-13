@@ -676,7 +676,9 @@ impl Cx<'_> {
             _ => return Node::All,
         };
         if self.on(t.mods, Modifier::Len) {
-            return self.num_node(FuncId::NameLength, NumProp::NameLength, &t.value);
+            // Plain terms keep their text verbatim; read `>20` / `10..20` numerically.
+            let v = numeric_value(text);
+            return self.num_node(FuncId::NameLength, NumProp::NameLength, &v);
         }
         if text == "\\" && !self.on(t.mods, Modifier::Regex) {
             // A lone backslash is a fast "folders only" search (SPEC ch.2 §2.3).
@@ -1093,6 +1095,29 @@ impl Cx<'_> {
 
 fn clamp_u64(v: u64) -> i64 {
     i64::try_from(v).unwrap_or(i64::MAX)
+}
+
+/// Reads a comparison (`>20`, `<=5`, `!3`), range (`10..20`) or plain value from text.
+fn numeric_value(text: &str) -> Value {
+    let t = text.trim();
+    for (op, cmp) in [
+        (">=", CmpOp::Ge),
+        ("<=", CmpOp::Le),
+        ("!=", CmpOp::Ne),
+        (">", CmpOp::Gt),
+        ("<", CmpOp::Lt),
+        ("=", CmpOp::Eq),
+        ("!", CmpOp::Ne),
+    ] {
+        if let Some(rest) = t.strip_prefix(op) {
+            return Value::Cmp(cmp, Box::new(Value::Text(rest.to_string())));
+        }
+    }
+    match t.split_once("..") {
+        Some((a, b)) => Value::Range(Box::new(Value::Text(a.to_string())), Box::new(Value::Text(b.to_string()))),
+        None if t.is_empty() => Value::Empty,
+        None => Value::Text(t.to_string()),
+    }
 }
 
 /// Estimated evaluation cost per entry (lower runs first).

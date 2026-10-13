@@ -515,6 +515,9 @@ fn start_end_with_and_weight() {
     assert_eq!(names("endwith:.txt"), set(&["café menu.txt", "file2.txt", "file10.txt"]));
     assert_eq!(names("ew:flac"), set(&["track.flac"]));
     assert_eq!(names("weight:10 holiday"), set(&["holiday.png"]));
+    assert_eq!(names("len:3"), set(&["bob"]));
+    assert_eq!(names("len:>13 ext:docx;xlsx"), set(&["Report Q3.docx"]));
+    assert_eq!(names("len:<3"), set(&["C:", "D:"]));
 }
 
 #[test]

@@ -297,9 +297,17 @@ impl Lexer<'_, '_> {
         let numeric_fn = lookup_function(&norm).is_some_and(|f| {
             matches!(f.kind(), ValueKind::Number | ValueKind::Size | ValueKind::Date | ValueKind::Duration)
         });
-        let cmp_mod = lookup_modifier(&norm)
-            .is_some_and(|(m, _)| matches!(m, Modifier::Len | Modifier::Count | Modifier::Atoi | Modifier::Atof));
-        !norm.is_empty() && (numeric_fn || cmp_mod)
+        let known = lookup_function(&norm).is_some() || lookup_modifier(&norm).is_some();
+        // A value-comparing modifier anywhere in the prefix chain (`len:>20`,
+        // `len:album:>20`, `count:tags:>2`).
+        let prefix: String = out[..colon].iter().filter(|ch| !ch.lit).map(|ch| ch.c).collect();
+        let mut seg_norm = String::new();
+        let cmp_mod = prefix.split(':').any(|seg| {
+            normalize_name(seg.trim_start_matches('?'), &mut seg_norm);
+            lookup_modifier(&seg_norm)
+                .is_some_and(|(m, _)| matches!(m, Modifier::Len | Modifier::Count | Modifier::Atoi | Modifier::Atof))
+        });
+        !norm.is_empty() && known && (numeric_fn || cmp_mod)
     }
 
     fn read_term(&mut self) -> Tok {
