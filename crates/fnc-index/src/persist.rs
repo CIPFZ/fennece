@@ -37,6 +37,8 @@ const HEADER_LEN: usize = 24;
 const DIR_ENTRY_LEN: usize = 32;
 const FOOTER_TAIL_LEN: usize = 24;
 const FLAG_DATE_ACCESSED: u32 = 1;
+/// The `RANK` column was built with pinyin collation (`fnc_core::natsort`).
+const FLAG_PINYIN_RANKS: u32 = 2;
 
 /// Errors reading or writing a database.
 #[derive(Debug, thiserror::Error)]
@@ -286,7 +288,10 @@ fn write_all<W: Write>(s: &IndexStore, w: &mut SegWriter<W>) -> std::io::Result<
     let mut header = Vec::with_capacity(HEADER_LEN);
     header.extend_from_slice(&MAGIC);
     header.extend_from_slice(&VERSION.to_le_bytes());
-    let flags = if s.da.is_some() { FLAG_DATE_ACCESSED } else { 0 };
+    let mut flags = if s.da.is_some() { FLAG_DATE_ACCESSED } else { 0 };
+    if fnc_core::natsort::collation() == fnc_core::natsort::Collation::Pinyin {
+        flags |= FLAG_PINYIN_RANKS;
+    }
     header.extend_from_slice(&flags.to_le_bytes());
     header.extend_from_slice(&0u32.to_le_bytes());
     header.extend_from_slice(&FileTime::now().0.to_le_bytes());
@@ -505,7 +510,10 @@ pub fn decode(buf: &[u8]) -> PResult<IndexStore> {
     decode_volumes(&mut store, seg(b"VOLS")?)?;
     decode_extras(&mut store, seg(b"EXTD")?, seg(b"RUNH")?, seg(b"RCHG")?, seg(b"LINK")?)?;
     validate(&store)?;
-    let ranks = match segs.get(b"RANK") {
+    // Ranks of another collation are rebuilt (they would disagree with the comparator).
+    let same_collation =
+        (flags & FLAG_PINYIN_RANKS != 0) == (fnc_core::natsort::collation() == fnc_core::natsort::Collation::Pinyin);
+    let ranks = match segs.get(b"RANK").filter(|_| same_collation) {
         Some(r) => Some(col(r, u32::from_le_bytes)?).filter(|r| r.len() == n),
         None => None,
     };

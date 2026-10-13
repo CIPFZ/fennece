@@ -98,6 +98,7 @@ fn run() -> anyhow::Result<()> {
         tracing::warn!(switch = %u, "unknown command line switch ignored");
     }
     i18n::init(&settings.language);
+    i18n::apply_collation(settings.name_collation);
 
     if let Some(action) = cli.service {
         return service_command(action, &cli.instance);

@@ -188,6 +188,18 @@ macro_rules! choice_setting {
 }
 
 choice_setting!(
+    /// Order of names that are not digits.
+    NameCollation {
+        /// Pinyin for a Chinese user interface, else code point.
+        Auto => "auto",
+        /// Code point (language independent).
+        CodePoint => "codepoint",
+        /// Chinese characters by pinyin.
+        Pinyin => "pinyin",
+    }
+);
+
+choice_setting!(
     /// Colour theme.
     Theme {
         /// Follow the OS.
@@ -377,6 +389,9 @@ pub struct Settings {
     /// Sort keys: `column-ascending|descending;...` (up to three).
     #[setting(key = "sort", default = "name-ascending", page = "view")]
     pub sort: String,
+    /// Name order: `auto` (pinyin for a Chinese interface), `codepoint`, `pinyin`.
+    #[setting(key = "name_collation", default = NameCollation::Auto, page = "results")]
+    pub name_collation: NameCollation,
     /// Alternate row background colours.
     #[setting(key = "alternate_row_color", default = true, page = "view")]
     pub alternate_row_color: bool,

@@ -9,11 +9,75 @@
 //! number of leading zeros and then by [`cmp_utf16`] on the original names, giving a
 //! total order.
 //!
-//! SPEC-GAP: Everything delegates to `CompareStringEx(SORT_DIGITSASNUMBERS)` whose
-//! collation is locale dependent (e.g. pinyin order for CJK under zh-CN); Fennec uses
-//! code point order for non-digit text. Listed in SPEC ch.2 §9.
+//! Collation: [`Collation::CodePoint`] (default) orders non-digit text by code point;
+//! [`Collation::Pinyin`] orders Chinese characters by their (first) pinyin reading,
+//! then code point, as Explorer and Everything do under a Chinese locale
+//! (`CompareStringEx`). It is process-wide ([`set_collation`]) because every index,
+//! rank column and sort must agree on one order.
 
 use std::cmp::Ordering;
+use std::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
+
+/// How non-digit text is ordered.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Collation {
+    /// By code point of the fold key.
+    CodePoint,
+    /// Chinese characters by pinyin, then code point; other text by code point.
+    Pinyin,
+}
+
+static COLLATION: AtomicU8 = AtomicU8::new(0);
+
+/// Sets the collation of every name comparison (start-up / settings change; rebuild the
+/// name rank afterwards).
+pub fn set_collation(c: Collation) {
+    COLLATION.store(matches!(c, Collation::Pinyin) as u8, AtomicOrdering::Relaxed);
+}
+
+/// The current collation.
+pub fn collation() -> Collation {
+    if COLLATION.load(AtomicOrdering::Relaxed) == 1 { Collation::Pinyin } else { Collation::CodePoint }
+}
+
+/// Decodes the UTF-8 char starting at `s[i]` (fold keys are valid UTF-8).
+#[inline]
+fn char_at(s: &[u8], i: usize) -> Option<char> {
+    let len = match s.get(i)? {
+        b if *b < 0x80 => 1,
+        b if *b >= 0xF0 => 4,
+        b if *b >= 0xE0 => 3,
+        _ => 2,
+    };
+    std::str::from_utf8(s.get(i..i + len)?).ok()?.chars().next()
+}
+
+/// Order at the first differing bytes `x`/`y` when one may start a Chinese character.
+#[inline(never)]
+fn cjk_cmp(a: &[u8], i: usize, b: &[u8], j: usize, x: u8, y: u8) -> Ordering {
+    if COLLATION.load(AtomicOrdering::Relaxed) == 1
+        && let (Some(cx), Some(cy)) = (char_at(a, i), char_at(b, j))
+        && let Some(o) = pinyin_cmp(cx, cy)
+    {
+        return o;
+    }
+    x.cmp(&y)
+}
+
+/// Pinyin order of two differing chars (at least one Chinese); `None` if neither has a
+/// reading (fall back to code point).
+#[cold]
+fn pinyin_cmp(x: char, y: char) -> Option<Ordering> {
+    use pinyin::ToPinyin;
+    let (px, py) = (x.to_pinyin().map(|p| p.plain()), y.to_pinyin().map(|p| p.plain()));
+    match (px, py) {
+        (None, None) => None,
+        // Latin letters and digits (no reading) come before Chinese.
+        (None, Some(_)) => Some(Ordering::Less),
+        (Some(_), None) => Some(Ordering::Greater),
+        (Some(a), Some(b)) => Some(a.cmp(b).then((x as u32).cmp(&(y as u32)))),
+    }
+}
 
 #[inline]
 fn digit_run(s: &[u8], mut i: usize) -> usize {
@@ -69,6 +133,11 @@ pub fn natural_cmp_full(a: &[u8], b: &[u8]) -> (Ordering, Ordering) {
                     j = eb;
                 } else {
                     if x != y {
+                        // Chinese characters (3-byte UTF-8 from U+3400 on) under pinyin
+                        // collation, decided once per comparison (out of line).
+                        if (x | y) >= 0xE3 {
+                            return (cjk_cmp(a, i, b, j, x, y), zeros_tie);
+                        }
                         return (x.cmp(&y), zeros_tie);
                     }
                     i += 1;
@@ -188,5 +257,18 @@ mod tests {
             v.sort_by(|a, b| natural_cmp(a.as_bytes(), b.as_bytes()));
             proptest::prop_assert_ne!(natural_cmp(v[0].as_bytes(), v[2].as_bytes()), Ordering::Greater);
         }
+    }
+
+    #[test]
+    fn pinyin_collation() {
+        let names = ["张三.txt", "李四.txt", "王五.txt", "abc.txt", "安全.doc", "报告.pdf"];
+        set_collation(Collation::Pinyin);
+        let p = sorted(&names);
+        set_collation(Collation::CodePoint);
+        let c = sorted(&names);
+        // an(安) bao(报) li(李) wang(王) zhang(张); Latin first.
+        assert_eq!(p, vec!["abc.txt", "安全.doc", "报告.pdf", "李四.txt", "王五.txt", "张三.txt"]);
+        assert_eq!(c[0], "abc.txt");
+        assert_ne!(p, c, "code point order differs");
     }
 }

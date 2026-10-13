@@ -761,6 +761,20 @@ impl IndexStore {
         self.name_order = NameOrder::build(self);
     }
 
+    /// Installs a name order built from a snapshot of generation `generation` if nothing
+    /// changed since (else rebuilds in place); returns `true` if it was installed as is.
+    pub fn set_name_order(&mut self, order: NameOrder, generation: u64) -> bool {
+        if self.generation == generation && order.covered() == self.len() {
+            self.name_order = order;
+            self.bump(false);
+            true
+        } else {
+            self.rebuild_name_order();
+            self.bump(false);
+            false
+        }
+    }
+
     // ------------------------------------------------------------------ changes
 
     /// Like [`IndexStore::apply`] for metadata that completes the initial index (size and

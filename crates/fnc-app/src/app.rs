@@ -1882,6 +1882,20 @@ impl FennecApp {
             crate::columns::set_custom_columns(&s.custom_columns);
             self.v.rows.clear();
         }
+        if old.name_collation != s.name_collation {
+            crate::i18n::apply_collation(s.name_collation);
+            // Ranks were built with the old order: rebuild them off the UI thread.
+            let shared = self.shared.clone();
+            let _ = std::thread::Builder::new().name("fennec-rank".into()).spawn(move || {
+                let (fresh, generation) = {
+                    let snap = shared.snapshot();
+                    (fnc_index::NameOrder::build(&snap), snap.generation())
+                };
+                shared.write().set_name_order(fresh, generation);
+            });
+            self.v.rows.clear();
+        }
+        let s = &self.settings;
         if old.sort != s.sort || old.folders_first != s.folders_first {
             self.v.sort = sort_from_settings(s);
         }

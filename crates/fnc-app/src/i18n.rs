@@ -34,6 +34,7 @@ pub const LANGUAGES: &[(&str, &str)] = &[
 ];
 
 struct I18n {
+    tag: &'static str,
     active: FluentBundle<FluentResource>,
     fallback: FluentBundle<FluentResource>,
 }
@@ -73,6 +74,24 @@ pub fn resolve_language(requested: &str) -> &'static str {
     LANGUAGES.iter().find(|(t, _)| t.split('-').next() == Some(primary)).map_or("en", |(t, _)| t)
 }
 
+/// Applies the name collation (`auto`: pinyin for a Chinese UI). Call before the index is
+/// loaded; changing it later needs a rank rebuild.
+pub fn apply_collation(c: fnc_core::settings::NameCollation) {
+    use fnc_core::natsort::{Collation, set_collation};
+    use fnc_core::settings::NameCollation as N;
+    let pinyin = match c {
+        N::Pinyin => true,
+        N::CodePoint => false,
+        N::Auto => active_language().starts_with("zh"),
+    };
+    set_collation(if pinyin { Collation::Pinyin } else { Collation::CodePoint });
+}
+
+/// Tag of the active language (`en` before [`init`]).
+pub fn active_language() -> &'static str {
+    I18N.get().map_or("en", |i| i.tag)
+}
+
 /// Initialises the active language (`""` = the user's UI language). Idempotent.
 pub fn init(language: &str) {
     let requested = if language.is_empty() {
@@ -83,7 +102,7 @@ pub fn init(language: &str) {
     let requested = requested.split('.').next().unwrap_or("").to_string();
     let tag = resolve_language(&requested);
     let src = LANGUAGES.iter().find(|(t, _)| *t == tag).map_or(EN, |(_, s)| s);
-    let _ = I18N.set(I18n { active: bundle(tag, src), fallback: bundle("en", EN) });
+    let _ = I18N.set(I18n { tag, active: bundle(tag, src), fallback: bundle("en", EN) });
 }
 
 fn format(key: &str, args: Option<&FluentArgs<'_>>) -> String {
