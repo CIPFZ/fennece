@@ -216,6 +216,14 @@ impl fnc_platform::compat::CompatHandler for CompatBridge {
             Ok(other) => CopyDataAction::Done(execute_copydata(&other, &self.0).result),
         }
     }
+
+    fn close(&self) {
+        // Like EVERYTHING_IPC_EXIT (window messages come from this session).
+        let peer = fnc_ipc::Peer { kind: fnc_ipc::PeerKind::CopyData, pid: None };
+        if let Err(e) = self.0.admin(fnc_ipc::AdminCommand::Exit, &peer) {
+            tracing::warn!(error = %e, "WM_CLOSE on the Everything IPC window");
+        }
+    }
 }
 
 #[derive(Default)]

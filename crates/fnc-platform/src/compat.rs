@@ -44,6 +44,9 @@ pub trait CompatHandler: Send + Sync + 'static {
     fn wm_ipc(&self, wparam: usize, lparam: isize) -> isize;
     /// A `WM_COPYDATA` with `dwData = dw_data` (the bytes are a copy of `lpData`).
     fn copydata(&self, dw_data: usize, bytes: Vec<u8>) -> CopyDataAction;
+    /// `WM_CLOSE` from a client: Everything exits (es.exe `-exit` sends it and waits for
+    /// the process to end). The window itself stays until [`CompatWindow::stop`].
+    fn close(&self) {}
 }
 
 /// Window settings.
@@ -127,7 +130,7 @@ mod imp {
         ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
         GetMessageW, GetWindowThreadProcessId, HWND_BROADCAST, MSG, MSGFLT_ALLOW, PostMessageW, PostQuitMessage,
         RegisterClassW, RegisterWindowMessageW, SMTO_ABORTIFHUNG, SMTO_BLOCK, SendMessageTimeoutW, TranslateMessage,
-        UnregisterClassW, WINDOW_EX_STYLE, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WNDCLASSW, WS_OVERLAPPED,
+        UnregisterClassW, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_COPYDATA, WM_DESTROY, WNDCLASSW, WS_OVERLAPPED,
     };
     use windows::core::PCWSTR;
 
@@ -135,6 +138,10 @@ mod imp {
 
     /// Reply time limit (Everything clients wait synchronously).
     const REPLY_TIMEOUT_MS: u32 = 10_000;
+
+    /// Private message that destroys the window ([`CompatWindow::stop`]); `WM_CLOSE`
+    /// belongs to clients.
+    const WM_STOP: u32 = WM_APP + 0x46;
 
     struct State {
         handler: Arc<dyn CompatHandler>,
@@ -165,7 +172,7 @@ mod imp {
 
     pub fn close(hwnd: isize) {
         // SAFETY: posting to a window handle is harmless even if the window is gone.
-        let _ = unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+        let _ = unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), WM_STOP, WPARAM(0), LPARAM(0)) };
     }
 
     pub fn start(config: &CompatConfig, handler: Arc<dyn CompatHandler>) -> Result<CompatWindow, CompatError> {
@@ -322,13 +329,17 @@ mod imp {
             unsafe { PostQuitMessage(0) };
             return LRESULT(0);
         }
-        if msg == WM_CLOSE {
+        if msg == WM_STOP {
             // SAFETY: `hwnd` is this thread's window.
             let _ = unsafe { DestroyWindow(hwnd) };
             return LRESULT(0);
         }
         let state = STATE.with(|s| s.borrow().clone());
         if let Some(st) = state {
+            if msg == WM_CLOSE {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| st.handler.close()));
+                return LRESULT(0);
+            }
             if msg == st.ipc_message {
                 let r =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| st.handler.wm_ipc(wparam.0, lparam.0)));
@@ -376,12 +387,12 @@ mod tests {
 
     use windows::Win32::Foundation::{LPARAM, WPARAM};
     use windows::Win32::System::DataExchange::COPYDATASTRUCT;
-    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SendMessageW, WM_COPYDATA};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SendMessageW, WM_CLOSE, WM_COPYDATA};
     use windows::core::PCWSTR;
 
     use super::*;
 
-    struct Echo(AtomicUsize);
+    struct Echo(AtomicUsize, AtomicUsize);
 
     impl CompatHandler for Echo {
         fn wm_ipc(&self, wparam: usize, lparam: isize) -> isize {
@@ -391,13 +402,16 @@ mod tests {
         fn copydata(&self, dw_data: usize, bytes: Vec<u8>) -> CopyDataAction {
             CopyDataAction::Done((dw_data + bytes.len()) as isize)
         }
+        fn close(&self) {
+            self.1.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     #[test]
     fn window_routes_messages_and_stops() {
         let class = format!("FENNEC_COMPAT_TEST_{}", std::process::id());
         let cfg = CompatConfig { class: class.clone(), ipc_message: 0x400, announce: None };
-        let h = Arc::new(Echo(AtomicUsize::new(0)));
+        let h = Arc::new(Echo(AtomicUsize::new(0), AtomicUsize::new(0)));
         let w = CompatWindow::start(&cfg, h.clone()).unwrap();
         assert_eq!(window_owner(&class), Some(std::process::id()));
         let wide: Vec<u16> = class.encode_utf16().chain(Some(0)).collect();
@@ -409,8 +423,12 @@ mod tests {
             let cds = COPYDATASTRUCT { dwData: 7, cbData: 3, lpData: data.as_ptr() as *mut _ };
             let r = SendMessageW(hwnd, WM_COPYDATA, Some(WPARAM(0)), Some(LPARAM(&raw const cds as isize)));
             assert_eq!(r.0, 10);
+            // A client's WM_CLOSE asks the app to exit; the window stays.
+            SendMessageW(hwnd, WM_CLOSE, None, None);
         }
         assert_eq!(h.0.load(Ordering::SeqCst), 1);
+        assert_eq!(h.1.load(Ordering::SeqCst), 1);
+        assert_eq!(window_owner(&class), Some(std::process::id()));
         w.stop();
         assert_eq!(window_owner(&class), None);
         // Restartable after a stop (class unregistered).
