@@ -17,6 +17,7 @@ mod icon;
 mod import;
 mod indexer;
 mod journal;
+mod stores;
 mod thumbs;
 #[cfg(windows)]
 mod tray;
@@ -172,6 +173,13 @@ fn run() -> anyhow::Result<()> {
             folders.push(home.into());
         }
     }
+    let db_path = if cli.no_db { None } else { Some(cli.db.as_ref().map_or_else(|| paths.index_file(), Into::into)) };
+    // Property, content and hash stores: created once, shared by every search (M3).
+    let stores = {
+        let handle = engine.handle();
+        let dir = db_path.as_ref().and_then(|p| p.parent()).map(std::path::Path::to_path_buf);
+        stores::Stores::start(shared.clone(), &settings, dir, Arc::new(move || handle.refresh()))
+    };
     let cfg = indexer::IndexerConfig {
         file_lists,
         folders,
@@ -182,7 +190,7 @@ fn run() -> anyhow::Result<()> {
         usn_delta: u64::from(settings.usn_allocation_delta_mb) << 20,
         usn_poll: Duration::from_millis(u64::from(settings.usn_poll_interval.max(100))),
         date_accessed: settings.index_date_accessed,
-        db_path: if cli.no_db { None } else { Some(cli.db.as_ref().map_or_else(|| paths.index_file(), Into::into)) },
+        db_path,
         reindex: cli.reindex,
         instance: cli.instance.clone(),
         exclusions: exclude::Exclusions::from_settings(&settings),
@@ -193,6 +201,7 @@ fn run() -> anyhow::Result<()> {
             (paths.root.join("journal.tsv"), settings.index_journal_days, settings.index_journal_max as usize)
         }),
         save_interval: Duration::from_secs(u64::from(settings.db_save_interval) * 60),
+        hooks: Some(stores.clone()),
     };
     let (index_tx, index_rx) = crossbeam_channel::unbounded();
     let handle = engine.handle();
@@ -229,6 +238,7 @@ fn run() -> anyhow::Result<()> {
         index_rx,
         instance: primary,
         indexer,
+        stores,
         settings,
         settings_path,
         initial_search: cli.search.clone(),

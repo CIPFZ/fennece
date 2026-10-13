@@ -1,8 +1,12 @@
 //! Preview panel (SPEC ch.3 §5, Ctrl+P): pictures, text (first 1 MiB), a shell
-//! thumbnail for other types, file details, folder statistics, and totals for a
-//! multi-selection. Loading happens on worker threads.
+//! thumbnail for other types, file details, indexed properties, folder statistics, and
+//! totals for a multi-selection. For `content:` searches the text is the extracted text
+//! (indexed, else extracted on demand), every match is highlighted and the view scrolls
+//! to the first hit. Loading happens on worker threads.
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
@@ -66,11 +70,30 @@ const TEXT_EXTS: &[&str] = &[
     "rst",
 ];
 
+/// Highlighted matches shown at most.
+const MAX_HIGHLIGHTS: usize = 5000;
+
+/// A loaded text preview.
+pub(super) struct Loaded {
+    text: String,
+    truncated: bool,
+    /// Byte ranges of content matches in `text`.
+    highlights: Vec<Range<usize>>,
+    /// Byte offset of the first content hit (scroll target).
+    first_hit: Option<usize>,
+}
+
 /// What the panel shows for the current selection.
 enum Body {
     Empty,
     Loading,
-    Text { text: String, truncated: bool },
+    Text {
+        loaded: Loaded,
+        /// Laid-out text (built once per theme).
+        galley: Option<(bool, Arc<egui::Galley>)>,
+        /// Scrolled to the first hit already.
+        scrolled: bool,
+    },
     Picture,
     Other,
     Failed(String),
@@ -95,6 +118,9 @@ struct Info {
 /// A loaded text preview (text, truncated) or an error message.
 type TextResult = Result<(String, bool), String>;
 
+/// A loaded preview or an error message.
+type LoadResult = Result<Loaded, String>;
+
 /// Multi-selection summary: count, total size, most common types.
 type MultiInfo = (usize, u64, Vec<(String, usize)>);
 
@@ -107,8 +133,12 @@ pub(super) struct PreviewState {
     info: Option<Info>,
     multi: Option<MultiInfo>,
     body: Body,
-    tx: Sender<(EntryId, TextResult)>,
-    rx: Receiver<(EntryId, TextResult)>,
+    /// Indexed properties of the selected file.
+    props: Vec<(String, String)>,
+    /// Plan of the shown search (content highlights), when it has content terms.
+    plan: Option<Arc<fnc_query::PlannedQuery>>,
+    tx: Sender<(EntryId, LoadResult)>,
+    rx: Receiver<(EntryId, LoadResult)>,
 }
 
 impl Default for PreviewState {
@@ -121,10 +151,104 @@ impl Default for PreviewState {
             info: None,
             multi: None,
             body: Body::Empty,
+            props: Vec::new(),
+            plan: None,
             tx,
             rx,
         }
     }
+}
+
+impl PreviewState {
+    /// Text preview state: scrolled to the first hit, text of the first highlight.
+    #[cfg(test)]
+    pub(super) fn text_state(&self) -> Option<(bool, String)> {
+        match &self.body {
+            Body::Text { loaded, scrolled, .. } => {
+                let r = loaded.highlights.first()?;
+                Some((*scrolled, loaded.text.get(r.clone())?.to_string()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Remembers the plan of the shown search if it searches content.
+    pub(super) fn set_plan(&mut self, plan: &Arc<fnc_query::PlannedQuery>) {
+        let mut preds = Vec::new();
+        fnc_query::plan::collect_content(&plan.root, &mut preds);
+        let p = (!preds.is_empty()).then(|| plan.clone());
+        if p.as_ref().map(Arc::as_ptr) != self.plan.as_ref().map(Arc::as_ptr) {
+            self.plan = p;
+            // Reload the text with the new highlights.
+            self.key.3 = 0;
+        }
+    }
+}
+
+/// Largest char boundary `<= i`.
+fn floor_boundary(s: &str, i: usize) -> usize {
+    let mut i = i.min(s.len());
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Text for a `content:` search: the indexed text, else the extracted text, else the
+/// decoded file; with the matches of `plan` and the first hit. Long texts are cut to a
+/// window of [`TEXT_LIMIT`] bytes around the first hit.
+pub(super) fn load_content(
+    indexed: Option<String>,
+    path: &Path,
+    on_demand: &dyn fnc_props::ondemand::OnDemand,
+    plan: &fnc_query::PlannedQuery,
+    hit: Option<usize>,
+) -> LoadResult {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let text = match indexed.or_else(|| on_demand.content(path, &ext)) {
+        Some(t) => t,
+        None => read_text(path)?.0,
+    };
+    let mut highlights = fnc_exec::content_highlights(plan, &text, MAX_HIGHLIGHTS);
+    let first = hit.filter(|&h| h < text.len()).or_else(|| highlights.first().map(|r| r.start));
+    if text.len() <= TEXT_LIMIT {
+        return Ok(Loaded { text, truncated: false, highlights, first_hit: first });
+    }
+    let start = floor_boundary(&text, first.unwrap_or(0).saturating_sub(TEXT_LIMIT / 4));
+    let end = floor_boundary(&text, start + TEXT_LIMIT);
+    highlights.retain(|r| r.start >= start && r.end <= end);
+    for r in &mut highlights {
+        *r = r.start - start..r.end - start;
+    }
+    Ok(Loaded {
+        text: text[start..end].to_string(),
+        truncated: true,
+        highlights,
+        first_hit: first.map(|f| f.saturating_sub(start)),
+    })
+}
+
+/// Lays out `text` in monospace with `highlights` marked.
+fn text_job(ui: &egui::Ui, l: &Loaded) -> egui::text::LayoutJob {
+    use egui::text::{LayoutJob, TextFormat};
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let normal = TextFormat { font_id: font.clone(), color: ui.visuals().text_color(), ..Default::default() };
+    let marked =
+        TextFormat { font_id: font, color: egui::Color32::BLACK, background: super::ACCENT, ..Default::default() };
+    let mut job = LayoutJob::default();
+    let mut pos = 0;
+    for r in &l.highlights {
+        if r.start < pos || r.end > l.text.len() || !l.text.is_char_boundary(r.start) || !l.text.is_char_boundary(r.end)
+        {
+            continue;
+        }
+        job.append(&l.text[pos..r.start], 0.0, normal.clone());
+        job.append(&l.text[r.clone()], 0.0, marked.clone());
+        pos = r.end;
+    }
+    job.append(&l.text[pos..], 0.0, normal);
+    job.wrap.max_width = f32::INFINITY;
+    job
 }
 
 fn is_text(path: &Path) -> bool {
@@ -193,6 +317,7 @@ impl FennecApp {
         p.info = None;
         p.multi = None;
         p.body = Body::Empty;
+        p.props.clear();
         match ids.as_slice() {
             [] => {}
             [id] if snap.is_live(*id) => {
@@ -220,14 +345,50 @@ impl FennecApp {
                     child_folders: folders,
                     stamp: (snap.date_modified(id).0 as u64) ^ size.unwrap_or(0).rotate_left(17),
                 };
+                // Indexed properties (non-blocking; empty if the store is busy).
+                if !is_dir
+                    && let Some(ps) = self.stores.props.try_snapshot_for(Duration::from_millis(1))
+                    && ps.instance() == snap.instance()
+                {
+                    p.props = ps
+                        .values(id)
+                        .into_iter()
+                        .map(|(prop, v)| {
+                            (
+                                crate::columns::ColumnId::Property(prop).title(),
+                                crate::columns::format_property(prop, &v),
+                            )
+                        })
+                        .collect();
+                }
+                let hit = self.v.results.content_hit(id).map(|h| h.offset as usize);
                 p.body = if is_dir {
                     Body::Empty
+                } else if let Some(plan) = p.plan.clone() {
+                    // `content:` search: extracted text with highlights.
+                    let (tx, path) = (p.tx.clone(), info.path.clone());
+                    let (content, od, instance) =
+                        (self.stores.content.clone(), self.stores.on_demand(), snap.instance());
+                    let _ = std::thread::Builder::new().name("fennec-preview".into()).spawn(move || {
+                        let indexed = {
+                            let c = content.snapshot();
+                            (c.instance() == instance).then(|| c.text(id)).flatten()
+                        };
+                        let _ = tx.send((id, load_content(indexed, &path, &*od, &plan, hit)));
+                    });
+                    Body::Loading
                 } else if crate::thumbs::is_picture(&info.path) {
                     Body::Picture
                 } else if is_text(&info.path) || size.is_some_and(|s| s < 64 << 10) && info.path.extension().is_none() {
                     let (tx, path) = (p.tx.clone(), info.path.clone());
                     let _ = std::thread::Builder::new().name("fennec-preview".into()).spawn(move || {
-                        let _ = tx.send((id, read_text(&path)));
+                        let r = read_text(&path).map(|(text, truncated)| Loaded {
+                            text,
+                            truncated,
+                            highlights: Vec::new(),
+                            first_hit: None,
+                        });
+                        let _ = tx.send((id, r));
                     });
                     Body::Loading
                 } else {
@@ -261,7 +422,7 @@ impl FennecApp {
         while let Ok((id, r)) = self.v.preview.rx.try_recv() {
             if self.v.preview.for_ids == [id] {
                 self.v.preview.body = match r {
-                    Ok((text, truncated)) => Body::Text { text, truncated },
+                    Ok(loaded) => Body::Text { loaded, galley: None, scrolled: false },
                     Err(e) => Body::Failed(e),
                 };
             }
@@ -283,7 +444,8 @@ impl FennecApp {
                 return;
             };
             let avail = ui.available_width();
-            match &self.v.preview.body {
+            let dark = ui.visuals().dark_mode;
+            match &mut self.v.preview.body {
                 Body::Picture | Body::Other => {
                     let size = (avail * ui.ctx().pixels_per_point()).clamp(64.0, 1024.0) as u32;
                     let key = ThumbKey {
@@ -307,19 +469,36 @@ impl FennecApp {
                 Body::Loading => {
                     ui.weak(t("preview-loading"));
                 }
-                Body::Text { text, truncated } => {
+                Body::Text { loaded, galley, scrolled } => {
+                    let g = match galley {
+                        Some((d, g)) if *d == dark => g.clone(),
+                        _ => {
+                            let job = text_job(ui, loaded);
+                            let g = ui.fonts_mut(|f| f.layout_job(job));
+                            *galley = Some((dark, g.clone()));
+                            g
+                        }
+                    };
+                    if !loaded.highlights.is_empty() {
+                        let n = loaded.highlights.len();
+                        ui.weak(t_args("preview-hits", &[("count", n.into())]));
+                    }
                     egui::Frame::group(ui.style()).show(ui, |ui| {
                         egui::ScrollArea::both().id_salt("preview-text").max_height(ui.available_height() * 0.6).show(
                             ui,
                             |ui| {
-                                ui.add(
-                                    egui::Label::new(egui::RichText::new(text.as_str()).monospace())
-                                        .wrap_mode(egui::TextWrapMode::Extend),
-                                );
+                                let resp = ui.add(egui::Label::new(g.clone()).wrap_mode(egui::TextWrapMode::Extend));
+                                // Jump to the first content hit once.
+                                if !*scrolled && let Some(at) = loaded.first_hit {
+                                    *scrolled = true;
+                                    let chars = loaded.text[..floor_boundary(&loaded.text, at)].chars().count();
+                                    let r = g.pos_from_cursor(egui::text::CCursor::new(chars));
+                                    ui.scroll_to_rect(r.translate(resp.rect.min.to_vec2()), Some(egui::Align::Center));
+                                }
                             },
                         );
                     });
-                    if *truncated {
+                    if loaded.truncated {
                         ui.weak(t("preview-truncated"));
                     }
                 }
@@ -355,6 +534,13 @@ impl FennecApp {
                 row("col-dc", crate::format::date_with(info.created, fmt, now));
                 row("col-da", crate::format::date_with(info.accessed, fmt, now));
                 row("col-attributes", attr_text(info.attributes));
+                for (k, v) in &self.v.preview.props {
+                    if !v.is_empty() {
+                        ui.weak(k);
+                        ui.add(egui::Label::new(v).wrap());
+                        ui.end_row();
+                    }
+                }
             });
         });
     }

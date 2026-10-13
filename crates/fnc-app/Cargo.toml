@@ -15,7 +15,8 @@ fnc-core.workspace = true
 fnc-index.workspace = true
 fnc-query.workspace = true
 fnc-exec.workspace = true
-fnc-platform.workspace = true
+fnc-props.workspace = true
+fnc-platform = { workspace = true, features = ["props"] }
 fnc-ntfs.workspace = true
 eframe.workspace = true
 egui.workspace = true
