@@ -121,22 +121,24 @@ impl FennecApp {
         }
     }
 
-    /// HTTP address (or error) in the status bar.
+    /// HTTP and ETP addresses (or errors) in the status bar.
     pub(super) fn server_status_ui(&self, ui: &mut egui::Ui) {
         let Some(s) = &self.servers else { return };
-        match &s.shown.http {
-            HttpStatus::Off => {}
-            HttpStatus::Running(addr) => {
-                let url = format!("http://{addr}/");
-                ui.separator();
-                ui.label(t_args("status-http", &[("url", url.into())]));
-            }
-            HttpStatus::Failed(e) => {
-                ui.separator();
-                ui.colored_label(
-                    ui.visuals().warn_fg_color,
-                    t_args("status-http-failed", &[("error", e.clone().into())]),
-                );
+        for (status, scheme, ok_key, failed_key) in [
+            (&s.shown.http, "http", "status-http", "status-http-failed"),
+            (&s.shown.etp, "ftp", "status-etp", "status-etp-failed"),
+        ] {
+            match status {
+                HttpStatus::Off => {}
+                HttpStatus::Running(addr) => {
+                    let url = format!("{scheme}://{addr}/");
+                    ui.separator();
+                    ui.label(t_args(ok_key, &[("url", url.into())]));
+                }
+                HttpStatus::Failed(e) => {
+                    ui.separator();
+                    ui.colored_label(ui.visuals().warn_fg_color, t_args(failed_key, &[("error", e.clone().into())]));
+                }
             }
         }
     }

@@ -42,7 +42,9 @@ impl FennecApp {
         self.v.grid_cols = cols;
         let rows = self.v.results.len().div_ceil(cols);
         let results = self.v.results.clone();
-        let snap = self.shared.try_snapshot_for(Duration::from_millis(2));
+        let snap = self.view_index().try_snapshot_for(Duration::from_millis(2));
+        // Remote paths are not read (icons by type only).
+        let remote = self.is_remote();
         let px = (size * ui.ctx().pixels_per_point()).round() as u32;
         let mut action: Option<(usize, egui::Response)> = None;
         let mut area = egui::ScrollArea::vertical().id_salt("fennec-grid").auto_shrink([false, false]);
@@ -70,7 +72,7 @@ impl FennecApp {
                         let stamp = (s.date_modified(id).0 as u64) ^ s.size(id).unwrap_or(0).rotate_left(17);
                         let img_rect =
                             egui::Rect::from_min_size(rect.min + egui::vec2(12.0, 6.0), egui::vec2(size, size));
-                        let key = if s.is_dir(id) {
+                        let key = if s.is_dir(id) || remote {
                             crate::thumbs::icon_key(&path, true, px.min(256))
                         } else {
                             ThumbKey { path: path.clone(), size: px.next_power_of_two().min(1024), icon: false, stamp }

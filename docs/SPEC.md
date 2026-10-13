@@ -971,7 +971,11 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | `eval:` 公式 | Excel 风格公式 | 约 70 个函数（IF/IFS/SWITCH/AND/OR/LEN/LEFT/MID/SUBSTITUTE/SEARCH/ROUND/MOD/DATE/YEAR/… 以及 STARTSWITH/ENDSWITH/CONTAINS 扩展）；变量 `$name:` `$stem:` `$ext:` `$path:` `$parent:` `$fullpath:` `$size:` `$dm:` `$dc:` `$da:` `$dr:` `$rc:` `$attrib:` `$depth:` `$runcount:` `$isfolder:` 及全部属性名；数字可带大小单位（`1.5mb`）；未加引号时 `<` `>` 在 `eval:` 值内视为运算符 | 官方未给出完整函数表（SPEC-GAP）|
 | 撤销 | — | 记录 Fennec 发起的删除（回收站）、重命名、新建文件夹、高级重命名、粘贴（复制 → 撤销时把副本移入回收站；剪切 → 撤销时移回原处）；拖放到其他程序（由目标程序自己记录撤销）与永久删除不记录 | 永久删除不可逆 |
 | 查找栏 | Ctrl+F（查找栏模式）| 默认 Ctrl+F 仍聚焦搜索框（Everything 默认）；`findbar_ctrl_f` 打开后在结果列表中 Ctrl+F 打开查找栏；F3/Shift+F3 在查找栏打开时查找下一个/上一个 | 与 Everything 默认行为一致 |
-| ETP/FTP 服务器 | 支持 | 未实现 | SPEC `[MAY]` |
+| ETP/FTP 服务器 | 1.4 内置 / 1.5 插件；默认关闭，端口 21；用户名、密码留空 = 任意 | 默认关闭、仅回环（127.0.0.1）、端口 21；必须设置密码（`settings.toml` 中为 PBKDF2 哈希），用户名留空 = 任意；密码错误延迟 0.8 s、连续 3 次断开；只读（STOR/DELE/MKD… → 550）；数据连接只接受/连接控制连接的对端（防 FTP bounce）；`SITE EVERYTHING …` 与 Everything 客户端发送的裸 `EVERYTHING …` 均接受；`FILTER_SEARCH` 按自身选项与搜索 AND；`SIZE` 回复 213（Everything 为 200）；`LIST` 6 个月内显示时间（Everything 总显示年份）；`OPTS UTF8 OFF` 后仍为 UTF-8；FEAT/HELP/OPTS 登录前可用（Windows `ftp.exe` 登录前发送 `OPTS UTF8 ON`，成功后才按 UTF-8 显示文件名）；不支持 TLS（Everything 亦无） | 安全要求同 HTTP（ADR-036）|
+| ETP/FTP 目录浏览 | `/C:/…` 来自索引 | 同；UNC 根为 `/UNC/server/share`（Everything：`/\\server/share`），Unix 根原样；`/` 列出各根的第一段，根之上的文件夹为虚拟文件夹；只有索引中在线、非文件列表卷上的文件可 `RETR` | 路径中不出现反斜杠（ADR-036）|
+| ETP 客户端 | 工具 → 连接到 ETP 服务器、`-connect`；窗口按可见行分页（`COUNT`=可见行数，滚动时 `OFFSET`）| 同一菜单与 `-connect`；当前视图（标签页）切换为远程：服务器执行搜索，先取 256 条立即显示，再取至 `etp_client_max_results`（默认 1 万）；结果是只读、离线的独立文件列表索引；状态栏显示服务器总数；服务器不能排序的列在本地对已取结果排序；客户端不保存密码；不支持 `etp_client_rewrite_*` 路径重写 | 结果列表按 EntryId 渲染（ADR-036）|
+| ETP 链接类型 | 默认 `\\Server\C` | 默认 `ftp`：经 `RETR` 下载到 `%TEMP%\Fennec ETP\` 后打开/定位，文件夹则在服务器上搜索；`server`（`C:`）、`share`（`\\Server\C`）、`admin-share`（`\\Server\C$`）同 Everything | 无需在服务器上建共享 |
+| 远程结果的操作 | — | 删除、重命名、粘贴、剪切、新建文件夹、运行次数、省略被拒绝并提示；`ftp` 链接类型下“打开方式 / 属性 / 资源管理器菜单 / 复制文件”不可用；不读取远程路径的图标、缩略图、属性列、预览内容；不记录运行历史 | 只读卷 |
 
 ---
 

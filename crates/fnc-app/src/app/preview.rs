@@ -324,7 +324,7 @@ impl FennecApp {
             std::sync::Arc::as_ptr(&self.v.results) as usize,
         );
         let generation = self
-            .shared
+            .view_index()
             .try_snapshot_for(Duration::from_millis(1))
             .map_or(self.v.preview.generation, |s| s.generation());
         if key == self.v.preview.key && generation == self.v.preview.generation {
@@ -332,7 +332,9 @@ impl FennecApp {
         }
         self.v.preview.key = key;
         let ids = self.target_ids();
-        let Some(snap) = self.shared.try_snapshot_for(Duration::from_millis(5)) else { return };
+        let Some(snap) = self.view_index().try_snapshot_for(Duration::from_millis(5)) else { return };
+        // Remote results: metadata only, their paths are not read.
+        let remote = self.is_remote();
         let p = &mut self.v.preview;
         p.for_ids = ids.clone();
         p.generation = generation;
@@ -385,7 +387,7 @@ impl FennecApp {
                 }
                 let hit = self.v.results.content_hit(id).map(|h| h.offset as usize);
                 let chunk = self.v.results.semantic_range(id);
-                p.body = if is_dir {
+                p.body = if is_dir || remote {
                     Body::Empty
                 } else if let (Some(chunk), None) = (chunk, &p.plan) {
                     // Semantic hit in a content/code chunk: show that passage.

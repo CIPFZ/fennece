@@ -798,3 +798,37 @@ msg-rebuilding-index = Rebuilding the index; searches use the current one until 
 options-password-set = (set — type to change)
 undo-copy = copy
 undo-move = move
+
+## ETP/FTP server and client (ADR-036)
+cmd-connect-etp = Connect to ETP Server…
+cmd-disconnect-etp = Disconnect from ETP Server
+options-page-etp = ETP/FTP Server
+options-desc-etp = Lets Everything clients and FTP clients search and browse this index (ETP = FTP with the Everything extension), and settings for Tools → Connect to ETP Server. User names and passwords are sent as plain text.
+status-etp = ETP/FTP: { $url }
+status-etp-failed = ETP/FTP server: { $error }
+status-etp-remote = ETP: { $host } ({ $total } results)
+msg-etp-bad-bind = Invalid ETP/FTP bind address: { $value }
+msg-etp-no-password = a password is required (Options → ETP/FTP Server)
+msg-etp-bad-port = Invalid port number
+msg-etp-bad-host = Invalid server: use host, host:port or user:password@host:port
+msg-etp-connecting = Connecting to { $host }…
+msg-etp-connected = Connected to the ETP server { $host }
+msg-etp-disconnected = ETP connection closed: { $error }
+msg-etp-query-failed = ETP search failed: { $error }
+msg-etp-downloading = { $count ->
+    [one] Downloading 1 file…
+   *[other] Downloading { $count } files…
+}
+msg-etp-download-failed = Download failed: { $error }
+msg-etp-not-available = Not available for results from an ETP server
+etp-host = Host:
+etp-port = Port:
+etp-username = User name:
+etp-password = Password:
+etp-link-type = Link type:
+etp-link-ftp = ftp://host/C: (download through the server)
+etp-link-server = C: (paths as on the server)
+etp-link-share = \\Server\C (Windows shares)
+etp-link-admin-share = \\Server\C$ (administrative shares)
+etp-plain-text-warning = The user name and password are sent as plain text.
+etp-connect = Connect

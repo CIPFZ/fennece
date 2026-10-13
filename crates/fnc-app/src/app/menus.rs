@@ -249,6 +249,11 @@ impl FennecApp {
                 self.item(ui, K::SaveDatabase, &mut out);
                 self.item(ui, K::RebuildIndex, &mut out);
                 ui.separator();
+                self.item(ui, K::ConnectEtp, &mut out);
+                if self.is_remote() {
+                    self.item(ui, K::DisconnectEtp, &mut out);
+                }
+                ui.separator();
                 self.item(ui, K::InstallService, &mut out);
                 self.item(ui, K::UninstallService, &mut out);
             });

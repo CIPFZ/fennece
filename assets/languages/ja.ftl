@@ -774,3 +774,34 @@ msg-rebuilding-index = インデックスを再構築しています。完了す
 options-password-set = （設定済み — 入力すると変更）
 undo-copy = コピー
 undo-move = 移動
+
+## ETP/FTP server and client (ADR-036)
+cmd-connect-etp = ETP サーバーに接続…
+cmd-disconnect-etp = ETP サーバーから切断
+options-page-etp = ETP/FTP サーバー
+options-desc-etp = Everything クライアントと FTP クライアントがこのインデックスを検索・参照できるようにします（ETP = Everything 拡張付きの FTP）。［ツール］→［ETP サーバーに接続］の設定もここにあります。ユーザー名とパスワードは平文で送信されます。
+status-etp = ETP/FTP：{ $url }
+status-etp-failed = ETP/FTP サーバー：{ $error }
+status-etp-remote = ETP：{ $host }（{ $total } 件）
+msg-etp-bad-bind = ETP/FTP のバインド アドレスが無効です：{ $value }
+msg-etp-no-password = パスワードが必要です（［オプション］→［ETP/FTP サーバー］）
+msg-etp-bad-port = ポート番号が無効です
+msg-etp-bad-host = サーバーが無効です：ホスト、ホスト:ポート、ユーザー名:パスワード@ホスト:ポート のいずれかで指定してください
+msg-etp-connecting = { $host } に接続しています…
+msg-etp-connected = ETP サーバー { $host } に接続しました
+msg-etp-disconnected = ETP 接続が閉じられました：{ $error }
+msg-etp-query-failed = ETP 検索に失敗しました：{ $error }
+msg-etp-downloading = { $count } 個のファイルをダウンロードしています…
+msg-etp-download-failed = ダウンロードに失敗しました：{ $error }
+msg-etp-not-available = ETP サーバーの結果では使用できません
+etp-host = ホスト：
+etp-port = ポート：
+etp-username = ユーザー名：
+etp-password = パスワード：
+etp-link-type = リンクの種類：
+etp-link-ftp = ftp://host/C:（サーバー経由でダウンロード）
+etp-link-server = C:（サーバー上のパス）
+etp-link-share = \\Server\C（Windows 共有）
+etp-link-admin-share = \\Server\C$（管理共有）
+etp-plain-text-warning = ユーザー名とパスワードは平文で送信されます。
+etp-connect = 接続

@@ -72,7 +72,7 @@ impl FennecApp {
             return false;
         }
         let Some(m) = Matcher::new(&self.v.find) else { return true };
-        let Some(snap) = self.shared.try_snapshot_for(Duration::from_millis(50)) else { return true };
+        let Some(snap) = self.view_index().try_snapshot_for(Duration::from_millis(50)) else { return true };
         let ids = &self.v.results.ids;
         let n = ids.len();
         if n == 0 {
@@ -104,7 +104,7 @@ impl FennecApp {
         if self.v.results.len() > COUNT_LIMIT {
             return;
         }
-        let Some(snap) = self.shared.try_snapshot_for(Duration::from_millis(20)) else { return };
+        let Some(snap) = self.view_index().try_snapshot_for(Duration::from_millis(20)) else { return };
         let mut name = String::new();
         let count = self
             .v

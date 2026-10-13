@@ -21,6 +21,7 @@ mod import;
 mod indexer;
 mod ipc_host;
 mod journal;
+mod remote;
 mod rename;
 #[cfg(feature = "semantic")]
 mod semantic;

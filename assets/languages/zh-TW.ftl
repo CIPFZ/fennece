@@ -774,3 +774,34 @@ msg-rebuilding-index = 正在重建索引；完成前搜尋仍使用目前的索
 options-password-set = （已設定——輸入以變更）
 undo-copy = 複製
 undo-move = 移動
+
+## ETP/FTP server and client (ADR-036)
+cmd-connect-etp = 連線到 ETP 伺服器…
+cmd-disconnect-etp = 中斷 ETP 伺服器連線
+options-page-etp = ETP/FTP 伺服器
+options-desc-etp = 允許 Everything 用戶端與 FTP 用戶端搜尋、瀏覽此索引（ETP = 具 Everything 延伸的 FTP），以及「工具 → 連線到 ETP 伺服器」的設定。使用者名稱與密碼以明文傳送。
+status-etp = ETP/FTP：{ $url }
+status-etp-failed = ETP/FTP 伺服器：{ $error }
+status-etp-remote = ETP：{ $host }（{ $total } 個結果）
+msg-etp-bad-bind = 無效的 ETP/FTP 繫結位址：{ $value }
+msg-etp-no-password = 需要設定密碼（選項 → ETP/FTP 伺服器）
+msg-etp-bad-port = 無效的連接埠號碼
+msg-etp-bad-host = 無效的伺服器：請使用 主機、主機:連接埠 或 使用者名稱:密碼@主機:連接埠
+msg-etp-connecting = 正在連線到 { $host }…
+msg-etp-connected = 已連線到 ETP 伺服器 { $host }
+msg-etp-disconnected = ETP 連線已關閉：{ $error }
+msg-etp-query-failed = ETP 搜尋失敗：{ $error }
+msg-etp-downloading = 正在下載 { $count } 個檔案…
+msg-etp-download-failed = 下載失敗：{ $error }
+msg-etp-not-available = 不適用於 ETP 伺服器的結果
+etp-host = 主機：
+etp-port = 連接埠：
+etp-username = 使用者名稱：
+etp-password = 密碼：
+etp-link-type = 連結類型：
+etp-link-ftp = ftp://host/C:（透過伺服器下載）
+etp-link-server = C:（使用伺服器上的路徑）
+etp-link-share = \\Server\C（Windows 共用）
+etp-link-admin-share = \\Server\C$（系統管理共用）
+etp-plain-text-warning = 使用者名稱與密碼以明文傳送。
+etp-connect = 連線

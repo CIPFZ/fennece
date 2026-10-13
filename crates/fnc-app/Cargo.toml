@@ -28,6 +28,7 @@ fnc-semantic = { workspace = true, features = ["llama"], optional = true }
 fnc-props.workspace = true
 fnc-ipc.workspace = true
 fnc-http.workspace = true
+fnc-etp.workspace = true
 eframe.workspace = true
 egui.workspace = true
 egui_extras.workspace = true

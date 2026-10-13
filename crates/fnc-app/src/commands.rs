@@ -238,6 +238,10 @@ commands! {
     IndexJournal = "index-journal",
     /// Semantic search setup (scope, model download).
     SemanticSetup = "semantic-setup",
+    /// Search an ETP server in this view (Everything's Tools → Connect to ETP server).
+    ConnectEtp = "connect-etp",
+    /// Back to the local index.
+    DisconnectEtp = "disconnect-etp",
     /// Search syntax help.
     Help = "help",
     /// About.

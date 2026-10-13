@@ -228,6 +228,20 @@ choice_setting!(
 );
 
 choice_setting!(
+    /// How an ETP client opens remote results (Everything's ETP link types).
+    EtpLinkType {
+        /// Download through the server (`RETR`) into a temporary folder, then open.
+        Ftp => "ftp",
+        /// Use the server's paths unchanged (`C:\…`; mapped drives, SUBST).
+        Server => "server",
+        /// Windows shares named after the drive letter (`\\host\C\…`).
+        Share => "share",
+        /// Administrative drive shares (`\\host\C$\…`).
+        AdminShare => "admin-share",
+    }
+);
+
+choice_setting!(
     /// Colour theme.
     Theme {
         /// Follow the OS.
@@ -652,6 +666,56 @@ pub struct Settings {
     #[setting(key = "http_access_log", default = false, page = "server")]
     pub http_access_log: bool,
 
+    // ---- ETP/FTP server and client (SPEC ch.4 §5, ADR-036) ----
+    /// Enable the ETP/FTP server (Everything clients and FTP clients search and browse the index).
+    #[setting(key = "etp_enabled", default = false, page = "etp")]
+    pub etp_enabled: bool,
+    /// ETP/FTP server bind address (`127.0.0.1` = this computer only, `0.0.0.0` = all).
+    #[setting(key = "etp_bind", default = "127.0.0.1", page = "etp")]
+    pub etp_bind: String,
+    /// ETP/FTP server port.
+    #[setting(key = "etp_port", default = 21, page = "etp")]
+    pub etp_port: u16,
+    /// ETP/FTP user name (empty = any user name).
+    #[setting(key = "etp_username", default = "", page = "etp")]
+    pub etp_username: String,
+    /// ETP/FTP password (required; the server does not start without one; sent as plain text).
+    #[setting(key = "etp_password", default = "", page = "etp")]
+    pub etp_password: String,
+    /// Allow file downloads (RETR) from the ETP/FTP server.
+    #[setting(key = "etp_allow_downloads", default = true, page = "etp")]
+    pub etp_allow_downloads: bool,
+    /// Allow active-mode data connections (PORT/EPRT, only to the client's own address).
+    #[setting(key = "etp_allow_port", default = true, page = "etp")]
+    pub etp_allow_port: bool,
+    /// Most ETP/FTP clients connected at once.
+    #[setting(key = "etp_max_connections", default = 16, page = "etp")]
+    pub etp_max_connections: u32,
+    /// ETP/FTP welcome message (`%n` new line, `%v` version, `%%` percent; empty = default).
+    #[setting(key = "etp_welcome_message", default = "", page = "etp")]
+    pub etp_welcome_message: String,
+    /// Log every ETP/FTP command to this file (empty = no log).
+    #[setting(key = "etp_log_file", default = "", page = "etp")]
+    pub etp_log_file: String,
+    /// Maximum size of the ETP/FTP log file in KB (trimmed from the beginning).
+    #[setting(key = "etp_log_max_kb", default = 4096, page = "etp")]
+    pub etp_log_max_kb: u32,
+    /// Last ETP server connected to (Tools → Connect to ETP Server).
+    #[setting(key = "etp_client_host", default = "", page = "etp")]
+    pub etp_client_host: String,
+    /// Port of the last ETP server.
+    #[setting(key = "etp_client_port", default = 21, page = "etp")]
+    pub etp_client_port: u16,
+    /// User name for the last ETP server (the password is never stored).
+    #[setting(key = "etp_client_username", default = "", page = "etp")]
+    pub etp_client_username: String,
+    /// How remote results are opened: ftp (download), server, share or admin-share.
+    #[setting(key = "etp_client_link_type", default = EtpLinkType::Ftp, page = "etp")]
+    pub etp_client_link_type: EtpLinkType,
+    /// Most remote results fetched per search.
+    #[setting(key = "etp_client_max_results", default = 10_000, page = "etp")]
+    pub etp_client_max_results: u32,
+
     // ---- tabs and sessions (SPEC ch.3 §7) ----
     /// Show the tab bar even with a single tab.
     #[setting(key = "show_tab_bar", default = false, page = "ui")]
@@ -775,11 +839,13 @@ impl Settings {
         Self::deserialize(table).map_err(|e| e.to_string())
     }
 
-    /// Replaces plain-text secrets (`http_password`) by their salted hash; already hashed
-    /// values are kept. Call after editing settings from user input.
+    /// Replaces plain-text secrets (`http_password`, `etp_password`) by their salted hash;
+    /// already hashed values are kept. Call after editing settings from user input.
     pub fn secure_secrets(&mut self) {
-        if !self.http_password.is_empty() && !crate::secret::is_hashed(&self.http_password) {
-            self.http_password = crate::secret::hash(&self.http_password);
+        for p in [&mut self.http_password, &mut self.etp_password] {
+            if !p.is_empty() && !crate::secret::is_hashed(p) {
+                *p = crate::secret::hash(p);
+            }
         }
     }
 
@@ -821,6 +887,9 @@ mod tests {
         // HTTP off by default, loopback only, downloads allowed (Everything); IPC on.
         assert!(!s.http_enabled && s.http_bind == "127.0.0.1" && s.http_port == 8080 && s.http_allow_downloads);
         assert!(s.ipc_server && s.everything_ipc);
+        // ETP/FTP like Everything: off, port 21, downloads allowed; Fennec binds loopback.
+        assert!(!s.etp_enabled && s.etp_bind == "127.0.0.1" && s.etp_port == 21 && s.etp_allow_downloads);
+        assert_eq!(s.etp_client_link_type, EtpLinkType::Ftp);
     }
 
     #[test]
@@ -898,11 +967,13 @@ mod tests {
         let p = d.path().join("settings.toml");
         let mut s = Settings::default();
         s.set("http_password", "s3cret").unwrap();
+        s.set("etp_password", "ftp-pw").unwrap();
         s.save(&p).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
-        assert!(!text.contains("s3cret") && text.contains("pbkdf2-sha256$"), "{text}");
+        assert!(!text.contains("s3cret") && !text.contains("ftp-pw") && text.contains("pbkdf2-sha256$"), "{text}");
         let back = Settings::load(&p).unwrap();
         assert!(crate::secret::verify("s3cret", &back.http_password));
+        assert!(crate::secret::verify("ftp-pw", &back.etp_password));
         // Saving again keeps the same hash (no re-hashing of hashes).
         back.save(&p).unwrap();
         assert_eq!(Settings::load(&p).unwrap().http_password, back.http_password);
