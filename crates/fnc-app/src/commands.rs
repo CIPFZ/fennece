@@ -74,6 +74,12 @@ commands! {
     Undo = "undo",
     /// New tab.
     NewTab = "new-tab",
+    /// Find in the results (find bar; Ctrl+F in the list when `findbar_ctrl_f` is on).
+    FindInResults = "find-in-results",
+    /// Next match of the find bar.
+    FindNext = "find-next",
+    /// Previous match of the find bar.
+    FindPrevious = "find-previous",
     /// Close the current tab.
     CloseTab = "close-tab",
     /// Next tab.
@@ -439,6 +445,9 @@ fn defaults() -> Vec<(KeyCtx, Chord, Command)> {
         (R, Chord::new(N, N, N, Key::F2), K::Rename),
         (R, Chord::new(C, N, N, Key::Z), K::Undo),
         (G, Chord::new(C, N, N, Key::T), K::NewTab),
+        (R, Chord::new(C, N, N, Key::F), K::FindInResults),
+        (R, Chord::new(N, N, N, Key::F3), K::FindNext),
+        (R, Chord::new(N, C, N, Key::F3), K::FindPrevious),
         (G, Chord::new(C, N, N, Key::W), K::CloseTab),
         (G, Chord::new(C, N, N, Key::Tab), K::NextTab),
         (G, Chord::new(C, C, N, Key::Tab), K::PreviousTab),

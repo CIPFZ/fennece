@@ -10,6 +10,7 @@
 mod complete;
 mod dialogs;
 mod edit_ui;
+mod findbar;
 mod grid;
 mod integration;
 mod menus;
@@ -187,6 +188,8 @@ pub(super) struct View {
     grid_cols: usize,
     /// Preview panel.
     preview: preview::PreviewState,
+    /// Find bar (Ctrl+F in find-bar mode).
+    find: findbar::FindBar,
 }
 
 /// Main application state.
@@ -370,6 +373,7 @@ impl FennecApp {
                 rename: None,
                 grid_cols: 1,
                 preview: preview::PreviewState::default(),
+                find: Default::default(),
             },
             windows: Vec::new(),
             in_secondary: false,
@@ -881,6 +885,16 @@ impl FennecApp {
             K::AdvancedRename => self.open_advanced_rename(),
             K::Undo => self.undo_last(),
             K::NewTab => self.tab_new(String::new()),
+            K::FindInResults if self.settings.findbar_ctrl_f => self.open_find_bar(),
+            K::FindInResults => self.run(ctx, K::FocusSearch),
+            K::FindNext => {
+                if !self.find_step(true) {
+                    self.run(ctx, K::FocusSearch);
+                }
+            }
+            K::FindPrevious => {
+                self.find_step(false);
+            }
             K::NextTab => self.tab_step(1),
             K::PreviousTab => self.tab_step(-1),
             K::CloseTab => {
@@ -1958,6 +1972,9 @@ impl FennecApp {
         });
         if self.settings.show_status_bar {
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        }
+        if self.v.find.open {
+            egui::Panel::bottom("find-bar").show(ui, |ui| self.find_bar(ui));
         }
         self.thumbs.poll(&ctx);
         if self.settings.show_preview {

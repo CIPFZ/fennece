@@ -560,6 +560,9 @@ pub struct Settings {
     /// Closing the last tab clears it instead of closing the window.
     #[setting(key = "close_last_tab_keeps_window", default = true, page = "ui")]
     pub close_last_tab_keeps_window: bool,
+    /// Ctrl+F in the result list opens the find bar instead of focusing the search box.
+    #[setting(key = "findbar_ctrl_f", default = false, page = "results")]
+    pub findbar_ctrl_f: bool,
     /// Save windows and tabs on exit and restore them at start.
     #[setting(key = "restore_session", default = false, page = "ui")]
     pub restore_session: bool,

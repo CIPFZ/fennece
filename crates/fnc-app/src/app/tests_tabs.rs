@@ -61,3 +61,40 @@ fn tabs_have_their_own_searches_and_sessions_restore_them() {
     assert_eq!(h.state().v.query, "img");
     assert_eq!(h.state().tabs.view(1).map(|v| v.query.as_str()), Some("report"));
 }
+
+#[test]
+fn find_bar_jumps_without_changing_results() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut deps = deps_for(Some(efu), SharedIndex::default());
+    deps.settings.findbar_ctrl_f = true;
+    let mut h = harness(deps);
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.v.results.len() >= 3);
+    let ctx = h.ctx.clone();
+    let n = h.state().v.results.len();
+    h.state_mut().v.focus = Focus::Results;
+    h.state_mut().run(&ctx, Command::FindInResults);
+    h.run();
+    assert!(h.state().v.find.open);
+    assert!(h.query_by_label("Find:").is_some());
+    h.state_mut().v.find.text = "img_000".into();
+    assert!(h.state_mut().find_step(true));
+    let first = h.state().v.selected.unwrap();
+    let name = |a: &FennecApp, i: usize| a.shared.snapshot().name_string(a.v.results.ids[i]);
+    assert!(name(h.state(), first).to_lowercase().starts_with("img_000"));
+    h.state_mut().run(&ctx, Command::FindNext);
+    let second = h.state().v.selected.unwrap();
+    assert_ne!(first, second);
+    assert!(name(h.state(), second).to_lowercase().starts_with("img_000"));
+    // Wraps around; the result set is unchanged.
+    h.state_mut().run(&ctx, Command::FindNext);
+    assert_eq!(h.state().v.selected, Some(first));
+    h.state_mut().run(&ctx, Command::FindPrevious);
+    assert_eq!(h.state().v.selected, Some(second));
+    assert_eq!(h.state().v.results.len(), n);
+    // Case-sensitive: no match.
+    h.state_mut().v.find.case = true;
+    h.state_mut().run(&ctx, Command::FindNext);
+    assert_eq!(h.state().v.selected, Some(second));
+}
