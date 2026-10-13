@@ -431,6 +431,46 @@ fn hard_links_become_aliases() {
 }
 
 #[test]
+fn unlink_removes_one_name_of_a_multi_link_file() {
+    let (mut s, vol) = sample();
+    let name = |n: &str, parent: u64| (vol, 12, EntryRef::Frn(vol, parent), u16s(n));
+    let touch = |n: &str, parent: u64| Change::Touch {
+        volume: vol,
+        frn: 12,
+        parent: EntryRef::Frn(vol, parent),
+        name: u16s(n),
+        meta: file(1),
+    };
+    let unlink = |n: &str, parent: u64| {
+        let (volume, frn, parent, name) = name(n, parent);
+        Change::Unlink { volume, frn, parent, name }
+    };
+    s.apply(vec![touch("cmd-link.exe", 20), touch("third.exe", 10)]);
+    let cmd = s.resolve(EntryRef::Frn(vol, 12)).unwrap();
+    assert_eq!(s.hardlink_count(cmd), 3);
+    let (v, f, p, n) = name("cmd-link.exe", 20);
+    assert!(s.link_name(v, f, p, &n).is_some());
+    // CheckName alone changes nothing.
+    let (volume, frn, parent, name2) = name("cmd-link.exe", 20);
+    assert!(!s.apply(vec![Change::CheckName { volume, frn, parent, name: name2 }]).changed());
+    // Removing an alias.
+    let st = s.apply(vec![unlink("cmd-link.exe", 20)]);
+    assert_eq!(st.deleted, 1);
+    assert_eq!(s.hardlink_count(cmd), 2);
+    assert!(!all_paths(&s).iter().any(|p| p.ends_with("cmd-link.exe")));
+    // Removing the primary name hands the FRN to an alias.
+    s.apply(vec![unlink("cmd.exe", 11)]);
+    let heir = s.resolve(EntryRef::Frn(vol, 12)).unwrap();
+    assert_eq!(path(&s, heir), "C:\\Windows\\third.exe");
+    // The last name stays (a real deletion is a FILE_DELETE record).
+    let st = s.apply(vec![unlink("third.exe", 10)]);
+    assert_eq!((st.deleted, st.unresolved), (0, 1));
+    assert_eq!(s.hardlink_count(heir), 1);
+    let (v, f, p, n) = name("third.exe", 10);
+    assert_eq!(s.link_name(v, f, p, &n), None, "single names are never checked");
+}
+
+#[test]
 fn touch_inserts_unknown_files_and_renames_folders() {
     let (mut s, vol) = sample();
     let st = s.apply(vec![Change::Touch {

@@ -832,6 +832,10 @@ impl IndexStore {
     fn is_resolvable(&self, change: &Change) -> bool {
         match change {
             Change::Create { parent, .. } | Change::Touch { parent, .. } => self.resolve(*parent).is_some(),
+            Change::CheckName { .. } => true,
+            Change::Unlink { volume, frn, parent, .. } => {
+                self.resolve(EntryRef::Frn(*volume, *frn)).is_some() && self.resolve(*parent).is_some()
+            }
             Change::Delete(t) | Change::Meta { target: t, .. } => self.resolve(*t).is_some(),
             Change::Rename { target, new_parent, .. } => {
                 self.resolve(*target).is_some() && self.resolve(*new_parent).is_some()
@@ -1061,9 +1065,31 @@ impl IndexStore {
             Change::Touch { volume, frn, parent, name, meta } => {
                 tree_changed |= self.apply_touch(volume, frn, parent, &name, &meta, now, stats);
             }
+            Change::CheckName { .. } => {}
+            Change::Unlink { volume, frn, parent, name } => {
+                match (self.resolve(EntryRef::Frn(volume, frn)), self.resolve(parent)) {
+                    (Some(primary), Some(p)) => match self.find_name(primary, p, &name) {
+                        Some(n) if self.names_of(primary).len() > 1 => {
+                            stats.deleted += self.delete_subtree(n, now);
+                        }
+                        _ => stats.unresolved += 1,
+                    },
+                    _ => stats.unresolved += 1,
+                }
+            }
             Change::Path { volume, change } => tree_changed |= self.apply_path(volume, change, now, stats),
         }
         tree_changed
+    }
+
+    /// The entry of file `frn` named `name` in `parent` (its primary entry or a hard-link
+    /// alias) when the file has more than one name.
+    pub fn link_name(&self, volume: VolumeId, frn: u64, parent: EntryRef, name: &[u16]) -> Option<EntryId> {
+        let primary = self.resolve(EntryRef::Frn(volume, frn))?;
+        if self.names_of(primary).len() < 2 {
+            return None;
+        }
+        self.find_name(primary, self.resolve(parent)?, name)
     }
 
     /// The primary entry of `id`'s file followed by its live hard-link aliases.

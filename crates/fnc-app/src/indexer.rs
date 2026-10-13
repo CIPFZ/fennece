@@ -1158,14 +1158,67 @@ impl ChangeSink for WatchSink {
             let snap = self.shared.snapshot();
             filter_excluded(&mut batch, &snap, ex);
         }
+        let checks: Vec<Change> = batch.extract_if(.., |c| matches!(c, Change::CheckName { .. })).collect();
+        let mut touched = crate::stores::Touched::default();
+        let Some(mut changed) = self.apply_batch(batch, &mut touched) else { return false };
+        if !checks.is_empty() {
+            let unlinks = self.removed_links(checks);
+            match self.apply_batch(unlinks, &mut touched) {
+                Some(c) => changed |= c,
+                None => return false,
+            }
+        }
+        if changed {
+            self.refresher.poke();
+        }
+        if let Some(h) = self.hooks.as_ref().filter(|h| h.wants_changes())
+            && !touched.is_empty()
+        {
+            h.changed(touched.ids, touched.moved);
+        }
+        true
+    }
+
+    fn checkpoint(&mut self, journal_id: u64, next_usn: i64) {
+        if let Some(mut g) = self.shared.write() {
+            g.set_journal_position(self.vol, journal_id, next_usn);
+        }
+    }
+}
+
+impl WatchSink {
+    /// `Unlink` changes for the checked hard-link names that no longer exist on disk.
+    /// Paths are built under a read lock; the disk is checked without one.
+    fn removed_links(&self, checks: Vec<Change>) -> ChangeBatch {
+        let candidates: Vec<(Change, PathBuf)> = {
+            let s = self.shared.snapshot();
+            let mut buf = String::new();
+            checks
+                .into_iter()
+                .filter_map(|c| {
+                    let Change::CheckName { volume, frn, parent, name } = c else { return None };
+                    let id = s.link_name(volume, frn, parent, &name)?;
+                    s.full_path(id, &mut buf);
+                    Some((Change::Unlink { volume, frn, parent, name }, PathBuf::from(&buf)))
+                })
+                .collect()
+        };
+        candidates
+            .into_iter()
+            .filter(|(_, p)| matches!(std::fs::symlink_metadata(p), Err(e) if e.kind() == std::io::ErrorKind::NotFound))
+            .map(|(c, _)| c)
+            .collect()
+    }
+
+    /// Applies `batch` in bounded write-lock slices; `None` when this writer is retired.
+    fn apply_batch(&mut self, mut batch: ChangeBatch, touched: &mut crate::stores::Touched) -> Option<bool> {
         let mut changed = false;
         let hooks = self.hooks.as_ref().filter(|h| h.wants_changes());
-        let mut touched = crate::stores::Touched::default();
         while !batch.is_empty() {
             let rest = if batch.len() > MAX_BATCH { batch.split_off(MAX_BATCH) } else { Vec::new() };
             let t = Instant::now();
             // Retired (the index is being rebuilt): stop reading this journal.
-            let Some(mut w) = self.shared.write() else { return false };
+            let mut w = self.shared.write()?;
             let pending = self.journal.as_ref().map(|_| crate::journal::Journal::prepare(&w, &batch));
             let after = hooks.map(|_| touched.before(&w, &batch));
             let stats = w.apply(batch);
@@ -1180,21 +1233,7 @@ impl ChangeSink for WatchSink {
             changed |= stats.changed();
             batch = rest;
         }
-        if changed {
-            self.refresher.poke();
-        }
-        if let Some(h) = hooks
-            && !touched.is_empty()
-        {
-            h.changed(touched.ids, touched.moved);
-        }
-        true
-    }
-
-    fn checkpoint(&mut self, journal_id: u64, next_usn: i64) {
-        if let Some(mut g) = self.shared.write() {
-            g.set_journal_position(self.vol, journal_id, next_usn);
-        }
+        Some(changed)
     }
 }
 
@@ -1796,6 +1835,63 @@ mod tests {
         assert_eq!(o.results.len(), 1);
         assert!(latency < Duration::from_secs(1), "latency {latency:?}");
         eprintln!("IDX-02 change→visible latency: {latency:?}");
+    }
+
+    #[test]
+    fn removed_hard_links_are_dropped_after_a_disk_check() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("orig.txt"), b"x").unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let mut info = fnc_index::VolumeInfo::new(fnc_index::VolumeKind::Ntfs, &root);
+        info.separator = std::path::MAIN_SEPARATOR;
+        let mut store = IndexStore::default();
+        let vol = store.add_volume(info, Some(5)).unwrap();
+        let mut b = store.bulk_load(vol);
+        let u = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        b.push(10, 5, &u("sub"), &Meta::attrs(fnc_core::flags::attr::DIRECTORY)).unwrap();
+        b.push(20, 5, &u("orig.txt"), &Meta::attrs(fnc_core::flags::attr::ARCHIVE)).unwrap();
+        b.finish().unwrap();
+        let shared = SharedIndex::new(store);
+        let mut sink = WatchSink {
+            shared: EpochIndex::new(&shared),
+            refresher: Refresher::spawn(Arc::new(|| {})),
+            vol,
+            paused: Arc::default(),
+            stop: StopFlag::new(),
+            exclusions: None,
+            journal: None,
+            hooks: None,
+        };
+        let touch = |n: &str, parent: u64| Change::Touch {
+            volume: vol,
+            frn: 20,
+            parent: EntryRef::Frn(vol, parent),
+            name: u(n).into(),
+            meta: Meta::attrs(fnc_core::flags::attr::ARCHIVE),
+        };
+        let check = |n: &str, parent: u64| Change::CheckName {
+            volume: vol,
+            frn: 20,
+            parent: EntryRef::Frn(vol, parent),
+            name: u(n).into(),
+        };
+        let names = |shared: &SharedIndex| {
+            let s = shared.snapshot();
+            let id = s.resolve(EntryRef::Frn(vol, 20)).unwrap();
+            s.hardlink_count(id)
+        };
+        // A link is added (the name exists on disk): kept.
+        std::fs::write(dir.path().join("sub").join("alias.txt"), b"x").unwrap();
+        sink.changes(vec![touch("alias.txt", 10), check("alias.txt", 10)]);
+        assert_eq!(names(&shared), 2);
+        // The link is removed: the same records, but the name is gone.
+        std::fs::remove_file(dir.path().join("sub").join("alias.txt")).unwrap();
+        sink.changes(vec![touch("alias.txt", 10), check("alias.txt", 10)]);
+        assert_eq!(names(&shared), 1);
+        let s = shared.snapshot();
+        let sub = s.resolve(EntryRef::Frn(vol, 10)).unwrap();
+        assert_eq!(s.children(sub).count(), 0);
     }
 
     #[test]

@@ -83,6 +83,31 @@ pub enum Change {
         /// Metadata.
         meta: Meta,
     },
+    /// A hard link of file `frn` named `name` in `parent` was added or removed (USN
+    /// `HARD_LINK_CHANGE` records do not say which). The store ignores it; the watcher
+    /// checks the disk and sends [`Change::Unlink`] if the name is gone.
+    CheckName {
+        /// Volume.
+        volume: VolumeId,
+        /// File reference number.
+        frn: u64,
+        /// Folder containing the name.
+        parent: EntryRef,
+        /// Name (UTF-16).
+        name: Box<[u16]>,
+    },
+    /// One name of a multi-link file was removed; the file keeps its other names (a
+    /// file's only name is never removed this way).
+    Unlink {
+        /// Volume.
+        volume: VolumeId,
+        /// File reference number.
+        frn: u64,
+        /// Folder containing the name.
+        parent: EntryRef,
+        /// Name (UTF-16).
+        name: Box<[u16]>,
+    },
     /// A change addressed by path within `volume` (folder indexes).
     Path {
         /// Volume.

@@ -7,8 +7,9 @@
 //! * data/attribute/hard-link records become `Change::Touch` ("this name exists"),
 //!   which never moves an entry: such records may name the file by any of its hard
 //!   links;
-//!   SPEC-GAP: removing one name of a multi-link file (`HARD_LINK_CHANGE`) is not
-//!   detected; the stale alias stays until the file is deleted or the index rebuilt;
+//! * `HARD_LINK_CHANGE` records (a link added *or* removed — the record does not say
+//!   which) also end the batch with a `Change::CheckName`: the watcher looks at the
+//!   disk and removes the name if it is gone;
 //! * size/date changes only request a metadata refresh when the handle is closed
 //!   (`USN_REASON_CLOSE`), so a file written in many chunks is re-read once.
 //!
@@ -56,6 +57,7 @@ pub fn fold_records<'a>(volume: VolumeId, records: impl IntoIterator<Item = UsnR
     let mut refresh_set: HashMap<u64, ()> = HashMap::new();
     let mut last_usn = 0i64;
     let mut name = Vec::new();
+    let mut link_checks: Vec<(u64, u64, Vec<u16>)> = Vec::new();
     for r in records {
         last_usn = last_usn.max(r.usn);
         let frn = r.frn;
@@ -87,6 +89,11 @@ pub fn fold_records<'a>(volume: VolumeId, records: impl IntoIterator<Item = UsnR
         let structural = r.reason & (reason::RENAME_NEW_NAME | reason::FILE_CREATE) != 0;
         let created = r.reason & reason::FILE_CREATE != 0;
         r.name_into(&mut name);
+        if r.reason & reason::HARD_LINK_CHANGE != 0
+            && !link_checks.iter().any(|(f, p, n)| (*f, *p, n) == (frn, r.parent_frn, &name))
+        {
+            link_checks.push((frn, r.parent_frn, name.clone()));
+        }
         match existing.map(|i| &mut slots[i].1) {
             Some(Slot::Upsert { parent, name: n, attributes, created: c, structural: st }) => {
                 // A data record after a create/rename may use another hard link's name:
@@ -131,7 +138,7 @@ pub fn fold_records<'a>(volume: VolumeId, records: impl IntoIterator<Item = UsnR
             refresh.push(frn);
         }
     }
-    let changes = slots
+    let mut changes: ChangeBatch = slots
         .into_iter()
         .filter_map(|(frn, slot)| match slot {
             Slot::Upsert { parent, name, attributes, structural: true, .. } => Some(Change::Create {
@@ -154,6 +161,12 @@ pub fn fold_records<'a>(volume: VolumeId, records: impl IntoIterator<Item = UsnR
             Slot::Removed => None,
         })
         .collect();
+    changes.extend(link_checks.into_iter().map(|(frn, parent, name)| Change::CheckName {
+        volume,
+        frn,
+        parent: EntryRef::Frn(volume, parent),
+        name: name.into_boxed_slice(),
+    }));
     Folded { changes, refresh, last_usn }
 }
 
@@ -187,6 +200,26 @@ mod tests {
         assert_eq!(name(&f.changes[0]), "a.txt");
         assert_eq!(f.refresh, vec![20]);
         assert_eq!(f.last_usn, 3);
+    }
+
+    #[test]
+    fn hard_link_changes_are_checked() {
+        let link = reason::HARD_LINK_CHANGE | reason::CLOSE;
+        let f = fold(&[
+            encode_v2(20, 7, 1, link, 0x20, "alias.txt"),
+            encode_v2(20, 7, 2, link, 0x20, "alias.txt"),
+            encode_v2(20, 5, 3, reason::DATA_EXTEND | reason::CLOSE, 0x20, "orig.txt"),
+        ]);
+        let checks: Vec<_> = f
+            .changes
+            .iter()
+            .filter_map(|c| match c {
+                Change::CheckName { frn, parent, name, .. } => Some((*frn, *parent, String::from_utf16_lossy(name))),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(checks, [(20, EntryRef::Frn(V, 7), "alias.txt".to_string())]);
+        assert!(matches!(f.changes.last(), Some(Change::CheckName { .. })), "checks come last");
     }
 
     #[test]

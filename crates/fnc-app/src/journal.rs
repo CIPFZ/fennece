@@ -187,6 +187,11 @@ impl Journal {
                 Change::Meta { target, .. } => {
                     Pending { action: Action::Modify, before: String::new(), after: Some(AfterRef::Entry(*target)) }
                 }
+                Change::Unlink { volume, frn, parent, name } => match s.link_name(*volume, *frn, *parent, name) {
+                    Some(id) => Pending { action: Action::Delete, before: path_of(s, id), after: None },
+                    None => continue,
+                },
+                Change::CheckName { .. } => continue,
                 Change::Path { volume, change } => match change {
                     PathChange::Upsert { path, .. } => {
                         let exists = s.resolve_path(*volume, path).is_some();

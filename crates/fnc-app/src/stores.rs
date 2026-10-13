@@ -507,6 +507,12 @@ impl Touched {
                 Change::Create { volume, frn, .. } | Change::Touch { volume, frn, .. } => {
                     refs.push((*volume, Resolve::Ref(EntryRef::Frn(*volume, *frn)), false));
                 }
+                Change::Unlink { volume, frn, parent, name } => {
+                    if let Some(id) = s.link_name(*volume, *frn, *parent, name) {
+                        self.ids.push(id);
+                    }
+                }
+                Change::CheckName { .. } => {}
                 Change::Path { volume, change } => match change {
                     PathChange::Upsert { path, .. } => refs.push((*volume, Resolve::Path(path.clone()), false)),
                     PathChange::Remove { path } => {

@@ -894,7 +894,7 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | 日期字段顺序 / 每周首日 | 跟随系统区域 | 设置 `date_input_order`、`week_start` 默认 `auto`：Windows 取 `GetLocaleInfoEx(LOCALE_SSHORTDATE / LOCALE_IFIRSTDAYOFWEEK)`，其他平台按 `LC_TIME`/`LANG` 推断；可改为固定值 | — |
 | `ext:` 与文件夹 | — | 文件夹无扩展名，`ext:` 永不匹配文件夹 | 与资源管理器"类型"一致 |
 | `junction:` / `symlink:` | 依据重解析标记 | 重解析标记未入索引（USN 枚举不提供）：文件夹重解析点视为 junction、文件视为 symlink；带云占位/去重属性（offline、sparse、recall-on-open/data-access、pinned/unpinned）的重解析点不算链接，`target:` 也不读取它们（`attr::is_link_reparse`）| 取标记需逐个打开文件 |
-| NTFS 硬链接 | 每个文件名一个条目 | 每个名称一个条目：MFT 枚举得到一个名称，其余名称由大小/日期补齐阶段的目录列举（带文件 ID）补全；删除多链接文件的单个名称暂不检测（该别名保留到文件删除/重建）| `FSCTL_ENUM_USN_DATA` 每个文件只返回一个名称（ADR-010）|
+| NTFS 硬链接 | 每个文件名一个条目 | 每个名称一个条目：MFT 枚举得到一个名称，其余名称由大小/日期补齐阶段的目录列举（带文件 ID）补全；`HARD_LINK_CHANGE` 记录不区分添加与删除：新名称按别名加入，批次末尾再检查磁盘上该名称是否仍存在，不存在则只删除这个名称（主名称被删时文件号交给其余别名）| `FSCTL_ENUM_USN_DATA` 每个文件只返回一个名称（ADR-010）|
 | ReFS 128 位文件 ID | 原样 | 折叠为 64 位（零扩展保持原值，否则 xxh3）| 索引 FRN 列为 u64 |
 | `.fnx` 加载 | — | 整文件读入后解码（不 mmap），全部列本就可变需拷贝 | ADR-012 |
 | 服务每连接鉴权 | 会话 ID 校验 | 管道 DACL 仅允许 SYSTEM/管理员/交互用户；另在接受连接时按客户端 PID 校验：必须处于交互会话（会话 ≠ 0，排除其他服务）且完整性 ≥ Medium（排除低完整性沙箱进程），否则立即断开 | 服务在会话 0，无法要求"同会话"（ADR-011）|
