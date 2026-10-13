@@ -59,6 +59,8 @@ pub struct StoreConfig {
     pub unknown_props: Vec<String>,
     /// Slow-path policy for searches.
     pub slow: SlowPolicy,
+    /// IFilter fallback for content (`content_ifilter`), with or without a content index.
+    pub ifilter: bool,
 }
 
 impl StoreConfig {
@@ -73,6 +75,7 @@ impl StoreConfig {
                 max_file_bytes: u64::from(s.content_max_file_mb.max(1)) << 20,
                 office: s.content_office,
                 pdf: s.content_pdf,
+                ifilter: s.content_ifilter,
                 ..ContentLimits::default()
             },
             max_total_bytes: u64::from(s.content_max_total_mb) << 20,
@@ -86,7 +89,7 @@ impl StoreConfig {
             // files outside their scope are not read); `notindexed:` still reads.
             read_uncovered: false,
         };
-        Self { props, content, unknown_props, slow }
+        Self { props, content, unknown_props, slow, ifilter: s.content_ifilter }
     }
 
     /// `true` if either index is on.
@@ -95,7 +98,9 @@ impl StoreConfig {
     }
 
     fn content_limits(&self) -> ContentLimits {
-        self.content.as_ref().map(|c| c.limits.clone()).unwrap_or_default()
+        let mut l = self.content.as_ref().map(|c| c.limits.clone()).unwrap_or_default();
+        l.ifilter = self.ifilter;
+        l
     }
 }
 
@@ -319,7 +324,9 @@ impl Stores {
 fn on_demand(provider: Option<Arc<dyn PropertyProvider>>, cfg: &StoreConfig, ansi: u16) -> Arc<dyn OnDemand> {
     let mut properties = PropertyExtractor::new();
     properties.fallback = provider;
-    let content = ContentExtractor { limits: cfg.content_limits(), ansi_code_page: ansi };
+    let limits = cfg.content_limits();
+    let fallback = if limits.ifilter { crate::ifilter::provider() } else { None };
+    let content = ContentExtractor { limits, ansi_code_page: ansi, fallback };
     Arc::new(DefaultOnDemand { properties, content })
 }
 

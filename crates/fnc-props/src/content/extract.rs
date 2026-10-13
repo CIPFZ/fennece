@@ -1,8 +1,11 @@
 //! Content extraction (SPEC ch.1 §9.2): plain text with encoding detection, HTML tag
-//! stripping, Office Open XML and PDF text.
+//! stripping, Office Open XML and PDF text, and an injectable [`ContentProvider`]
+//! fallback (IFilters in a host process on Windows, supplied by the app because this
+//! crate cannot use COM).
 
 use std::io::Read;
 use std::path::Path;
+use std::sync::Arc;
 
 use encoding_rs::Encoding;
 
@@ -30,19 +33,77 @@ fn is_html(ext: &str) -> bool {
     matches!(ext.to_ascii_lowercase().as_str(), "htm" | "html" | "xhtml" | "mht" | "mhtml" | "shtml" | "hta")
 }
 
+/// Fallback text source for formats the built-in parsers do not read (the app injects
+/// the IFilters of the system, run in a separate host process).
+///
+/// Called on extraction and search threads; must not panic (panics are contained) and
+/// must bound its own time per file.
+pub trait ContentProvider: Send + Sync {
+    /// `true` if files with extension `ext` (lowercase, no dot) have a text source.
+    fn handles(&self, ext: &str) -> bool;
+    /// Text of the file, at most `max_bytes` (`None` if there is none).
+    fn text(&self, path: &Path, ext: &str, max_bytes: usize) -> Option<String>;
+}
+
+/// Document formats whose bytes are not text: without a [`ContentProvider`] for them the
+/// built-in decoder still runs (it may find nothing, or raw markup such as RTF); with
+/// one, the provider is used instead of the decoder.
+pub fn is_foreign_document(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "rtf"
+            | "doc"
+            | "dot"
+            | "wri"
+            | "xls"
+            | "xlt"
+            | "xlsb"
+            | "ppt"
+            | "pps"
+            | "pot"
+            | "msg"
+            | "odt"
+            | "ott"
+            | "ods"
+            | "odp"
+            | "odg"
+            | "wpd"
+            | "wps"
+            | "vsd"
+            | "pub"
+            | "xps"
+            | "oxps"
+            | "epub"
+            | "chm"
+    )
+}
+
 /// Content extractor.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ContentExtractor {
     /// Limits.
     pub limits: ContentLimits,
     /// Windows code page used for "ANSI" text (e.g. 1252, 936); see
     /// [`encoding_for_code_page`]. The app sets it from `GetACP()`.
     pub ansi_code_page: u16,
+    /// Fallback for files the built-in parsers give no text for (IFilters), used when
+    /// [`ContentLimits::ifilter`] is on and the provider handles the extension.
+    pub fallback: Option<Arc<dyn ContentProvider>>,
+}
+
+impl std::fmt::Debug for ContentExtractor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContentExtractor")
+            .field("limits", &self.limits)
+            .field("ansi_code_page", &self.ansi_code_page)
+            .field("fallback", &self.fallback.is_some())
+            .finish()
+    }
 }
 
 impl Default for ContentExtractor {
     fn default() -> Self {
-        Self { limits: ContentLimits::default(), ansi_code_page: 1252 }
+        Self { limits: ContentLimits::default(), ansi_code_page: 1252, fallback: None }
     }
 }
 
@@ -61,10 +122,43 @@ impl ContentExtractor {
 
     /// Text of the file (`None` if unreadable, binary, too large or unsupported). The
     /// result is at most `limits.max_text_bytes`.
+    ///
+    /// The built-in parsers run first; the [`fallback`](Self::fallback) provider only
+    /// when they give nothing (or, for [`is_foreign_document`] formats, instead of the
+    /// raw-byte decoder), and never for OOXML/PDF when their parsing is switched off.
     pub fn extract(&self, path: &Path, ext: &str) -> Option<String> {
+        let fam = family(ext);
+        let allowed = match fam {
+            Family::Ooxml => self.limits.office,
+            Family::Pdf => self.limits.pdf,
+            _ => true,
+        };
+        let lower = ext.to_ascii_lowercase();
+        let fallback = self
+            .fallback
+            .as_ref()
+            .filter(|_| self.limits.ifilter && allowed && !lower.is_empty())
+            .filter(|f| f.handles(&lower));
+        if !(fallback.is_some() && is_foreign_document(&lower))
+            && let Some(t) = self.builtin(path, ext, fam)
+        {
+            return Some(t);
+        }
+        let f = fallback?;
+        let len = std::fs::metadata(path).ok()?.len();
+        if len > self.extract_limits().max_read_bytes {
+            return None;
+        }
+        let max = self.limits.max_text_bytes;
+        let mut text = contained("content-fallback", path, || f.text(path, &lower, max))??;
+        crate::extract::ooxml::truncate_utf8(&mut text, max);
+        (!text.trim().is_empty()).then_some(text)
+    }
+
+    fn builtin(&self, path: &Path, ext: &str, fam: Family) -> Option<String> {
         let max = self.limits.max_text_bytes;
         let l = self.extract_limits();
-        match family(ext) {
+        match fam {
             Family::Ooxml if self.limits.office => contained("ooxml-text", path, || ooxml::extract_text(path, l, max))?,
             Family::Pdf if self.limits.pdf => contained("pdf-text", path, || pdf::extract_text(path, l, max))?,
             Family::Ooxml | Family::Pdf => None,
@@ -346,5 +440,59 @@ mod tests {
         assert_eq!(small.extract_plain(&p, TextEncoding::Utf8).unwrap(), "01234");
         assert!(ex.extract(Path::new("/no/such/file.txt"), "txt").is_none());
         assert_eq!(encoding_for_code_page(936), encoding_rs::GBK);
+    }
+
+    /// A fake IFilter provider: handles `doc`, `rtf`, `docx`, `txt` and a crashing `boom`.
+    struct Fake;
+    impl ContentProvider for Fake {
+        fn handles(&self, ext: &str) -> bool {
+            matches!(ext, "doc" | "rtf" | "docx" | "txt" | "boom")
+        }
+        fn text(&self, path: &Path, ext: &str, max_bytes: usize) -> Option<String> {
+            if ext == "boom" {
+                panic!("filter crashed");
+            }
+            let name = path.file_name()?.to_str()?;
+            let mut t = format!("filtered {name} with the {ext} filter");
+            t.truncate(max_bytes);
+            Some(t)
+        }
+    }
+
+    #[test]
+    fn fallback_provider_only_where_the_builtin_parsers_give_nothing() {
+        let ex = ContentExtractor { fallback: Some(Arc::new(Fake)), ..ContentExtractor::default() };
+        // Binary legacy Office: the decoder finds nothing; the provider does.
+        let (_d, doc) = file("a.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1\x00\x00\x00\x00binary");
+        assert_eq!(ex.extract(&doc, "doc").as_deref(), Some("filtered a.doc with the doc filter"));
+        assert_eq!(ex.extract(&doc, "DOC").as_deref(), Some("filtered a.doc with the doc filter"));
+        // RTF: the provider replaces the raw markup.
+        let (_d, rtf) = file("b.rtf", br"{\rtf1\ansi plan}");
+        assert_eq!(ex.extract(&rtf, "rtf").as_deref(), Some("filtered b.rtf with the rtf filter"));
+        // Plain text and OOXML keep the built-in parsers.
+        let (_d, txt) = file("c.txt", b"own text");
+        assert_eq!(ex.extract(&txt, "txt").as_deref(), Some("own text"));
+        let (_d, docx) = file("d.docx", &crate::extract::ooxml::tests::docx("Quarterly"));
+        assert!(ex.extract(&docx, "docx").unwrap().contains("Quarterly"));
+        // Office parsing off: no IFilter for docx either.
+        let no_office =
+            ContentExtractor { limits: ContentLimits { office: false, ..ContentLimits::default() }, ..ex.clone() };
+        assert_eq!(no_office.extract(&docx, "docx"), None);
+        // `content_ifilter` off: the built-in behaviour (raw RTF, nothing for .doc).
+        let off =
+            ContentExtractor { limits: ContentLimits { ifilter: false, ..ContentLimits::default() }, ..ex.clone() };
+        assert_eq!(off.extract(&rtf, "rtf").as_deref(), Some(r"{\rtf1\ansi plan}"));
+        assert_eq!(off.extract(&doc, "doc"), None);
+        // Unhandled extensions, a panicking provider, the text limit, `textplain:`.
+        let (_d, bin) = file("e.bin", b"\x00\x01\x02\x00\x00\x00\x00\x00\x00\x00");
+        assert_eq!(ex.extract(&bin, "bin"), None);
+        let (_d, boom) = file("f.boom", b"\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+        assert_eq!(ex.extract(&boom, "boom"), None);
+        let small =
+            ContentExtractor { limits: ContentLimits { max_text_bytes: 8, ..ContentLimits::default() }, ..ex.clone() };
+        assert_eq!(small.extract(&doc, "doc").as_deref(), Some("filtered"));
+        assert_eq!(ex.extract_plain(&rtf, TextEncoding::Utf8).as_deref(), Some(r"{\rtf1\ansi plan}"));
+        assert!(is_foreign_document("XLS") && !is_foreign_document("docx"));
+        assert!(format!("{ex:?}").contains("fallback: true"));
     }
 }

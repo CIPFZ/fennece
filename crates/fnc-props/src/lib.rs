@@ -7,8 +7,9 @@
 //! * [`extract`] — pure-Rust extractors ([`extract::PropertyExtractor`]) and the
 //!   [`extract::PropertyProvider`] fallback trait (Windows Property System, injected by the app).
 //! * [`store`] — the sparse [`PropertyStore`] and its shared handle [`PropertyIndex`].
-//! * [`content`] — [`content::ContentExtractor`], [`content::ContentStore`] (LZ4 text +
-//!   token index) and [`content::ContentIndex`].
+//! * [`content`] — [`content::ContentExtractor`] (with the injectable
+//!   [`content::ContentProvider`] fallback: IFilters in a host process on Windows, ADR-035),
+//!   [`content::ContentStore`] (LZ4 text + token index) and [`content::ContentIndex`].
 //! * [`hash`] — CRC-32/CRC-64/MD5/SHA-1/SHA-256/SHA-512 and the [`hash::HashCache`].
 //! * [`ondemand`] — [`ondemand::OnDemand`]: file reads for searches on unindexed entries.
 //! * [`link`] / [`signature`] / [`recycle`] — `target:` (shell links, internet shortcuts,

@@ -113,10 +113,20 @@ impl FennecApp {
                 }
             }
             // Property columns (SPEC ch.3 §4.3), indexed ones first.
+            // About 300 entries: a filter box (title or search name) at the top.
             ui.menu_button(t("menu-property-columns"), |ui| {
+                let filter_id = ui.make_persistent_id("property-column-filter");
+                let mut filter: String = ui.data_mut(|d| d.get_temp(filter_id)).unwrap_or_default();
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut filter).hint_text(t("menu-property-filter")).desired_width(220.0),
+                );
+                if edit.changed() {
+                    ui.data_mut(|d| d.insert_temp(filter_id, filter.clone()));
+                }
+                ui.separator();
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                     let indexed = self.stores.config().props.stored();
-                    let all = ColumnId::properties();
+                    let all = crate::columns::filter_properties(ColumnId::properties(), &filter);
                     let (first, rest): (Vec<ColumnId>, Vec<ColumnId>) = all.into_iter().partition(|c| match c {
                         ColumnId::Property(p) => indexed.contains(p),
                         _ => false,

@@ -199,6 +199,17 @@ mod tests {
         }
     }
 
+    /// Every property of the table (about 300) has a column title in every language.
+    #[test]
+    fn every_property_has_a_title_in_every_language() {
+        for (tag, src) in LANGUAGES {
+            let b = bundle(tag, src);
+            for p in fnc_props::PropertyId::all() {
+                assert!(b.has_message(&format!("prop-{}", p.name())), "{tag} is missing prop-{}", p.name());
+            }
+        }
+    }
+
     #[test]
     fn formats_with_arguments() {
         init("en");
