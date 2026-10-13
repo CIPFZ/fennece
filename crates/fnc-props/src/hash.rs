@@ -280,7 +280,7 @@ impl HashKey {
 type Digests = [Option<Box<[u8]>>; 6];
 
 /// Thread-safe cache of computed digests.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct HashCache {
     map: Mutex<HashMap<HashKey, Digests>>,
     generation: AtomicU64,
@@ -288,10 +288,16 @@ pub struct HashCache {
     pub max_entries: usize,
 }
 
+impl Default for HashCache {
+    fn default() -> Self {
+        Self { map: Mutex::new(HashMap::new()), generation: AtomicU64::new(0), max_entries: 4 << 20 }
+    }
+}
+
 impl HashCache {
     /// Empty cache.
     pub fn new() -> Self {
-        Self { max_entries: 4 << 20, ..Self::default() }
+        Self::default()
     }
 
     /// Number of cached files.

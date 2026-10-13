@@ -319,6 +319,36 @@ mod tests {
     }
 
     #[test]
+    fn wanted_properties_and_derived_sources() {
+        let ex = PropertyExtractor::new();
+        let (_d, p) = testutil::file("a.png", &image::tests::png(30, 20));
+        let v = ex.extract(&p, "png", &[PropertyId::DIMENSIONS]);
+        assert!(v.contains(&(PropertyId::WIDTH, Value::Int(30))) && v.contains(&(PropertyId::HEIGHT, Value::Int(20))));
+        assert!(!v.iter().any(|(q, _)| *q == PropertyId::BIT_DEPTH), "only the sources of dimensions");
+        let all = ex.extract(&p, "png", &[]);
+        assert!(all.iter().any(|(q, _)| *q == PropertyId::BIT_DEPTH));
+        let cfg = PropertyIndexConfig { properties: vec![PropertyId::BIT_DEPTH], ..Default::default() };
+        assert_eq!(ex.extract_config(&p, "png", &cfg), vec![(PropertyId::BIT_DEPTH, Value::Int(32))]);
+        let (_d, dll) = testutil::file("a.dll", &pe::tests::pe_dll());
+        let v = ex.extract(&dll, "dll", &[PropertyId::FILE_VERSION, PropertyId::IS_DLL]);
+        assert_eq!(v.len(), 2);
+        let (_d, doc) = testutil::file("a.docx", &ooxml::tests::docx("x"));
+        assert_eq!(ex.extract(&doc, "docx", &[PropertyId::PAGE_COUNT]), vec![(PropertyId::PAGE_COUNT, Value::Int(3))]);
+        let (_d, pdf) = testutil::file("a.pdf", &pdf::tests::sample_pdf("x"));
+        assert_eq!(ex.extract(&pdf, "pdf", &[PropertyId::PAGE_COUNT]), vec![(PropertyId::PAGE_COUNT, Value::Int(2))]);
+        let (_d, mp4) = testutil::file("a.mp4", &video::tests::mp4());
+        assert!(
+            ex.extract(&mp4, "mp4", &[PropertyId::DIMENSIONS]).contains(&(PropertyId::FRAME_WIDTH, Value::Int(1280)))
+        );
+        let (_d, mkv) = testutil::file("a.webm", &video::tests::webm());
+        assert!(
+            ex.extract(&mkv, "webm", &[PropertyId::LENGTH]).contains(&(PropertyId::LENGTH, Value::Duration(90_000)))
+        );
+        let (_d, wav) = testutil::file("a.wav", &audio::tests::wav(1));
+        assert_eq!(ex.extract(&wav, "wav", &[PropertyId::LENGTH]), vec![(PropertyId::LENGTH, Value::Duration(1000))]);
+    }
+
+    #[test]
     fn families() {
         assert_eq!(family("JPG"), Family::Image);
         assert_eq!(family("flac"), Family::Audio);

@@ -301,6 +301,11 @@ fn hashes_are_computed_cached_and_prefix_matched() {
     assert!(!r.names("md5:unknown").contains(&"copy1.bin".to_string()));
     assert_eq!(r.names("ext:bin sha256:"), ["copy1.bin", "copy2.bin", "diff.bin"]);
     assert_eq!(r.names("crc32:0000;ffffffff"), Vec::<String>::new());
+    for algo in fnc_props::hash::HashAlgo::ALL {
+        let d = fnc_props::hash::hash_file(&f.root.join("diff.bin"), &[algo], &|| false).unwrap().unwrap();
+        let hex = fnc_props::hash::to_hex(&d[0].1);
+        assert_eq!(r.names(&format!("{}:{}", algo.name(), &hex[..8])), ["diff.bin"], "{}", algo.name());
+    }
     let off = Run { policy: SlowPolicy { hashes: false, ..SlowPolicy::default() }, ..Run::new(&f.store) };
     assert!(off.names("sha1:a").is_empty());
 }

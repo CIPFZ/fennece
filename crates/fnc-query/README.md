@@ -9,6 +9,8 @@ The Everything 1.5 compatible search language (SPEC ch.2).
 - AST → canonical text (`to_query_string`), round-trip property-tested.
 - Value parsing: sizes (granularity, constants), dates (absolute, relative, constants), lists, ranges, comparisons.
 - Planner: typed predicates, modifier defaults, cost ordering of AND terms, result-set reuse detection.
+- M3: property functions from the `fnc-props` table (`FuncId::Prop`), content/hash predicates, set
+  functions hoisted to `PlannedQuery::post`.
 
 **Invariants**
 - Parsing never fails or panics (fuzzed with proptest); unknown `name:` prefixes are literal text.
