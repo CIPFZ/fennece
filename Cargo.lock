@@ -1748,6 +1748,12 @@ dependencies = [
 [[package]]
 name = "fnc-sdk"
 version = "0.1.0"
+dependencies = [
+ "fnc-index",
+ "fnc-ipc",
+ "parking_lot",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "fnc-semantic"
