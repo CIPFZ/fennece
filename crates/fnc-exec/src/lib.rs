@@ -16,6 +16,7 @@ pub mod engine;
 pub mod eval;
 pub mod exec;
 pub mod ext;
+pub mod formula;
 pub mod fuzzy;
 pub mod highlight;
 pub mod matcher;

@@ -312,6 +312,17 @@ impl Lexer<'_, '_> {
         !norm.is_empty() && known && (numeric_fn || cmp_mod)
     }
 
+    /// `true` inside the value of `eval:` (formula comparison operators, not groups).
+    fn in_formula(out: &[Ch]) -> bool {
+        let prefix: String =
+            out.iter().take_while(|ch| ch.lit || ch.c != '(').filter(|ch| !ch.lit).map(|ch| ch.c).collect();
+        let mut norm = String::new();
+        prefix.split(':').rev().skip(1).any(|seg| {
+            normalize_name(seg.trim_start_matches('?'), &mut norm);
+            norm == "eval"
+        })
+    }
+
     fn read_term(&mut self) -> Tok {
         let start = self.pos();
         let mut out: Vec<Ch> = Vec::new();
@@ -362,7 +373,7 @@ impl Lexer<'_, '_> {
                     continue;
                 }
                 '|' if !literal_rest => break,
-                '<' | '>' if !literal_rest && !Self::operator_position(&out) => break,
+                '<' | '>' if !literal_rest && !Self::operator_position(&out) && !Self::in_formula(&out) => break,
                 '&' if self.try_entity(&mut out) => continue,
                 '%' if self.try_env(&mut out) => continue,
                 '*' if self.peek(1) == Some(':') && !literal_rest => {

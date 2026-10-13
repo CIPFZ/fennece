@@ -828,6 +828,8 @@ pub enum ExtLeaf {
     ContentHits(ContentHitsLeaf),
     /// Hash.
     Hash(HashLeaf),
+    /// Formula (`eval:`).
+    Eval(crate::formula::EvalLeaf),
 }
 
 impl ExtLeaf {
@@ -839,6 +841,7 @@ impl ExtLeaf {
             ExtLeaf::Content(c) => c.eval(s, id, sc),
             ExtLeaf::ContentHits(c) => c.eval(s, id, sc),
             ExtLeaf::Hash(h) => h.eval(s, id, sc),
+            ExtLeaf::Eval(f) => f.eval(s, id, sc),
         }
     }
 }
