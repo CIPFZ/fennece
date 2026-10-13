@@ -921,6 +921,15 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | 多个筛选器 | `and-filter:` / `or-filter:` | `FilterSet` 默认 OR 组合（任一为"Everything"即全部），查询中的 `and-filter:`/`or-filter:` 优先于 `FilterSet::and`；每个筛选器的 case/ww/path/diacritics 仅作为其自身项的默认值，`regex` 使整个筛选器搜索为一个正则 | 与 Everything 筛选器选项一致 |
 | `target:` `fsi:` `recycled:` `filelistfilename:` | 访问文件系统 | M2 仍为 `Unsupported`（匹配空并提示）| 需文件系统访问（fs 类），计划随属性/内容索引在 M3 实现 |
 | `parent+N:` | 第 N 级父 | 未注册（`parent+2:x` 作为字面文本）| 官方文档未给出精确语法与语义（SPEC-GAP），待核对 |
+| `count:<max>`（结果数上限）| 搜索函数，限制结果数 | IPC/HTTP/fes/兼容层的查询后端在排序后截断（es 1.1.0.38 的 `-n` 以 `< count:N >` 发送）；UI 引擎尚未支持 | `count:` 在 fnc-query 中是比较修饰符；待 fnc-query 接管（SPEC-GAP）|
+| Everything IPC 报告版本 | Everything 自身版本 | `1.4.1.<Fennec 版本>`（0.1.0 → `1.4.1.100`），`Host::everything_version` 可改 | 客户端按 ≥ 1.4.1 启用 QUERY2/IS_DB_LOADED（ADR-031）|
+| IPC `A` 变体字符串 | ANSI 代码页 | UTF-8（失败回退 Latin-1）| 无 Win32 代码页转换（SPEC-GAP）|
+| Everything 1.5 IPC3 管道 | `\\.\pipe\Everything IPC` | 不实现；es 回退 IPC2 | 原生协议另见 ADR-030 |
+| es/fes 默认日期格式 | 系统区域格式（`GetDateFormat`）| `YYYY-MM-DD HH:MM:SS` 本地时间；ISO/FILETIME 格式与 es 一致 | 跨平台、可排序（ADR-033）|
+| fes 退出码 | es：8 无 IPC、6 未知开关、4 缺参数 | SPEC：1 无实例、2 参数错误、3 超时；5/7/9 沿用 es | SPEC 第 4 章 §2 |
+| M3U 编码 / 空 JSON 导出 | ANSI 代码页 / 不输出 | UTF-8 / `[]` | 无代码页依赖；合法 JSON |
+| HTTP JSON 未知值 | 未说明 | 未知大小（文件夹）/日期不输出该字段 | 避免空字符串数值（ADR-032）|
+| HTTP 文件夹链接 | 浏览文件夹 | 链接为该文件夹路径的搜索，不做目录列举 | SPEC 第 4 章 §4 防护要求 |
 
 ---
 

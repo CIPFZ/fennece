@@ -47,3 +47,12 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 - [M2][fnc-exec] multi-level sort (3 keys), more sort columns; monomorphised single-key comparators.
 - [M2][fnc-app] full UI: command system + Everything keymap with overrides, menu bar, 19 columns (chooser, reorder, widths), multi-selection, rename, context menu, drag & drop, clipboard, filters (combo, bar, manager, CSV import), bookmarks, search history, completion, search builder, export, `/key=value`, Options window (all pages, Keyboard, Advanced), theme switch, window geometry, permanent-delete confirmation.
 - [M2][docs] report `docs/reports/M2.md`, ADR-011 (service), ADR-012 (database load), bench `results-windows.md`.
+
+## M4
+- [M4][fnc-ipc] native protocol on `Fennec.<instance>.ipc`: length-prefixed MessagePack, strict decoding, columnar results, paging (`QueryContinue`), counts/sizes/versions/status/run counts/admin/volumes/filters/bookmarks; `IndexBackend` + `Host` (queries on snapshots, cache, time limits); threaded server with connection limit and SY/BA/IU pipe DACL; blocking `Client` with timeouts (ADR-030).
+- [M4][fnc-ipc] Everything 1.4 compatibility: `QUERYW`/`QUERY2` (W/A) decoding, `LISTW`/`LIST2` encoding with all request flags, run-count copydata, `EVERYTHING_WM_IPC` commands, `compat_window` example (reference Win32 plumbing); verified with official es.exe 1.1.0.38 and Everything64.dll (ADR-031, INT-03).
+- [M4][fnc-ipc] `export`: EFU/CSV/TSV/TXT/M3U/M3U8/JSON/plain writers with es rules, `export_entries` for the app (ADR-033, INT-07).
+- [M4][fnc-fes] es.exe 1.1 compatible `fes` over IPC: full switch grammar, sorts, columns, formats, exports, info/run-count/lifecycle commands, settings file; `-offline` (`index.fnx`) and `-filelist`; exit codes 0/1/2/3 (+5/7/9) (ADR-033, INT-02).
+- [M4][fnc-http] HTTP server: search page, Everything JSON, index-resolved downloads, `/api/v1/status|volumes`; Basic auth, limits, timeouts, CSP, static root (ADR-032, INT-04).
+- [M4][fnc-sdk] `fennec_sdk` Rust builder API and Everything-SDK style C ABI with `include/fennec_sdk.h`.
+- [M4][docs] ADR-030…033; SPEC ch.2 §9 rows for fes/compat/HTTP differences.
