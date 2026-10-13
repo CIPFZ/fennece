@@ -36,8 +36,9 @@ $rtf = Join-Path $obj 'license.rtf'
 $mit = (Get-Content LICENSE-MIT -Raw) -replace '\\', '\\\\' -replace '\{', '\{' -replace '\}', '\}' -replace "`r?`n", '\par '
 Set-Content -Path $rtf -Value "{\rtf1\ansi\deff0{\fonttbl{\f0 Segoe UI;}}\fs18 $mit}" -Encoding ascii
 $icon = Join-Path $root 'assets\icon\fennec.ico'
-& (Join-Path $Wix 'candle.exe') -nologo -arch x64 -dVersion=$version -dBinDir=$bin -dSrcDir=$root -dIconFile=$icon `
-    -dLicenseRtf=$rtf -out "$obj\fennec.wixobj" packaging\wix\fennec.wxs
+# Quoted: PowerShell would pass `-dName=$var` unexpanded.
+& (Join-Path $Wix 'candle.exe') -nologo -arch x64 "-dVersion=$version" "-dBinDir=$bin" "-dSrcDir=$root" "-dIconFile=$icon" `
+    "-dLicenseRtf=$rtf" -out "$obj\fennec.wixobj" packaging\wix\fennec.wxs
 if ($LASTEXITCODE -ne 0) { throw "candle failed" }
 $msi = Join-Path $dist "fennec-$version-x64.msi"
 & (Join-Path $Wix 'light.exe') -nologo -ext WixUIExtension -cultures:en-us -sval -out $msi "$obj\fennec.wixobj"
