@@ -79,6 +79,9 @@ impl FennecApp {
         let mut choose_filter: Option<usize> = None;
         egui::MenuBar::new().ui(ui, |ui| {
             ui.menu_button(t("menu-file"), |ui| {
+                self.item(ui, K::NewWindow, &mut out);
+                self.item(ui, K::CloseWindow, &mut out);
+                ui.separator();
                 self.item(ui, K::Export, &mut out);
                 ui.separator();
                 self.item(ui, K::HideWindow, &mut out);
@@ -153,7 +156,7 @@ impl FennecApp {
                 self.item(ui, K::SearchHistory, &mut out);
                 self.item(ui, K::ClearHistory, &mut out);
                 ui.separator();
-                self.check(ui, K::FilterNone, self.active_filters.is_empty(), &mut out);
+                self.check(ui, K::FilterNone, self.v.active_filters.is_empty(), &mut out);
                 let slots = [
                     K::Filter1,
                     K::Filter2,
@@ -166,7 +169,7 @@ impl FennecApp {
                     K::Filter9,
                 ];
                 for (i, f) in self.filters.list.iter().enumerate() {
-                    let on = self.active_filters.contains(&i);
+                    let on = self.v.active_filters.contains(&i);
                     let label = if on { format!("✔ {}", f.name) } else { format!("    {}", f.name) };
                     let mut b = egui::Button::new(label);
                     if let Some(&c) = slots.get(i) {
@@ -238,15 +241,15 @@ impl FennecApp {
     /// Applies bookmark `i`: its search, filter and sort.
     pub(super) fn open_bookmark(&mut self, i: usize) {
         let Some(b) = self.bookmarks.list.get(i).cloned() else { return };
-        self.active_filters = self.filters.find(&b.filter).into_iter().collect();
+        self.v.active_filters = self.filters.find(&b.filter).into_iter().collect();
         self.settings.filter = b.filter.clone();
         if !b.sort.is_empty() {
             let mut s = self.settings.clone();
             s.sort = b.sort.clone();
-            self.sort = super::sort_from_settings(&s);
+            self.v.sort = super::sort_from_settings(&s);
         }
         self.rebuild_search_options();
         self.set_query(b.search);
-        self.focus_search = true;
+        self.v.focus_search = true;
     }
 }

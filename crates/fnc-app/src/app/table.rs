@@ -45,7 +45,7 @@ enum RowAction {
 impl FennecApp {
     fn sort_arrow(&self, col: ColumnId) -> String {
         let key = col.sort();
-        for (n, (c, asc)) in self.sort.keys().enumerate() {
+        for (n, (c, asc)) in self.v.sort.keys().enumerate() {
             if c == key && self.column_owns_sort(col) {
                 let arrow = if asc { "▲" } else { "▼" };
                 return if n == 0 { format!(" {arrow}") } else { format!(" {arrow}{}", n + 1) };
@@ -103,16 +103,16 @@ impl FennecApp {
             let key = col.sort();
             let first_asc = !col.sort_descending_first();
             if ctrl {
-                self.sort.push_key(key, first_asc);
-            } else if self.sort.column == key && self.sort.then.iter().all(Option::is_none) {
-                self.sort.ascending = !self.sort.ascending;
+                self.v.sort.push_key(key, first_asc);
+            } else if self.v.sort.column == key && self.v.sort.then.iter().all(Option::is_none) {
+                self.v.sort.ascending = !self.v.sort.ascending;
             } else {
-                self.sort = fnc_exec::SortSpec::by(key, first_asc, self.settings.folders_first);
+                self.v.sort = fnc_exec::SortSpec::by(key, first_asc, self.settings.folders_first);
             }
             self.send_search();
             // Keep typing in the search box after sorting.
-            if self.focus == Focus::Search {
-                self.keep_focus = true;
+            if self.v.focus == Focus::Search {
+                self.v.keep_focus = true;
             }
         }
         if let (Some(from), Some(at)) = (ev.drag_from, ev.dropped_at)
@@ -121,7 +121,7 @@ impl FennecApp {
         {
             let c = self.columns.remove(from);
             self.columns.insert(to, c);
-            self.rows.clear();
+            self.v.rows.clear();
         }
         if let Some(c) = ev.toggle_column {
             if let Some(p) = self.columns.iter().position(|s| s.id == c) {
@@ -129,17 +129,17 @@ impl FennecApp {
             } else {
                 self.columns.push(ColumnState { id: c, width: c.default_width() });
             }
-            self.rows.clear();
+            self.v.rows.clear();
         }
         if ev.reset_columns {
             self.columns = crate::columns::parse_columns(&fnc_core::settings::Settings::default().columns);
-            self.rows.clear();
+            self.v.rows.clear();
         }
         self.sync_view_settings();
     }
 
     fn row(&mut self, id: EntryId, snap: Option<&fnc_index::IndexSnapshot>) -> Option<Row> {
-        if let Some(r) = self.rows.get(&id) {
+        if let Some(r) = self.v.rows.get(&id) {
             return Some(r.clone());
         }
         let s = snap?;
@@ -161,7 +161,7 @@ impl FennecApp {
         }
         let mut name_hl = Vec::new();
         let mut path_hl = Vec::new();
-        if let Some(h) = &self.highlighter {
+        if let Some(h) = &self.v.highlighter {
             if let Some(i) = cols.iter().position(|&c| c == ColumnId::Name) {
                 h.name_ranges(&cells[i], &mut name_hl);
             }
@@ -179,15 +179,15 @@ impl FennecApp {
             name_hl,
             path_hl,
         };
-        if self.rows.len() > 4096 {
-            self.rows.clear();
+        if self.v.rows.len() > 4096 {
+            self.v.rows.clear();
         }
-        self.rows.insert(id, row.clone());
+        self.v.rows.insert(id, row.clone());
         Some(row)
     }
 
     pub(super) fn results_table(&mut self, ui: &mut egui::Ui) {
-        if self.results.is_empty() {
+        if self.v.results.is_empty() {
             ui.centered_and_justified(|ui| {
                 let text = match self.status {
                     crate::indexer::IndexStatus::Starting | crate::indexer::IndexStatus::Building { .. } => {
@@ -205,10 +205,10 @@ impl FennecApp {
         // One short-lived snapshot for all visible rows; never wait more than 2 ms.
         let snap = self.shared.try_snapshot_for(Duration::from_millis(2));
         if let Some(s) = &snap
-            && s.generation() != self.rows_generation
+            && s.generation() != self.v.rows_generation
         {
-            self.rows_generation = s.generation();
-            self.rows.clear();
+            self.v.rows_generation = s.generation();
+            self.v.rows.clear();
         }
         let text_h = ui.text_style_height(&egui::TextStyle::Body);
         let row_h = if self.settings.row_height > 0 {
@@ -216,7 +216,7 @@ impl FennecApp {
         } else {
             (text_h + 6.0).max(ui.spacing().interact_size.y)
         };
-        let results = self.results.clone();
+        let results = self.v.results.clone();
         let mut action: Option<(usize, RowAction)> = None;
         let ncols = self.columns.len();
         let mut builder = TableBuilder::new(ui)
@@ -233,7 +233,7 @@ impl FennecApp {
             };
             builder = builder.column(col);
         }
-        if let Some(i) = self.scroll_to.take() {
+        if let Some(i) = self.v.scroll_to.take() {
             builder = builder.scroll_to_row(i, None);
         }
         let mut header =
@@ -249,7 +249,9 @@ impl FennecApp {
                 body.rows(row_h, results.len(), |mut row| {
                     let i = row.index();
                     let id = results.ids[i];
-                    row.set_selected(self.sel.contains(id) || (self.sel.ids.is_empty() && self.selected == Some(i)));
+                    row.set_selected(
+                        self.v.sel.contains(id) || (self.v.sel.ids.is_empty() && self.v.selected == Some(i)),
+                    );
                     let data = self.row(id, snap.as_ref());
                     let weak = data.as_ref().is_some_and(|r| r.offline);
                     for (ci, c) in self.columns.clone().iter().enumerate() {
@@ -263,7 +265,7 @@ impl FennecApp {
                             let text = &r.cells[ci];
                             match c.id {
                                 ColumnId::Name => {
-                                    if let Some(rn) = self.rename.as_mut().filter(|rn| rn.id == id) {
+                                    if let Some(rn) = self.v.rename.as_mut().filter(|rn| rn.id == id) {
                                         let resp = ui
                                             .add(egui::TextEdit::singleline(&mut rn.text).desired_width(f32::INFINITY));
                                         if rn.focus {
@@ -329,58 +331,59 @@ impl FennecApp {
         self.apply_header(header);
         match rename_done {
             Some(true) => self.commit_rename(),
-            Some(false) => self.rename = None,
+            Some(false) => self.v.rename = None,
             None => {}
         }
         let Some((i, action)) = action else { return };
         // Clicking the list moves keyboard focus to it (Del, Ctrl+C act on files).
         if !matches!(action, RowAction::Drag) {
-            self.focus = Focus::Results;
-            ui.ctx().memory_mut(|m| m.surrender_focus(egui::Id::new(super::SEARCH_ID)));
+            self.v.focus = Focus::Results;
+            let sid = self.search_id();
+            ui.ctx().memory_mut(|m| m.surrender_focus(sid));
         }
         let id = results.ids[i];
         match action {
             RowAction::Click { ctrl: true, .. } => {
-                if self.sel.all {
-                    self.sel.all = false;
-                    self.sel.ids = results.ids.iter().copied().collect();
+                if self.v.sel.all {
+                    self.v.sel.all = false;
+                    self.v.sel.ids = results.ids.iter().copied().collect();
                 }
-                if !self.sel.ids.remove(&id) {
-                    self.sel.ids.insert(id);
+                if !self.v.sel.ids.remove(&id) {
+                    self.v.sel.ids.insert(id);
                 }
-                self.sel.anchor = Some(i);
-                self.selected = Some(i);
-                self.selected_id = Some(id);
+                self.v.sel.anchor = Some(i);
+                self.v.selected = Some(i);
+                self.v.selected_id = Some(id);
             }
             RowAction::Click { shift: true, .. } => self.select_range(i),
             RowAction::Click { .. } => {
                 self.select_only(i);
-                self.scroll_to = None;
+                self.v.scroll_to = None;
                 if self.settings.single_click_open {
                     self.pending.push(Command::Open);
                 }
             }
             RowAction::Open => {
                 self.select_only(i);
-                self.scroll_to = None;
+                self.v.scroll_to = None;
                 self.pending.push(Command::Open);
             }
             RowAction::Reveal => {
                 self.select_only(i);
-                self.scroll_to = None;
+                self.v.scroll_to = None;
                 self.pending.push(Command::OpenPath);
             }
             RowAction::Context => {
-                if !self.sel.contains(id) {
+                if !self.v.sel.contains(id) {
                     self.select_only(i);
-                    self.scroll_to = None;
+                    self.v.scroll_to = None;
                 }
                 self.after.push(After::ContextMenu);
             }
             RowAction::Drag => {
-                if !self.sel.contains(id) {
+                if !self.v.sel.contains(id) {
                     self.select_only(i);
-                    self.scroll_to = None;
+                    self.v.scroll_to = None;
                 }
                 self.after.push(After::DragOut);
             }

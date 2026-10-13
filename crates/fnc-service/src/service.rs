@@ -140,3 +140,19 @@ pub fn uninstall(instance: &str) -> Result<(), String> {
     println!("{} removed", service_name(instance));
     Ok(())
 }
+
+/// Starts or stops the installed service.
+pub fn start_stop(instance: &str, start: bool) -> Result<(), String> {
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|e| format!("cannot open the service manager: {e}"))?;
+    let service = manager
+        .open_service(service_name(instance), ServiceAccess::START | ServiceAccess::STOP | ServiceAccess::QUERY_STATUS)
+        .map_err(|e| format!("{} is not installed: {e}", service_name(instance)))?;
+    if start {
+        service.start::<&str>(&[]).map_err(|e| format!("cannot start: {e}"))?;
+    } else {
+        service.stop().map_err(|e| format!("cannot stop: {e}"))?;
+    }
+    println!("{} {}", service_name(instance), if start { "started" } else { "stopped" });
+    Ok(())
+}

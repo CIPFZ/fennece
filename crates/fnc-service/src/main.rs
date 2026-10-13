@@ -29,6 +29,8 @@ use std::process::ExitCode;
 struct Args {
     install: bool,
     uninstall: bool,
+    start: bool,
+    stop: bool,
     console: bool,
     instance: String,
     help: bool,
@@ -41,6 +43,8 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
         match s.trim_start_matches(['-', '/']).to_ascii_lowercase().as_str() {
             "install" => a.install = true,
             "uninstall" => a.uninstall = true,
+            "start" => a.start = true,
+            "stop" => a.stop = true,
             "console" => a.console = true,
             "instance" => a.instance = it.next().ok_or("-instance needs a name")?,
             "help" | "h" | "?" => a.help = true,
@@ -53,7 +57,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
     Ok(a)
 }
 
-const USAGE: &str = "fennec-service -install | -uninstall | -console  [-instance <name>]";
+const USAGE: &str = "fennec-service -install | -uninstall | -start | -stop | -console  [-instance <name>]";
 
 fn main() -> ExitCode {
     let args = match parse(std::env::args().skip(1)) {
@@ -76,6 +80,8 @@ fn run(args: Args) -> ExitCode {
         service::install(&args.instance)
     } else if args.uninstall {
         service::uninstall(&args.instance)
+    } else if args.start || args.stop {
+        service::start_stop(&args.instance, args.start)
     } else if args.console {
         let _log = init_logging(true);
         server::serve(&args.instance, &fnc_platform::StopFlag::new()).map_err(|e| e.to_string())

@@ -14,6 +14,7 @@
 
 pub mod fileops;
 pub mod instance;
+pub mod integration;
 pub mod locale;
 pub mod privilege;
 pub mod shell;

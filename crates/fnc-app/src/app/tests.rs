@@ -22,6 +22,12 @@ fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedIndex) -> AppDe
     crate::i18n::init("en");
     let (engine_tx, engine_rx) = crossbeam_channel::unbounded();
     let engine = SearchEngine::spawn(shared.clone(), engine_tx, Box::new(|| {}));
+    let sh = shared.clone();
+    let new_engine: Arc<dyn Fn() -> (SearchEngine, crossbeam_channel::Receiver<EngineEvent>) + Send + Sync> =
+        Arc::new(move || {
+            let (tx, rx) = crossbeam_channel::unbounded();
+            (SearchEngine::spawn(sh.clone(), tx, Box::new(|| {})), rx)
+        });
     let (index_tx, index_rx) = crossbeam_channel::unbounded();
     let handle = engine.handle();
     let indexer = match file_list {
@@ -37,12 +43,14 @@ fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedIndex) -> AppDe
         shared,
         engine,
         engine_rx,
+        new_engine,
         index_rx,
         instance: None,
         indexer,
         settings: Settings { show_tray_icon: false, hotkey_show_window: String::new(), ..Settings::default() },
         settings_path: dir.join("settings.toml"),
         initial_search: None,
+        initial_cli: None,
         start_hidden: false,
     }
 }
@@ -66,30 +74,30 @@ fn typing_searches_and_keyboard_navigates() {
     let efu = dir.path().join("t.efu");
     std::fs::write(&efu, EFU).unwrap();
     let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
-    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.results.len() == 7);
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.v.results.len() == 7);
 
     h.get_by_role(Role::TextInput).type_text("img");
-    wait_until(&mut h, "results for img", |a| a.sent_query.as_deref() == Some("img") && a.results.len() == 2);
+    wait_until(&mut h, "results for img", |a| a.v.sent_query.as_deref() == Some("img") && a.v.results.len() == 2);
 
     h.key_press(egui::Key::ArrowDown);
     h.step();
-    assert_eq!(h.state().selected, Some(0));
+    assert_eq!(h.state().v.selected, Some(0));
     h.key_press(egui::Key::ArrowDown);
     h.step();
-    assert_eq!(h.state().selected, Some(1));
+    assert_eq!(h.state().v.selected, Some(1));
     // Shift+Down belongs to the text box (selection), not to the result list.
     h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowDown);
     h.step();
-    assert_eq!(h.state().selected, Some(1));
+    assert_eq!(h.state().v.selected, Some(1));
 
     // Escape clears the search and every entry is listed again.
     h.key_press(egui::Key::Escape);
-    wait_until(&mut h, "cleared search", |a| a.query.is_empty() && a.results.len() == 7);
+    wait_until(&mut h, "cleared search", |a| a.v.query.is_empty() && a.v.results.len() == 7);
 
     // Unsupported functions are reported in the status bar, not silently ignored.
     h.get_by_role(Role::TextInput).type_text("width:>100");
-    wait_until(&mut h, "diagnostic", |a| !a.diagnostics.is_empty());
-    assert!(h.state().diagnostics[0].contains("width"));
+    wait_until(&mut h, "diagnostic", |a| !a.v.diagnostics.is_empty());
+    assert!(h.state().v.diagnostics[0].contains("width"));
 }
 
 #[test]
@@ -98,7 +106,9 @@ fn ui02_fast_typing_shows_only_the_final_query() {
     let efu = dir.path().join("big.efu");
     std::fs::write(&efu, gen_fixtures::write_efu(200_000, 3, Vec::new()).unwrap()).unwrap();
     let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
-    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.results.len() == 200_000);
+    wait_until(&mut h, "index ready", |a| {
+        matches!(a.status, IndexStatus::Ready { .. }) && a.v.results.len() == 200_000
+    });
     // `a`, then `bc` one frame later: the intermediate query may be cancelled, and the
     // final result must be for `abc`.
     let input = h.get_by_role(Role::TextInput);
@@ -107,7 +117,7 @@ fn ui02_fast_typing_shows_only_the_final_query() {
     h.get_by_role(Role::TextInput).type_text("bc");
     let t = Instant::now();
     let mut max_frame = Duration::ZERO;
-    while !(h.state().sent_query.as_deref() == Some("abc") && h.state().latest_shown + 1 == h.state().next_id) {
+    while !(h.state().v.sent_query.as_deref() == Some("abc") && h.state().v.latest_shown + 1 == h.state().v.next_id) {
         assert!(t.elapsed() < Duration::from_secs(20), "abc never arrived");
         let f = Instant::now();
         h.step();
@@ -120,7 +130,7 @@ fn ui02_fast_typing_shows_only_the_final_query() {
             .filter(|&i| snap.is_live(i) && String::from_utf8_lossy(snap.fold(i)).contains("abc"))
             .count()
     };
-    assert_eq!(h.state().results.len(), expected);
+    assert_eq!(h.state().v.results.len(), expected);
     eprintln!("UI-02: largest frame while the search ran: {max_frame:?}");
 }
 
@@ -135,7 +145,7 @@ fn ui01_scrolling_one_million_results() {
         w.rebuild_name_order();
     }
     let mut h = harness(deps_for(None, shared));
-    wait_until(&mut h, "1M results", |a| a.results.len() == 1_000_000);
+    wait_until(&mut h, "1M results", |a| a.v.results.len() == 1_000_000);
     h.run_steps(5);
     let mut frames = Vec::new();
     for i in 0..300 {
@@ -201,30 +211,30 @@ fn selection_commands_and_copy() {
     let efu = dir.path().join("t.efu");
     std::fs::write(&efu, EFU).unwrap();
     let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
-    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.results.len() == 7);
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.v.results.len() == 7);
     h.get_by_role(Role::TextInput).type_text("img");
-    wait_until(&mut h, "img", |a| a.results.len() == 2 && a.sent_query.as_deref() == Some("img"));
+    wait_until(&mut h, "img", |a| a.v.results.len() == 2 && a.v.sent_query.as_deref() == Some("img"));
     let ctx = h.ctx.clone();
     h.state_mut().run(&ctx, Command::SelectAll);
     assert_eq!(h.state().target_ids().len(), 2);
     h.state_mut().run(&ctx, Command::InvertSelection);
-    assert!(h.state().target_ids().is_empty() || h.state().sel.ids.is_empty());
+    assert!(h.state().target_ids().is_empty() || h.state().v.sel.ids.is_empty());
     h.state_mut().run(&ctx, Command::MoveDown);
     h.state_mut().run(&ctx, Command::ExtendDown);
-    assert_eq!(h.state().sel.ids.len(), 2);
+    assert_eq!(h.state().v.sel.ids.len(), 2);
     let paths: Vec<String> = h.state().target_paths().iter().map(|(_, p)| p.display().to_string()).collect();
     assert!(paths.iter().all(|p| p.contains("Photos")), "{paths:?}");
     // Omit hides the rows until the search changes.
     h.state_mut().run(&ctx, Command::Omit);
-    wait_until(&mut h, "omitted", |a| a.results.is_empty());
+    wait_until(&mut h, "omitted", |a| a.v.results.is_empty());
     // A new search shows them again.
     h.state_mut().set_query("img ".into());
-    wait_until(&mut h, "back", |a| a.results.len() == 2);
+    wait_until(&mut h, "back", |a| a.v.results.len() == 2);
     // `/key=value` inline command.
     h.state_mut().inline_command(&ctx, "/search_delay=7");
     assert_eq!(h.state().settings.search_delay, 7);
     // Sorting by a second key from the header model.
-    let mut spec = h.state().sort;
+    let mut spec = h.state().v.sort;
     spec.push_key(fnc_exec::SortColumn::Size, false);
     assert_eq!(spec.keys().count(), 2);
 }
@@ -236,17 +246,17 @@ fn mouse_selection_on_rows() {
     let efu = dir.path().join("t.efu");
     std::fs::write(&efu, EFU).unwrap();
     let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
-    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.results.len() == 7);
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.v.results.len() == 7);
     h.get_by_role(Role::TextInput).type_text("img");
-    wait_until(&mut h, "img", |a| a.results.len() == 2 && a.sent_query.as_deref() == Some("img"));
+    wait_until(&mut h, "img", |a| a.v.results.len() == 2 && a.v.sent_query.as_deref() == Some("img"));
     h.run_steps(2);
     h.get_by_label_contains("0002").click();
     h.run_steps(2);
-    assert_eq!(h.state().sel.ids.len(), 1);
-    assert_eq!(h.state().focus, Focus::Results, "clicking the list moves keyboard focus to it");
+    assert_eq!(h.state().v.sel.ids.len(), 1);
+    assert_eq!(h.state().v.focus, Focus::Results, "clicking the list moves keyboard focus to it");
     h.get_by_label_contains("0001").click_modifiers(egui::Modifiers::CTRL);
     h.run_steps(2);
-    assert_eq!(h.state().sel.ids.len(), 2);
+    assert_eq!(h.state().v.sel.ids.len(), 2);
     // Ctrl+C arrives as a clipboard event; in the list it copies the files (here: the
     // text fallback, as the test has no file clipboard).
     h.event(egui::Event::Copy);
@@ -262,21 +272,21 @@ fn ui03_size_header_sorts_one_million_within_300ms() {
     let shared = SharedIndex::new(gen_fixtures::build_index(1_000_000, 42).unwrap());
     shared.write().rebuild_name_order();
     let mut h = harness(deps_for(None, shared));
-    wait_until(&mut h, "1M results", |a| a.results.len() == 1_000_000);
+    wait_until(&mut h, "1M results", |a| a.v.results.len() == 1_000_000);
     h.run_steps(3);
     let mut times = Vec::new();
     for _ in 0..4 {
-        let before = h.state().latest_shown;
+        let before = h.state().v.latest_shown;
         let t = Instant::now();
         h.get_by_label_contains(&t_title("size")).click();
-        while h.state().latest_shown == before {
+        while h.state().v.latest_shown == before {
             h.step();
         }
         times.push(t.elapsed());
         h.run_steps(1);
     }
     eprintln!("UI-03 size header click → sorted 1M shown: {times:?}");
-    assert_eq!(h.state().results.len(), 1_000_000);
+    assert_eq!(h.state().v.results.len(), 1_000_000);
     assert!(times.iter().all(|t| *t < Duration::from_millis(300)), "{times:?}");
 }
 
@@ -323,7 +333,7 @@ fn preview_text_and_thumbnail_grid() {
     deps.settings.show_preview = true;
     let mut h = harness(deps);
     h.get_by_role(Role::TextInput).type_text("notes");
-    wait_until(&mut h, "notes", |a| a.results.len() == 1 && a.sent_query.as_deref() == Some("notes"));
+    wait_until(&mut h, "notes", |a| a.v.results.len() == 1 && a.v.sent_query.as_deref() == Some("notes"));
     let ctx = h.ctx.clone();
     h.state_mut().run(&ctx, Command::MoveDown);
     let t = Instant::now();
@@ -334,11 +344,69 @@ fn preview_text_and_thumbnail_grid() {
     }
     // Grid view with a broken picture: the item still shows (placeholder), no panic.
     h.state_mut().set_query(String::new());
-    wait_until(&mut h, "all", |a| a.results.len() >= 3);
+    wait_until(&mut h, "all", |a| a.v.results.len() >= 3);
     h.state_mut().run(&ctx, Command::ViewLarge);
     h.run_steps(5);
     h.state_mut().run(&ctx, Command::MoveDown);
-    assert_eq!(h.state().selected, Some(h.state().grid_cols.min(h.state().results.len() - 1)), "down moves a row");
+    assert_eq!(
+        h.state().v.selected,
+        Some(h.state().v.grid_cols.min(h.state().v.results.len() - 1)),
+        "down moves a row"
+    );
     h.state_mut().run(&ctx, Command::ViewDetails);
     h.run_steps(2);
+}
+
+/// INT-01 (in-process part): a new window searches independently of the main one.
+#[test]
+fn new_window_has_its_own_search() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.v.results.len() == 7);
+    h.state_mut().open_window("ext:docx".into());
+    let t = Instant::now();
+    loop {
+        h.step();
+        let w = &h.state().windows;
+        if w.len() == 1 && w[0].view.results.len() == 1 {
+            break;
+        }
+        assert!(t.elapsed() < Duration::from_secs(10), "window search never finished");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(h.state().v.results.len(), 7, "main window unchanged");
+    // Esc on an empty search closes a secondary window.
+    let ctx = h.ctx.clone();
+    let mut w = h.state_mut().windows.pop().unwrap();
+    std::mem::swap(&mut h.state_mut().v, &mut w.view);
+    h.state_mut().in_secondary = true;
+    h.state_mut().run(&ctx, Command::CloseWindow);
+    assert!(h.state().close_secondary);
+}
+
+/// Forwarded command lines: -filename selects the file in its folder, -sort and -filter
+/// apply, -search* is literal.
+#[test]
+fn forwarded_command_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.v.results.len() == 7);
+    let ctx = h.ctx.clone();
+    let cli = crate::cli::parse(["-filename", r"C:\Photos\IMG_0002.jpg"].map(String::from));
+    h.state_mut().apply_cli(&ctx, cli, true);
+    wait_until(&mut h, "selected", |a| a.v.selected.is_some() && a.v.pending_select.is_none());
+    let sel = h.state().target_paths();
+    assert_eq!(sel.len(), 1);
+    assert!(sel[0].1.display().to_string().ends_with("IMG_0002.jpg"));
+    let cli = crate::cli::parse(["-sort", "size", "-sort-descending", "-filter", "Picture"].map(String::from));
+    h.state_mut().apply_cli(&ctx, cli, true);
+    assert_eq!(h.state().v.sort.column, fnc_exec::SortColumn::Size);
+    assert!(!h.state().v.sort.ascending);
+    assert_eq!(h.state().active_filter_name(), "Picture");
+    h.state_mut().set_query(String::new());
+    wait_until(&mut h, "pictures only", |a| a.v.results.len() == 2 && a.v.sent_query.as_deref() == Some(""));
 }

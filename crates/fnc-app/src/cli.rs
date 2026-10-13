@@ -1,4 +1,4 @@
-//! Command line (SPEC ch.4 §1): the Everything-compatible subset needed for M1.
+//! Command line (SPEC ch.4 §1), Everything compatible.
 //!
 //! Unknown switches produce a warning instead of failing.
 
@@ -37,19 +37,99 @@ pub struct Cli {
     pub no_db: bool,
     /// `-db <file>`: database file.
     pub db: Option<String>,
+    /// `-toggle-window` / `-show` / `-hide` / `-close`.
+    pub window: Option<WindowAction>,
+    /// `-filter <name>`.
+    pub filter: Option<String>,
+    /// `-bookmark <name>`.
+    pub bookmark: Option<String>,
+    /// `-sort <column>` with `-sort-ascending` / `-sort-descending`.
+    pub sort: Option<(String, Option<bool>)>,
+    /// `-filename <path>`: search the file's folder and select the file.
+    pub filename: Option<String>,
+    /// `-update`: rescan folder indexes.
+    pub update: bool,
+    /// `-save-db`.
+    pub save_db: bool,
+    /// `-admin`: restart elevated.
+    pub admin: bool,
+    /// `-install-run-on-system-startup` (true) / `-uninstall-run-on-system-startup` (false).
+    pub run_on_startup: Option<bool>,
+    /// Explorer context menu entries to install (true) or remove (false).
+    pub context_menu: Vec<(ContextMenu, bool)>,
+    /// `-config <file>`: settings file.
+    pub config: Option<String>,
+    /// `-log <file>`.
+    pub log: Option<String>,
+    /// `-portable` / `-no-app-data`: keep data next to the executable.
+    pub portable: bool,
+    /// Tool commands that run without a window.
+    pub tool: Option<Tool>,
     /// Search modifiers from `-case`, `-ww`, `-path`, `-diacritics`, `-regex`.
     pub modifiers: Vec<&'static str>,
     /// Unknown switches (reported as warnings).
     pub unknown: Vec<String>,
 }
 
-/// `-install-service` / `-uninstall-service`.
+/// `-install-service` / `-uninstall-service` / `-start-service` / `-stop-service`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceAction {
     /// Register and start.
     Install,
     /// Stop and remove.
     Uninstall,
+    /// Start.
+    Start,
+    /// Stop.
+    Stop,
+}
+
+/// Window commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowAction {
+    /// `-toggle-window`.
+    Toggle,
+    /// `-show`.
+    Show,
+    /// `-hide`.
+    Hide,
+    /// `-close`: close (hide to tray or exit, like the close button).
+    Close,
+}
+
+/// Explorer context menu entries (SPEC ch.4 §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextMenu {
+    /// Folders and folder backgrounds: "Search Fennec" (`-path "%1"`).
+    Folder,
+    /// Files: "Explore in Fennec" (`-filename "%1"`).
+    File,
+}
+
+/// Commands that run and exit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tool {
+    /// `-create-file-list <out.efu> <folder>`.
+    CreateFileList {
+        /// Output file.
+        out: String,
+        /// Folder to list.
+        folder: String,
+    },
+    /// `-create-usn-journal <X:> <max bytes> <delta bytes>`.
+    CreateUsnJournal {
+        /// Drive.
+        drive: String,
+        /// Maximum size.
+        max: u64,
+        /// Allocation delta.
+        delta: u64,
+    },
+    /// `-delete-usn-journal <X:>`.
+    DeleteUsnJournal {
+        /// Drive.
+        drive: String,
+    },
 }
 
 /// Usage text (not localised: printed to the console for scripts).
@@ -70,6 +150,19 @@ fennec [options] [search text]
   -newwindow              open a new window
   -startup, -minimized    start hidden in the tray
   -exit, -quit            exit the running instance
+  -toggle-window, -show, -hide, -close   window control
+  -filter <name>          apply a filter      -bookmark <name>   open a bookmark
+  -sort <column>          sort (-sort-ascending / -sort-descending)
+  -filename <path>        show the file in its folder (Explore in Fennec)
+  -update                 rescan folder indexes     -save-db   save the database now
+  -admin                  restart with administrator rights
+  -start-service, -stop-service
+  -install-run-on-system-startup / -uninstall-run-on-system-startup
+  -install-folder-context-menu / -uninstall-folder-context-menu
+  -install-file-context-menu / -uninstall-file-context-menu
+  -create-file-list <out.efu> <folder>
+  -create-usn-journal <X:> <max> <delta>   -delete-usn-journal <X:>
+  -config <file>  -log <file>  -portable  -no-app-data
   -install-service        install fennec-service (index NTFS without admin rights)
   -uninstall-service      remove fennec-service
   -reindex                rebuild the index (ignore the database)
@@ -100,9 +193,15 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Cli {
         let key = a[1..].to_ascii_lowercase().replace('_', "-");
         let value = |it: &mut std::iter::Peekable<I::IntoIter>| it.next();
         match key.as_str() {
-            "s" | "search" | "search*" => {
+            "s" | "search" => {
                 if let Some(v) = value(&mut it) {
                     text.push(v);
+                }
+            }
+            // `-search*`: the rest is plain text (operators not parsed).
+            "search*" => {
+                if let Some(v) = value(&mut it) {
+                    text.push(format!("\"{}\"", v.replace('"', "&quot:")));
                 }
             }
             "r" | "regex" => {
@@ -152,7 +251,56 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Cli {
             "exit" | "quit" => cli.exit = true,
             "install-service" => cli.service = Some(ServiceAction::Install),
             "uninstall-service" => cli.service = Some(ServiceAction::Uninstall),
-            "reindex" => cli.reindex = true,
+            "start-service" => cli.service = Some(ServiceAction::Start),
+            "stop-service" => cli.service = Some(ServiceAction::Stop),
+            "reindex" | "rebuild" => cli.reindex = true,
+            "toggle-window" => cli.window = Some(WindowAction::Toggle),
+            "show" => cli.window = Some(WindowAction::Show),
+            "hide" => cli.window = Some(WindowAction::Hide),
+            "close" => cli.window = Some(WindowAction::Close),
+            "filter" => cli.filter = value(&mut it),
+            "bookmark" => cli.bookmark = value(&mut it),
+            "sort" => {
+                if let Some(v) = value(&mut it) {
+                    let dir = cli.sort.as_ref().and_then(|s| s.1);
+                    cli.sort = Some((v, dir));
+                }
+            }
+            "sort-ascending" | "sort-descending" => {
+                let asc = key == "sort-ascending";
+                let col = cli.sort.take().map(|s| s.0).unwrap_or_default();
+                cli.sort = Some((col, Some(asc)));
+            }
+            "filename" | "select" => cli.filename = value(&mut it),
+            "update" => cli.update = true,
+            "save-db" => cli.save_db = true,
+            "admin" => cli.admin = true,
+            "install-run-on-system-startup" => cli.run_on_startup = Some(true),
+            "uninstall-run-on-system-startup" => cli.run_on_startup = Some(false),
+            "install-folder-context-menu" => cli.context_menu.push((ContextMenu::Folder, true)),
+            "uninstall-folder-context-menu" => cli.context_menu.push((ContextMenu::Folder, false)),
+            "install-file-context-menu" => cli.context_menu.push((ContextMenu::File, true)),
+            "uninstall-file-context-menu" => cli.context_menu.push((ContextMenu::File, false)),
+            "config" => cli.config = value(&mut it),
+            "log" => cli.log = value(&mut it),
+            "portable" | "no-app-data" => cli.portable = true,
+            "create-file-list" => {
+                if let (Some(out), Some(folder)) = (value(&mut it), value(&mut it)) {
+                    cli.tool = Some(Tool::CreateFileList { out, folder });
+                }
+            }
+            "create-usn-journal" => {
+                let (d, m, a) = (value(&mut it), value(&mut it), value(&mut it));
+                if let Some(drive) = d {
+                    let num = |s: Option<String>, def: u64| s.and_then(|s| s.parse().ok()).unwrap_or(def);
+                    cli.tool = Some(Tool::CreateUsnJournal { drive, max: num(m, 32 << 20), delta: num(a, 4 << 20) });
+                }
+            }
+            "delete-usn-journal" => {
+                if let Some(drive) = value(&mut it) {
+                    cli.tool = Some(Tool::DeleteUsnJournal { drive });
+                }
+            }
             "nodb" | "no-db" => cli.no_db = true,
             "db" => cli.db = value(&mut it),
             "help" | "h" | "?" => cli.help = true,
@@ -220,5 +368,31 @@ mod tests {
         assert_eq!(c.unknown, vec!["-frobnicate"]);
         assert!(p(&["-?"]).help);
         assert!(p(&["-quit"]).exit);
+    }
+
+    #[test]
+    fn everything_switches() {
+        let c =
+            p(&["-toggle-window", "-filter", "Audio", "-sort", "size", "-sort-descending", "-filename", "C:\\a.txt"]);
+        assert_eq!(c.window, Some(WindowAction::Toggle));
+        assert_eq!(c.filter.as_deref(), Some("Audio"));
+        assert_eq!(c.sort, Some(("size".into(), Some(false))));
+        assert_eq!(c.filename.as_deref(), Some("C:\\a.txt"));
+        let c = p(&["-sort-ascending", "-sort", "path"]);
+        assert_eq!(c.sort, Some(("path".into(), Some(true))));
+        let c = p(&["-install-folder-context-menu", "-uninstall-file-context-menu", "-install-run-on-system-startup"]);
+        assert_eq!(c.context_menu, vec![(ContextMenu::Folder, true), (ContextMenu::File, false)]);
+        assert_eq!(c.run_on_startup, Some(true));
+        assert_eq!(
+            p(&["-create-file-list", "out.efu", "D:\\x"]).tool,
+            Some(Tool::CreateFileList { out: "out.efu".into(), folder: "D:\\x".into() })
+        );
+        assert_eq!(
+            p(&["-create-usn-journal", "D:", "1000", "100"]).tool,
+            Some(Tool::CreateUsnJournal { drive: "D:".into(), max: 1000, delta: 100 })
+        );
+        assert_eq!(p(&["-search*", "a | b"]).search.as_deref(), Some("\"a | b\""));
+        assert!(p(&["-rebuild"]).reindex && p(&["-update"]).update && p(&["-save-db"]).save_db);
+        assert_eq!(p(&["-start-service"]).service, Some(ServiceAction::Start));
     }
 }

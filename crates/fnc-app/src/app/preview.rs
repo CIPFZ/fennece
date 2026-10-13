@@ -171,16 +171,23 @@ fn attr_text(a: u32) -> String {
 impl FennecApp {
     /// Recomputes what to show when the selection or the index changed.
     fn refresh_preview(&mut self) {
-        let key = (self.sel.all, self.sel.ids.len(), self.selected_id, std::sync::Arc::as_ptr(&self.results) as usize);
-        let generation =
-            self.shared.try_snapshot_for(Duration::from_millis(1)).map_or(self.preview.generation, |s| s.generation());
-        if key == self.preview.key && generation == self.preview.generation {
+        let key = (
+            self.v.sel.all,
+            self.v.sel.ids.len(),
+            self.v.selected_id,
+            std::sync::Arc::as_ptr(&self.v.results) as usize,
+        );
+        let generation = self
+            .shared
+            .try_snapshot_for(Duration::from_millis(1))
+            .map_or(self.v.preview.generation, |s| s.generation());
+        if key == self.v.preview.key && generation == self.v.preview.generation {
             return;
         }
-        self.preview.key = key;
+        self.v.preview.key = key;
         let ids = self.target_ids();
         let Some(snap) = self.shared.try_snapshot_for(Duration::from_millis(5)) else { return };
-        let p = &mut self.preview;
+        let p = &mut self.v.preview;
         p.for_ids = ids.clone();
         p.generation = generation;
         p.info = None;
@@ -251,9 +258,9 @@ impl FennecApp {
     /// Draws the preview side panel.
     pub(super) fn preview_panel(&mut self, ui: &mut egui::Ui) {
         self.refresh_preview();
-        while let Ok((id, r)) = self.preview.rx.try_recv() {
-            if self.preview.for_ids == [id] {
-                self.preview.body = match r {
+        while let Ok((id, r)) = self.v.preview.rx.try_recv() {
+            if self.v.preview.for_ids == [id] {
+                self.v.preview.body = match r {
                     Ok((text, truncated)) => Body::Text { text, truncated },
                     Err(e) => Body::Failed(e),
                 };
@@ -262,7 +269,7 @@ impl FennecApp {
         let fmt = self.settings.date_format;
         let now = FileTime::now();
         egui::ScrollArea::vertical().id_salt("preview-scroll").auto_shrink([false, false]).show(ui, |ui| {
-            if let Some((n, total, types)) = &self.preview.multi {
+            if let Some((n, total, types)) = &self.v.preview.multi {
                 ui.heading(t_args("preview-selected", &[("count", (*n).into())]));
                 ui.label(t_args("preview-total-size", &[("size", crate::format::size(*total).into())]));
                 ui.separator();
@@ -271,12 +278,12 @@ impl FennecApp {
                 }
                 return;
             }
-            let Some(info) = self.preview.info.clone() else {
+            let Some(info) = self.v.preview.info.clone() else {
                 ui.weak(t("preview-nothing"));
                 return;
             };
             let avail = ui.available_width();
-            match &self.preview.body {
+            match &self.v.preview.body {
                 Body::Picture | Body::Other => {
                     let size = (avail * ui.ctx().pixels_per_point()).clamp(64.0, 1024.0) as u32;
                     let key = ThumbKey {

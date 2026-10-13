@@ -54,17 +54,29 @@ fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let paths = DataPaths::resolve(&cli.instance);
-    let settings_path = paths.settings_file();
+    let paths = if cli.portable { DataPaths::portable(&cli.instance) } else { DataPaths::resolve(&cli.instance) };
+    let settings_path = cli.config.as_ref().map_or_else(|| paths.settings_file(), std::path::PathBuf::from);
     let (settings, settings_error) = match Settings::load(&settings_path) {
         Ok(s) => (s, None),
         Err(e) => (Settings::default(), Some(e)),
     };
     let level = if cli.verbose { "debug" } else { settings.log_level.as_str() };
-    let logs = paths.logs_dir();
+    // `-log <file>`: that folder and file prefix instead of the data folder.
+    let (logs, prefix) = match &cli.log {
+        Some(f) => {
+            let f = std::path::Path::new(f);
+            let dir = f
+                .parent()
+                .filter(|d| !d.as_os_str().is_empty())
+                .map_or_else(|| ".".into(), std::path::Path::to_path_buf);
+            let stem = f.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "fennec".into());
+            (dir, stem)
+        }
+        None => (paths.logs_dir(), "fennec".to_string()),
+    };
     let _log_guard = init_logging(&LogConfig {
         dir: Some(&logs),
-        prefix: "fennec",
+        prefix: &prefix,
         level,
         max_files: settings.log_max_files as usize,
         console: cli.console || cli.verbose,
@@ -80,6 +92,27 @@ fn run() -> anyhow::Result<()> {
 
     if let Some(action) = cli.service {
         return service_command(action, &cli.instance);
+    }
+    if let Some(tool) = &cli.tool {
+        return run_tool(tool);
+    }
+    if cli.admin && !fnc_platform::privilege::is_elevated() {
+        // Restart elevated with the same arguments (minus -admin); this process exits.
+        let args: Vec<String> = raw_args
+            .iter()
+            .filter(|a| !a.trim_start_matches(['-', '/']).eq_ignore_ascii_case("admin"))
+            .cloned()
+            .collect();
+        let joined = args
+            .iter()
+            .map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() })
+            .collect::<Vec<_>>()
+            .join(" ");
+        fnc_platform::shell::run_elevated(&std::env::current_exe()?, &format!("-first-instance {joined}"))?;
+        return Ok(());
+    }
+    if integration_commands(&cli)? {
+        return Ok(());
     }
 
     // Single instance: forward our command line to a running primary and exit.
@@ -120,6 +153,13 @@ fn run() -> anyhow::Result<()> {
     let shared = SharedIndex::default();
     let (engine_tx, engine_rx) = crossbeam_channel::unbounded();
     let engine = SearchEngine::spawn(shared.clone(), engine_tx, Box::new(wake.clone()));
+    let new_engine: Arc<dyn Fn() -> (SearchEngine, crossbeam_channel::Receiver<fnc_exec::EngineEvent>) + Send + Sync> = {
+        let (shared, wake) = (shared.clone(), wake.clone());
+        Arc::new(move || {
+            let (tx, rx) = crossbeam_channel::unbounded();
+            (SearchEngine::spawn(shared.clone(), tx, Box::new(wake.clone())), rx)
+        })
+    };
 
     let mut file_lists: Vec<std::path::PathBuf> = settings.file_lists.iter().map(Into::into).collect();
     file_lists.extend(cli.file_lists.iter().map(Into::into));
@@ -147,6 +187,7 @@ fn run() -> anyhow::Result<()> {
         exclusions: exclude::Exclusions::from_settings(&settings),
         folder_rescan: Duration::from_secs(u64::from(settings.folder_rescan_interval) * 60),
         folder_watch: settings.folder_watch,
+        rescan_epoch: Arc::default(),
         journal: settings.index_journal_enabled.then(|| {
             (paths.root.join("journal.tsv"), settings.index_journal_days, settings.index_journal_max as usize)
         }),
@@ -183,12 +224,14 @@ fn run() -> anyhow::Result<()> {
         shared,
         engine,
         engine_rx,
+        new_engine,
         index_rx,
         instance: primary,
         indexer,
         settings,
         settings_path,
         initial_search: cli.search.clone(),
+        initial_cli: Some(cli.clone()),
         start_hidden: cli.start_hidden,
     };
     eframe::run_native(
@@ -204,6 +247,83 @@ fn run() -> anyhow::Result<()> {
 
 /// `-install-service` / `-uninstall-service`: runs `fennec-service.exe` (next to this
 /// executable), elevating through UAC when needed.
+/// `-install-run-on-system-startup`, context menu switches; `true` if any ran (exit).
+fn integration_commands(cli: &cli::Cli) -> anyhow::Result<bool> {
+    let exe = std::env::current_exe()?;
+    let mut ran = false;
+    if let Some(on) = cli.run_on_startup {
+        fnc_platform::integration::set_run_on_startup(&exe, on)?;
+        ran = true;
+    }
+    for &(kind, on) in &cli.context_menu {
+        let (folder, label) = match kind {
+            cli::ContextMenu::Folder => (true, i18n::t("shell-search-fennec")),
+            cli::ContextMenu::File => (false, i18n::t("shell-explore-in-fennec")),
+        };
+        fnc_platform::integration::set_context_menu(&exe, folder, &label, on)?;
+        ran = true;
+    }
+    Ok(ran)
+}
+
+/// Commands that work without a window (SPEC ch.4 §1 tool commands).
+fn run_tool(tool: &cli::Tool) -> anyhow::Result<()> {
+    match tool {
+        cli::Tool::CreateFileList { out, folder } => {
+            let mut src = fnc_platform::walk::FolderSource::new(folder);
+            let mut store = fnc_index::IndexStore::default();
+            let vol = store.add_volume(fnc_platform::VolumeSource::info(&src), Some(1))?;
+            struct Sink<'a>(fnc_index::BulkLoader<'a>);
+            impl fnc_platform::EntrySink for Sink<'_> {
+                fn entry(&mut self, e: &fnc_platform::RawEntry<'_>) -> Result<(), fnc_platform::SourceError> {
+                    self.0
+                        .push(e.frn, e.parent_frn, e.name, &e.meta)
+                        .map(|_| ())
+                        .map_err(|e| fnc_platform::SourceError::io("index", std::io::Error::other(e)))
+                }
+            }
+            let mut sink = Sink(store.bulk_load(vol));
+            fnc_platform::VolumeSource::enumerate(&mut src, &mut sink, &fnc_platform::StopFlag::new())?;
+            sink.0.finish()?;
+            let f = std::io::BufWriter::new(std::fs::File::create(out)?);
+            let mut w = fnc_index::efu::EfuWriter::new(f)?;
+            let mut buf = String::new();
+            let mut n = 0usize;
+            for id in (0..store.len() as u32).map(fnc_core::EntryId) {
+                if store.is_live(id) && !store.flags(id).contains(fnc_core::EntryFlags::ROOT) {
+                    w.write_entry(&store, id, &mut buf)?;
+                    n += 1;
+                }
+            }
+            use std::io::Write;
+            w.finish()?.flush()?;
+            eprintln!("wrote {n} entries to {out}");
+            Ok(())
+        }
+        #[cfg(windows)]
+        cli::Tool::CreateUsnJournal { drive, max, delta } => {
+            let letter = drive.chars().next().ok_or_else(|| anyhow::anyhow!("drive letter expected"))?;
+            let h = fnc_ntfs::win::open_volume(letter)?;
+            fnc_ntfs::win::create_journal(&h, *max, *delta)?;
+            eprintln!("USN journal of {letter}: created (max {max}, delta {delta})");
+            Ok(())
+        }
+        #[cfg(windows)]
+        cli::Tool::DeleteUsnJournal { drive } => {
+            let letter = drive.chars().next().ok_or_else(|| anyhow::anyhow!("drive letter expected"))?;
+            let h = fnc_ntfs::win::open_volume(letter)?;
+            let j = fnc_ntfs::win::query_journal(&h)?.ok_or_else(|| anyhow::anyhow!("{letter}: has no USN journal"))?;
+            fnc_ntfs::win::delete_journal(&h, j.id)?;
+            eprintln!("USN journal of {letter}: deleted");
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        cli::Tool::CreateUsnJournal { .. } | cli::Tool::DeleteUsnJournal { .. } => {
+            anyhow::bail!("USN journals exist on Windows NTFS volumes only")
+        }
+    }
+}
+
 pub(crate) fn service_command(action: cli::ServiceAction, instance: &str) -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
     let name = if cfg!(windows) { "fennec-service.exe" } else { "fennec-service" };
@@ -212,6 +332,8 @@ pub(crate) fn service_command(action: cli::ServiceAction, instance: &str) -> any
     let mut args = match action {
         cli::ServiceAction::Install => "-install".to_string(),
         cli::ServiceAction::Uninstall => "-uninstall".to_string(),
+        cli::ServiceAction::Start => "-start".to_string(),
+        cli::ServiceAction::Stop => "-stop".to_string(),
     };
     if !instance.is_empty() {
         args.push_str(&format!(" -instance {instance}"));

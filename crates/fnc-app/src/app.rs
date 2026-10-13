@@ -14,6 +14,7 @@ mod menus;
 mod options;
 mod preview;
 pub(super) mod table;
+mod window;
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -56,6 +57,8 @@ pub struct AppDeps {
     pub engine: SearchEngine,
     /// Search results.
     pub engine_rx: Receiver<EngineEvent>,
+    /// Creates the engine of another view (new window).
+    pub new_engine: Arc<dyn Fn() -> (SearchEngine, Receiver<EngineEvent>) + Send + Sync>,
     /// Indexer progress.
     pub index_rx: Receiver<IndexEvent>,
     /// Single-instance ownership (mutex + command pipe); kept alive for the process
@@ -69,6 +72,8 @@ pub struct AppDeps {
     pub settings_path: PathBuf,
     /// Initial search text.
     pub initial_search: Option<String>,
+    /// The start-up command line (filters, sort, window commands).
+    pub initial_cli: Option<crate::cli::Cli>,
     /// Start hidden (tray).
     pub start_hidden: bool,
 }
@@ -131,27 +136,21 @@ enum WorkerMsg {
     Failed(String),
 }
 
-/// Main application state.
-pub struct FennecApp {
-    shared: SharedIndex,
+/// Everything one search view owns: its search, results, selection and engine.
+pub(super) struct View {
+    /// Distinguishes widget state of views in different windows.
+    uid: u64,
+    /// Full path to select once the results arrive (`-filename`).
+    pending_select: Option<String>,
     engine: SearchEngine,
     engine_rx: Receiver<EngineEvent>,
-    index_rx: Receiver<IndexEvent>,
-    instance: Option<Primary>,
-    indexer: Indexer,
-    settings: Settings,
-    settings_path: PathBuf,
     search_opts: Arc<SearchOptions>,
-    keymap: Keymap,
-
     query: String,
     sent_query: Option<String>,
     edited_at: Option<Instant>,
     next_id: u64,
     latest_shown: u64,
     sort: SortSpec,
-    columns: Vec<ColumnState>,
-
     results: Arc<ResultSet>,
     highlighter: Option<Highlighter>,
     diagnostics: Vec<String>,
@@ -163,30 +162,48 @@ pub struct FennecApp {
     scroll_to: Option<usize>,
     rows: HashMap<EntryId, Row>,
     rows_generation: u64,
-    /// Shell type names (`type:` and the Type column), shared with the engine.
-    type_names: fnc_exec::TypeNames,
-    /// Type column texts per `(extension, is_dir)`.
-    type_cache: HashMap<(String, bool), String>,
     omit: HashSet<EntryId>,
-
-    filters: Filters,
     /// Active filters (indices into `filters.list`; empty = Everything).
     active_filters: Vec<usize>,
-    bookmarks: Bookmarks,
-    history: SearchHistory,
     /// The current search was recorded in the history.
     history_recorded: bool,
     /// When the current search was sent (idle searches enter the history).
     history_idle_since: Option<Instant>,
     complete: complete::CompleteState,
-
-    status: IndexStatus,
-    message: Option<(String, Instant)>,
     focus: Focus,
     focus_search: bool,
     keep_focus: bool,
-    hidden: bool,
     rename: Option<RenameState>,
+    /// Columns of the thumbnail grid last frame (arrow keys move by rows).
+    grid_cols: usize,
+    /// Preview panel.
+    preview: preview::PreviewState,
+}
+
+/// Main application state.
+pub struct FennecApp {
+    shared: SharedIndex,
+    index_rx: Receiver<IndexEvent>,
+    instance: Option<Primary>,
+    indexer: Indexer,
+    settings: Settings,
+    settings_path: PathBuf,
+    keymap: Keymap,
+
+    columns: Vec<ColumnState>,
+
+    /// Shell type names (`type:` and the Type column), shared with the engine.
+    type_names: fnc_exec::TypeNames,
+    /// Type column texts per `(extension, is_dir)`.
+    type_cache: HashMap<(String, bool), String>,
+
+    filters: Filters,
+    bookmarks: Bookmarks,
+    history: SearchHistory,
+
+    status: IndexStatus,
+    message: Option<(String, Instant)>,
+    hidden: bool,
     dialog: Option<dialogs::Dialog>,
     options_window: Option<options::OptionsState>,
     /// Commands queued by menus, the tray and widgets (run after drawing).
@@ -199,10 +216,6 @@ pub struct FennecApp {
     menu_peek: bool,
     /// Icons and thumbnails.
     thumbs: crate::thumbs::Thumbs,
-    /// Columns of the thumbnail grid last frame (arrow keys move by rows).
-    grid_cols: usize,
-    /// Preview panel.
-    preview: preview::PreviewState,
     /// Last known window rectangle (outer position, inner size) and maximised state.
     window_geometry: Option<(egui::Rect, bool)>,
 
@@ -215,6 +228,16 @@ pub struct FennecApp {
     last_toggle: Option<Instant>,
     #[cfg(windows)]
     integration: Option<crate::tray::Integration>,
+    /// The active search view (others are swapped in for tabs and windows).
+    v: View,
+    /// Other windows (`-newwindow`, Ctrl+N), each with its own view.
+    windows: Vec<window::WindowView>,
+    /// A secondary window is being drawn (commands act on it).
+    in_secondary: bool,
+    /// The secondary window being drawn asked to close (Esc, Ctrl+W).
+    close_secondary: bool,
+    /// Creates a search engine for a new view.
+    new_engine: Arc<dyn Fn() -> (SearchEngine, Receiver<EngineEvent>) + Send + Sync>,
 }
 
 impl FennecApp {
@@ -258,51 +281,24 @@ impl FennecApp {
         if deps.settings.pause_updates {
             deps.indexer.set_paused(true);
         }
+        let new_engine = deps.new_engine;
         let mut app = Self {
             shared: deps.shared,
-            engine: deps.engine,
-            engine_rx: deps.engine_rx,
             index_rx: deps.index_rx,
             instance: deps.instance,
             indexer: deps.indexer,
-            search_opts: Arc::new(SearchOptions::default()),
             keymap,
-            query: deps.initial_search.unwrap_or_default(),
-            sent_query: None,
-            edited_at: None,
-            next_id: 1,
-            latest_shown: 0,
-            sort,
             columns,
-            results: Arc::new(ResultSet::default()),
-            highlighter: None,
-            diagnostics: Vec::new(),
-            elapsed: Duration::ZERO,
-            selected: None,
-            selected_id: None,
-            sel: Selection::default(),
-            scroll_to: None,
-            rows: HashMap::new(),
-            rows_generation: 0,
             type_names: fnc_exec::TypeNames::new(|ext| fnc_platform::shell::type_name(ext, false)),
             type_cache: HashMap::new(),
-            omit: HashSet::new(),
             filters,
-            active_filters,
             bookmarks,
             history,
-            history_recorded: true,
-            history_idle_since: None,
-            complete: complete::CompleteState::default(),
             status: IndexStatus::Starting,
             message: None,
-            focus: Focus::Search,
-            focus_search: true,
-            keep_focus: false,
             // Start-hidden is applied by `main` via `ViewportBuilder::with_visible(false)`
             // (no flash of the window).
             hidden: deps.start_hidden,
-            rename: None,
             dialog: None,
             options_window: None,
             pending: Vec::new(),
@@ -311,8 +307,6 @@ impl FennecApp {
             menu_peek: false,
             window_geometry: None,
             thumbs: crate::thumbs::Thumbs::new(2, thumb_dir),
-            grid_cols: 1,
-            preview: preview::PreviewState::default(),
             worker_tx,
             worker_rx,
             quitting: false,
@@ -322,9 +316,51 @@ impl FennecApp {
             last_toggle: None,
             #[cfg(windows)]
             integration,
+
+            v: View {
+                uid: 0,
+                pending_select: None,
+                engine: deps.engine,
+                engine_rx: deps.engine_rx,
+                search_opts: Arc::new(SearchOptions::default()),
+                query: deps.initial_search.unwrap_or_default(),
+                sent_query: None,
+                edited_at: None,
+                next_id: 1,
+                latest_shown: 0,
+                sort,
+                results: Arc::new(ResultSet::default()),
+                highlighter: None,
+                diagnostics: Vec::new(),
+                elapsed: Duration::ZERO,
+                selected: None,
+                selected_id: None,
+                sel: Selection::default(),
+                scroll_to: None,
+                rows: HashMap::new(),
+                rows_generation: 0,
+                omit: HashSet::new(),
+                active_filters,
+                history_recorded: true,
+                history_idle_since: None,
+                complete: complete::CompleteState::default(),
+                focus: Focus::Search,
+                focus_search: true,
+                keep_focus: false,
+                rename: None,
+                grid_cols: 1,
+                preview: preview::PreviewState::default(),
+            },
+            windows: Vec::new(),
+            in_secondary: false,
+            close_secondary: false,
+            new_engine,
         };
         app.rebuild_search_options();
         app.send_search();
+        if let Some(cli) = deps.initial_cli {
+            app.apply_cli(ctx, cli, false);
+        }
         app
     }
 
@@ -336,16 +372,17 @@ impl FennecApp {
         let mut o = SearchOptions::from_settings(&self.settings);
         o.macros.extend(self.filters.macros());
         o.type_names = Some(self.type_names.clone());
-        if !self.omit.is_empty() {
+        if !self.v.omit.is_empty() {
             let instance = self.shared.try_snapshot_for(Duration::from_millis(20)).map_or(0, |s| s.instance());
-            o.omit = Some(fnc_query::plan::OmitSet { instance, ids: self.omit.iter().copied().collect() });
+            o.omit = Some(fnc_query::plan::OmitSet { instance, ids: self.v.omit.iter().copied().collect() });
         }
-        self.search_opts = Arc::new(o);
+        self.v.search_opts = Arc::new(o);
     }
 
     /// The active filters with their own match options (SPEC ch.2 §7).
     fn filter_set(&self) -> Option<fnc_query::FilterSet> {
         let filters: Vec<fnc_query::Filter> = self
+            .v
             .active_filters
             .iter()
             .filter_map(|&i| self.filters.list.get(i))
@@ -356,68 +393,86 @@ impl FennecApp {
     }
 
     fn send_search(&mut self) {
-        let id = self.next_id;
-        self.next_id += 1;
-        if self.sent_query.as_deref() != Some(self.query.as_str()) && !self.omit.is_empty() {
-            self.omit.clear();
+        let id = self.v.next_id;
+        self.v.next_id += 1;
+        if self.v.sent_query.as_deref() != Some(self.v.query.as_str()) && !self.v.omit.is_empty() {
+            self.v.omit.clear();
             self.rebuild_search_options();
         }
-        if self.sent_query.as_deref() != Some(self.query.as_str()) {
-            self.history_recorded = false;
-            self.history_idle_since = Some(Instant::now());
+        if self.v.sent_query.as_deref() != Some(self.v.query.as_str()) {
+            self.v.history_recorded = false;
+            self.v.history_idle_since = Some(Instant::now());
         }
-        self.sent_query = Some(self.query.clone());
-        self.edited_at = None;
-        self.engine.search(SearchRequest {
+        self.v.sent_query = Some(self.v.query.clone());
+        self.v.edited_at = None;
+        self.v.engine.search(SearchRequest {
             id,
-            text: self.query.clone(),
+            text: self.v.query.clone(),
             filter: self.filter_set(),
-            sort: self.sort,
-            options: self.search_opts.clone(),
+            sort: self.v.sort,
+            options: self.v.search_opts.clone(),
         });
     }
 
     fn set_query(&mut self, q: String) {
-        self.query = q;
-        self.complete.close();
+        self.v.query = q;
+        self.v.complete.close();
         self.send_search();
     }
 
     fn record_history(&mut self) {
-        if !self.history_recorded && self.settings.search_history_enabled {
-            self.history.record(&self.query);
-            self.history_recorded = true;
+        if !self.v.history_recorded && self.settings.search_history_enabled {
+            self.history.record(&self.v.query);
+            self.v.history_recorded = true;
         }
     }
 
     fn on_outcome(&mut self, o: SearchOutcome) {
-        if o.id < self.latest_shown {
+        if o.id < self.v.latest_shown {
             return;
         }
-        self.latest_shown = o.id;
-        self.elapsed = o.elapsed;
-        self.highlighter = self.settings.highlight.then(|| Highlighter::new(&o.plan)).filter(|h| !h.is_empty());
-        self.diagnostics = diagnostics_text(&o);
-        let same_set = Arc::ptr_eq(&self.results, &o.results);
-        self.results = o.results;
+        self.v.latest_shown = o.id;
+        self.v.elapsed = o.elapsed;
+        self.v.highlighter = self.settings.highlight.then(|| Highlighter::new(&o.plan)).filter(|h| !h.is_empty());
+        self.v.diagnostics = diagnostics_text(&o);
+        let same_set = Arc::ptr_eq(&self.v.results, &o.results);
+        self.v.results = o.results;
         if !same_set {
-            self.rows.clear();
+            self.v.rows.clear();
+        }
+        if let Some(target) = self.v.pending_select.take() {
+            let found = self.shared.try_snapshot_for(Duration::from_millis(50)).and_then(|s| {
+                let mut buf = String::new();
+                self.v.results.ids.iter().position(|&id| {
+                    s.full_path(id, &mut buf);
+                    buf.eq_ignore_ascii_case(&target)
+                })
+            });
+            match found {
+                Some(i) => {
+                    self.select_only(i);
+                    self.v.focus = Focus::Results;
+                }
+                // Keep waiting while the folder search has not produced results yet.
+                None => self.v.pending_select = self.v.results.is_empty().then_some(target),
+            }
+            return;
         }
         // Keep the cursor on the same entry if it is still listed.
-        self.selected = self.selected_id.and_then(|sid| self.results.ids.iter().position(|&i| i == sid));
-        if self.selected.is_none() {
-            self.selected_id = None;
+        self.v.selected = self.v.selected_id.and_then(|sid| self.v.results.ids.iter().position(|&i| i == sid));
+        if self.v.selected.is_none() {
+            self.v.selected_id = None;
         }
-        self.sel.all = false;
+        self.v.sel.all = false;
         // Deleted or no longer matching entries leave the selection.
-        if !self.sel.ids.is_empty() {
-            let listed: HashSet<EntryId> = self.results.ids.iter().copied().collect();
-            self.sel.ids.retain(|id| listed.contains(id));
+        if !self.v.sel.ids.is_empty() {
+            let listed: HashSet<EntryId> = self.v.results.ids.iter().copied().collect();
+            self.v.sel.ids.retain(|id| listed.contains(id));
         }
     }
 
     fn drain_channels(&mut self, ctx: &egui::Context) {
-        while let Ok(EngineEvent::Done(o)) = self.engine_rx.try_recv() {
+        while let Ok(EngineEvent::Done(o)) = self.v.engine_rx.try_recv() {
             self.on_outcome(o);
         }
         while let Ok(ev) = self.index_rx.try_recv() {
@@ -436,21 +491,8 @@ impl FennecApp {
             self.instance.as_ref().map(|p| p.commands().try_iter().collect()).unwrap_or_default();
         for args in forwarded {
             let cli = crate::cli::parse(args);
-            if cli.exit {
-                self.quit(ctx);
+            if !self.apply_cli(ctx, cli, true) {
                 return;
-            }
-            if !cli.file_lists.is_empty() || !cli.folders.is_empty() {
-                // Index sources are fixed at start-up.
-                tracing::warn!("forwarded -filelist/-folder ignored by the running instance");
-                self.message = Some((t("msg-restart-required"), Instant::now()));
-            }
-            if let Some(s) = cli.search {
-                self.set_query(s);
-            }
-            // A second `-startup` launch (e.g. autostart) must not pop the window up.
-            if !cli.start_hidden {
-                self.show_window(ctx);
             }
         }
         #[cfg(windows)]
@@ -483,6 +525,90 @@ impl FennecApp {
         }
     }
 
+    /// Applies a command line (start-up, or forwarded by a later launch). Returns `false`
+    /// if Fennec is exiting.
+    pub(super) fn apply_cli(&mut self, ctx: &egui::Context, cli: crate::cli::Cli, forwarded: bool) -> bool {
+        use crate::cli::WindowAction;
+        if cli.exit {
+            self.quit(ctx);
+            return false;
+        }
+        if forwarded && (!cli.file_lists.is_empty() || !cli.folders.is_empty()) {
+            // Index sources are fixed at start-up.
+            tracing::warn!("forwarded -filelist/-folder ignored by the running instance");
+            self.say(t("msg-restart-required"));
+        }
+        if cli.save_db {
+            self.indexer.save();
+        }
+        if cli.update {
+            self.indexer.rescan_folders();
+        }
+        if forwarded && cli.new_window {
+            self.open_window(cli.search.unwrap_or_default());
+            return true;
+        }
+        if let Some(name) = &cli.filter {
+            match self.filters.find(name) {
+                Some(i) => self.set_filters(vec![i]),
+                None if name.is_empty() || name.eq_ignore_ascii_case("everything") => self.set_filters(Vec::new()),
+                None => self.say(t_args("msg-unknown-filter", &[("name", name.clone().into())])),
+            }
+        }
+        if let Some(name) = &cli.bookmark {
+            match self.bookmarks.list.iter().position(|b| &b.name == name) {
+                Some(i) => self.open_bookmark(i),
+                None => self.say(t_args("msg-unknown-bookmark", &[("name", name.clone().into())])),
+            }
+        }
+        if let Some((col, asc)) = &cli.sort {
+            let parsed = if col.is_empty() { Some(self.v.sort.column) } else { SortColumn::parse(col) };
+            match parsed {
+                Some(c) => {
+                    let asc = asc.unwrap_or(matches!(c, SortColumn::Name | SortColumn::Path | SortColumn::Extension));
+                    self.v.sort = SortSpec::by(c, asc, self.settings.folders_first);
+                    self.send_search();
+                }
+                None => self.say(t_args("msg-unknown-sort", &[("name", col.clone().into())])),
+            }
+        }
+        if let Some(f) = &cli.filename {
+            // Explore in Fennec: the file's folder, with the file selected.
+            // Split on both separators (paths come from Explorer or other platforms).
+            let full = f.trim_end_matches(['\\', '/']);
+            if let Some(cut) = full.rfind(['\\', '/']) {
+                let dir = &full[..cut.max(1)];
+                self.v.pending_select = Some(full.to_string());
+                self.set_query(format!("parent:\"{dir}\""));
+            }
+        } else if let Some(s) = cli.search.filter(|_| forwarded) {
+            self.set_query(s);
+        }
+        match cli.window {
+            Some(WindowAction::Hide) => self.hide_window(ctx),
+            Some(WindowAction::Show) => self.show_window(ctx),
+            Some(WindowAction::Toggle) => {
+                if self.hidden {
+                    self.show_window(ctx);
+                } else {
+                    self.hide_window(ctx);
+                }
+            }
+            Some(WindowAction::Close) => {
+                if self.settings.close_to_tray && self.can_hide_to_tray() {
+                    self.hide_window(ctx);
+                } else {
+                    self.quit(ctx);
+                    return false;
+                }
+            }
+            // A second `-startup` launch (e.g. autostart) must not pop the window up.
+            None if forwarded && !cli.start_hidden => self.show_window(ctx),
+            None => {}
+        }
+        true
+    }
+
     fn toggle_pause(&mut self) {
         let paused = !self.indexer.paused();
         self.indexer.set_paused(paused);
@@ -498,7 +624,7 @@ impl FennecApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        self.focus_search = true;
+        self.v.focus_search = true;
         ctx.request_repaint();
     }
 
@@ -535,14 +661,14 @@ impl FennecApp {
 
     /// Entries the selection-based commands act on: the selection, or the cursor row.
     fn target_ids(&self) -> Vec<EntryId> {
-        if self.sel.all {
-            return self.results.ids.clone();
+        if self.v.sel.all {
+            return self.v.results.ids.clone();
         }
-        if !self.sel.ids.is_empty() {
+        if !self.v.sel.ids.is_empty() {
             // In result order (stable for copy-as-text).
-            return self.results.ids.iter().copied().filter(|id| self.sel.ids.contains(id)).collect();
+            return self.v.results.ids.iter().copied().filter(|id| self.v.sel.ids.contains(id)).collect();
         }
-        self.selected.and_then(|i| self.results.ids.get(i).copied()).into_iter().collect()
+        self.v.selected.and_then(|i| self.v.results.ids.get(i).copied()).into_iter().collect()
     }
 
     /// Full paths of the target entries (roots get their trailing separator).
@@ -566,39 +692,39 @@ impl FennecApp {
     }
 
     fn select_only(&mut self, i: usize) {
-        self.sel.clear();
-        if let Some(&id) = self.results.ids.get(i) {
-            self.sel.ids.insert(id);
+        self.v.sel.clear();
+        if let Some(&id) = self.v.results.ids.get(i) {
+            self.v.sel.ids.insert(id);
         }
-        self.sel.anchor = Some(i);
+        self.v.sel.anchor = Some(i);
         self.set_cursor(i);
     }
 
     fn set_cursor(&mut self, i: usize) {
-        self.selected = Some(i);
-        self.selected_id = self.results.ids.get(i).copied();
-        self.scroll_to = Some(i);
+        self.v.selected = Some(i);
+        self.v.selected_id = self.v.results.ids.get(i).copied();
+        self.v.scroll_to = Some(i);
     }
 
     fn select_range(&mut self, to: usize) {
-        let n = self.results.len();
+        let n = self.v.results.len();
         if n == 0 {
             return;
         }
-        let from = self.sel.anchor.or(self.selected).unwrap_or(to).min(n - 1);
+        let from = self.v.sel.anchor.or(self.v.selected).unwrap_or(to).min(n - 1);
         let (a, b) = (from.min(to), from.max(to).min(n - 1));
-        self.sel.all = false;
-        self.sel.ids = self.results.ids[a..=b].iter().copied().collect();
-        self.sel.anchor = Some(from);
+        self.v.sel.all = false;
+        self.v.sel.ids = self.v.results.ids[a..=b].iter().copied().collect();
+        self.v.sel.anchor = Some(from);
         self.set_cursor(to);
     }
 
     fn move_cursor(&mut self, delta: isize, mode: MoveMode) {
-        let n = self.results.len();
+        let n = self.v.results.len();
         if n == 0 {
             return;
         }
-        let cur = self.selected.map_or(-1, |s| s as isize);
+        let cur = self.v.selected.map_or(-1, |s| s as isize);
         let next = (cur + delta).clamp(0, n as isize - 1) as usize;
         match mode {
             MoveMode::Select => self.select_only(next),
@@ -613,8 +739,8 @@ impl FennecApp {
         use Command as K;
         let page = 20;
         match cmd {
-            K::FocusSearch => self.focus_search = true,
-            K::Refresh => self.engine.refresh(),
+            K::FocusSearch => self.v.focus_search = true,
+            K::Refresh => self.v.engine.refresh(),
             K::MoveDown => self.move_cursor(self.row_step(), MoveMode::Select),
             K::MoveUp => self.move_cursor(-self.row_step(), MoveMode::Select),
             K::ExtendDown => self.move_cursor(1, MoveMode::Extend),
@@ -628,35 +754,35 @@ impl FennecApp {
             K::PageDown => self.move_cursor(page, MoveMode::Select),
             K::PageUp => self.move_cursor(-page, MoveMode::Select),
             K::First => {
-                if !self.results.is_empty() {
+                if !self.v.results.is_empty() {
                     self.select_only(0);
                 }
             }
             K::Last => {
-                if !self.results.is_empty() {
-                    self.select_only(self.results.len() - 1);
+                if !self.v.results.is_empty() {
+                    self.select_only(self.v.results.len() - 1);
                 }
             }
             K::SelectAll => {
-                self.sel.all = !self.results.is_empty();
-                self.sel.ids.clear();
+                self.v.sel.all = !self.v.results.is_empty();
+                self.v.sel.ids.clear();
             }
             K::InvertSelection => {
-                let all = self.sel.all;
-                let cur: HashSet<EntryId> = std::mem::take(&mut self.sel.ids);
-                self.sel.all = false;
+                let all = self.v.sel.all;
+                let cur: HashSet<EntryId> = std::mem::take(&mut self.v.sel.ids);
+                self.v.sel.all = false;
                 if !all {
-                    self.sel.ids = self.results.ids.iter().copied().filter(|id| !cur.contains(id)).collect();
+                    self.v.sel.ids = self.v.results.ids.iter().copied().filter(|id| !cur.contains(id)).collect();
                 }
             }
             K::ToggleSelection => {
-                if let Some(id) = self.selected.and_then(|i| self.results.ids.get(i).copied()) {
-                    if self.sel.all {
-                        self.sel.all = false;
-                        self.sel.ids = self.results.ids.iter().copied().collect();
+                if let Some(id) = self.v.selected.and_then(|i| self.v.results.ids.get(i).copied()) {
+                    if self.v.sel.all {
+                        self.v.sel.all = false;
+                        self.v.sel.ids = self.v.results.ids.iter().copied().collect();
                     }
-                    if !self.sel.ids.remove(&id) {
-                        self.sel.ids.insert(id);
+                    if !self.v.sel.ids.remove(&id) {
+                        self.v.sel.ids.insert(id);
                     }
                 }
             }
@@ -724,15 +850,15 @@ impl FennecApp {
                         s.push(std::path::MAIN_SEPARATOR);
                     }
                     self.set_query(format!("\"{s}\" "));
-                    self.focus_search = true;
+                    self.v.focus_search = true;
                 }
             }
             K::Omit => {
                 let ids = self.target_ids();
                 if !ids.is_empty() {
                     // Hidden until the search text changes (`omit:` lists them).
-                    self.omit.extend(ids);
-                    self.sel.clear();
+                    self.v.omit.extend(ids);
+                    self.v.sel.clear();
                     self.rebuild_search_options();
                     self.send_search();
                 }
@@ -752,10 +878,10 @@ impl FennecApp {
                 self.dialog = Some(dialogs::Dialog::EditBookmark {
                     index: None,
                     bookmark: crate::filters::Bookmark {
-                        name: self.query.clone(),
-                        search: self.query.clone(),
+                        name: self.v.query.clone(),
+                        search: self.v.query.clone(),
                         filter: self.active_filter_name(),
-                        sort: crate::columns::sort_setting(&self.sort),
+                        sort: crate::columns::sort_setting(&self.v.sort),
                         ..Default::default()
                     },
                 })
@@ -766,8 +892,8 @@ impl FennecApp {
                 self.dialog = Some(dialogs::Dialog::EditFilter {
                     index: None,
                     filter: crate::filters::Filter {
-                        name: self.query.clone(),
-                        search: self.query.clone(),
+                        name: self.v.query.clone(),
+                        search: self.v.query.clone(),
                         ..Default::default()
                     },
                 })
@@ -806,8 +932,8 @@ impl FennecApp {
                     K::ViewExtraLarge => ViewMode::ExtraLarge,
                     _ => ViewMode::Details,
                 };
-                if let Some(i) = self.selected {
-                    self.scroll_to = Some(i);
+                if let Some(i) = self.v.selected {
+                    self.v.scroll_to = Some(i);
                 }
             }
             K::ThemeLight | K::ThemeDark | K::ThemeSystem => {
@@ -828,13 +954,13 @@ impl FennecApp {
                 ctx.set_zoom_factor(self.settings.ui_scale);
             }
             K::SearchHistory => {
-                self.focus_search = true;
-                self.complete.open_history(&self.history);
+                self.v.focus_search = true;
+                self.v.complete.open_history(&self.history);
             }
             K::ClearHistory => {
                 self.history.clear();
                 self.history.save();
-                self.complete.close();
+                self.v.complete.close();
                 self.say(t("msg-history-cleared"));
             }
             K::InstallService | K::UninstallService => {
@@ -861,6 +987,13 @@ impl FennecApp {
             }
             K::Help => self.dialog = Some(dialogs::Dialog::Help),
             K::About => self.dialog = Some(dialogs::Dialog::About),
+            K::HideWindow if self.in_secondary => self.close_secondary = true,
+            K::NewWindow => {
+                let q = self.v.query.clone();
+                self.open_window(q);
+            }
+            K::CloseWindow if self.in_secondary => self.close_secondary = true,
+            K::CloseWindow => self.run(ctx, Command::HideWindow),
             K::HideWindow => {
                 if self.can_hide_to_tray() {
                     self.hide_window(ctx);
@@ -889,7 +1022,7 @@ impl FennecApp {
         if self.settings.view_mode == fnc_core::settings::ViewMode::Details {
             1
         } else {
-            self.grid_cols.max(1) as isize
+            self.v.grid_cols.max(1) as isize
         }
     }
 
@@ -901,11 +1034,16 @@ impl FennecApp {
     }
 
     fn active_filter_name(&self) -> String {
-        self.active_filters.first().and_then(|&i| self.filters.list.get(i)).map(|f| f.name.clone()).unwrap_or_default()
+        self.v
+            .active_filters
+            .first()
+            .and_then(|&i| self.filters.list.get(i))
+            .map(|f| f.name.clone())
+            .unwrap_or_default()
     }
 
     fn set_filters(&mut self, active: Vec<usize>) {
-        self.active_filters = active;
+        self.v.active_filters = active;
         self.settings.filter = self.active_filter_name();
         self.rebuild_search_options();
         self.send_search();
@@ -952,7 +1090,7 @@ impl FennecApp {
                     if !reveal && self.settings.run_history_enabled {
                         // The write lock may wait for a running search: never take it on
                         // the UI thread.
-                        let (shared, engine) = (self.shared.clone(), self.engine.handle());
+                        let (shared, engine) = (self.shared.clone(), self.v.engine.handle());
                         let _ = std::thread::Builder::new().name("fennec-run-count".into()).spawn(move || {
                             shared.write().record_run(id);
                             engine.refresh();
@@ -1020,14 +1158,14 @@ impl FennecApp {
         if text.is_empty() {
             return;
         }
-        if let Some(i) = self.results.ids.iter().position(|&r| r == id) {
-            self.scroll_to = Some(i);
+        if let Some(i) = self.v.results.ids.iter().position(|&r| r == id) {
+            self.v.scroll_to = Some(i);
         }
-        self.rename = Some(RenameState { id, path, text, focus: true });
+        self.v.rename = Some(RenameState { id, path, text, focus: true });
     }
 
     fn commit_rename(&mut self) {
-        let Some(r) = self.rename.take() else { return };
+        let Some(r) = self.v.rename.take() else { return };
         let old = r.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let new = r.text.trim().to_string();
         if new.is_empty() || new == old {
@@ -1077,17 +1215,17 @@ impl FennecApp {
     // ------------------------------------------------------------------ keys
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        let search_has_focus = ctx.memory(|m| m.has_focus(egui::Id::new(SEARCH_ID)));
+        let search_has_focus = ctx.memory(|m| m.has_focus(self.search_id()));
         if search_has_focus {
-            self.focus = Focus::Search;
+            self.v.focus = Focus::Search;
         }
-        let kctx = if self.focus == Focus::Search { KeyCtx::Search } else { KeyCtx::Results };
-        let modal = self.dialog.is_some() || self.rename.is_some() || self.options_window.is_some();
+        let kctx = if self.v.focus == Focus::Search { KeyCtx::Search } else { KeyCtx::Results };
+        let modal = self.dialog.is_some() || self.v.rename.is_some() || self.options_window.is_some();
         let mut cmds = Vec::new();
         let mut esc = false;
         let mut tab = false;
         let mut typed = String::new();
-        let complete_open = self.complete.is_open();
+        let complete_open = self.v.complete.is_open();
         let mut complete_keys = Vec::new();
         let mut paste_seen = false;
         let mut shift_dels = fnc_platform::shell::take_shift_delete();
@@ -1164,16 +1302,16 @@ impl FennecApp {
         for k in complete_keys {
             if k == Key::Delete {
                 // Del removes the highlighted history entry (SPEC ch.3 §2).
-                if let Some(text) = self.complete.selected_history() {
+                if let Some(text) = self.v.complete.selected_history() {
                     self.history.remove(&text);
-                    self.complete.remove_selected();
+                    self.v.complete.remove_selected();
                 }
                 continue;
             }
-            if let Some(q) = self.complete.key(k, &self.query) {
-                self.query = q;
-                self.edited_at = Some(Instant::now());
-                self.keep_focus = true;
+            if let Some(q) = self.v.complete.key(k, &self.v.query) {
+                self.v.query = q;
+                self.v.edited_at = Some(Instant::now());
+                self.v.keep_focus = true;
                 self.move_search_cursor_to_end(ctx);
             }
         }
@@ -1181,22 +1319,22 @@ impl FennecApp {
             self.on_escape(ctx);
         }
         if tab {
-            self.focus = if self.focus == Focus::Search { Focus::Results } else { Focus::Search };
-            if self.focus == Focus::Search {
-                self.keep_focus = true;
+            self.v.focus = if self.v.focus == Focus::Search { Focus::Results } else { Focus::Search };
+            if self.v.focus == Focus::Search {
+                self.v.keep_focus = true;
             } else {
-                ctx.memory_mut(|m| m.surrender_focus(egui::Id::new(SEARCH_ID)));
-                if self.selected.is_none() && !self.results.is_empty() {
+                ctx.memory_mut(|m| m.surrender_focus(self.search_id()));
+                if self.v.selected.is_none() && !self.v.results.is_empty() {
                     self.select_only(0);
                 }
             }
         }
         if !typed.is_empty() {
             // Type-to-search: continue typing in the search box.
-            self.query.push_str(&typed);
-            self.edited_at = Some(Instant::now());
-            self.focus = Focus::Search;
-            self.keep_focus = true;
+            self.v.query.push_str(&typed);
+            self.v.edited_at = Some(Instant::now());
+            self.v.focus = Focus::Search;
+            self.v.keep_focus = true;
             self.move_search_cursor_to_end(ctx);
         }
         for c in cmds {
@@ -1205,9 +1343,9 @@ impl FennecApp {
     }
 
     fn move_search_cursor_to_end(&self, ctx: &egui::Context) {
-        let id = egui::Id::new(SEARCH_ID);
+        let id = self.search_id();
         let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
-        let end = egui::text::CCursor::new(self.query.chars().count());
+        let end = egui::text::CCursor::new(self.v.query.chars().count());
         state.cursor.set_char_range(Some(egui::text::CCursorRange::one(end)));
         state.store(ctx, id);
     }
@@ -1220,29 +1358,29 @@ impl FennecApp {
         if self.dialog.take().is_some() {
             return;
         }
-        if self.rename.take().is_some() {
+        if self.v.rename.take().is_some() {
             return;
         }
-        if self.complete.is_open() {
-            self.complete.close();
-            self.keep_focus = true;
+        if self.v.complete.is_open() {
+            self.v.complete.close();
+            self.v.keep_focus = true;
             return;
         }
-        if self.query.is_empty() {
+        if self.v.query.is_empty() {
             self.run(ctx, Command::HideWindow);
         } else {
             self.set_query(String::new());
         }
         // egui drops text focus on Escape; Everything keeps typing in the search box.
-        self.focus = Focus::Search;
-        self.keep_focus = true;
+        self.v.focus = Focus::Search;
+        self.v.keep_focus = true;
     }
 
     // ------------------------------------------------------------------ widgets
 
     fn search_bar(&mut self, ui: &mut egui::Ui) {
-        let id = egui::Id::new(SEARCH_ID);
-        let precedence = self.search_opts.precedence;
+        let id = self.search_id();
+        let precedence = self.v.search_opts.precedence;
         let filter_w = 150.0;
         let mut enter = false;
         ui.horizontal(|ui| {
@@ -1250,70 +1388,70 @@ impl FennecApp {
                 let job = syntax_job(ui, buf.as_str(), precedence);
                 ui.fonts_mut(|f| f.layout_job(job))
             };
-            let edit = egui::TextEdit::singleline(&mut self.query)
+            let edit = egui::TextEdit::singleline(&mut self.v.query)
                 .id(id)
                 .hint_text(t("search-hint"))
                 .desired_width((ui.available_width() - filter_w - 16.0).max(100.0))
                 .font(egui::TextStyle::Body)
                 .layouter(&mut layouter);
             let resp = ui.add(edit);
-            if self.keep_focus {
-                self.keep_focus = false;
+            if self.v.keep_focus {
+                self.v.keep_focus = false;
                 resp.request_focus();
             }
-            if self.focus_search {
-                self.focus_search = false;
-                self.focus = Focus::Search;
+            if self.v.focus_search {
+                self.v.focus_search = false;
+                self.v.focus = Focus::Search;
                 resp.request_focus();
                 let mut state = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
                 let all = egui::text::CCursorRange::two(
                     egui::text::CCursor::new(0),
-                    egui::text::CCursor::new(self.query.chars().count()),
+                    egui::text::CCursor::new(self.v.query.chars().count()),
                 );
                 state.cursor.set_char_range(Some(all));
                 state.store(ui.ctx(), id);
             }
             if resp.gained_focus() {
-                self.focus = Focus::Search;
+                self.v.focus = Focus::Search;
             }
             enter = resp.has_focus() && ui.input(|i| i.key_pressed(Key::Enter));
             if resp.changed() {
-                self.edited_at = Some(Instant::now());
+                self.v.edited_at = Some(Instant::now());
                 if self.settings.auto_complete {
                     let cursor = egui::TextEdit::load_state(ui.ctx(), id)
                         .and_then(|s| s.cursor.char_range())
-                        .map_or(self.query.chars().count(), |r| r.primary.index.into());
+                        .map_or(self.v.query.chars().count(), |r| r.primary.index.into());
                     let snap = self.shared.try_snapshot_for(Duration::from_millis(2));
-                    self.complete.update(&self.query, cursor, &self.history, snap.as_ref());
+                    self.v.complete.update(&self.v.query, cursor, &self.history, snap.as_ref());
                 }
             }
-            if let Some(q) = self.complete.show(ui, &resp, &self.query) {
-                self.query = q;
-                self.edited_at = Some(Instant::now());
-                self.keep_focus = true;
+            if let Some(q) = self.v.complete.show(ui, &resp, &self.v.query) {
+                self.v.query = q;
+                self.v.edited_at = Some(Instant::now());
+                self.v.keep_focus = true;
                 self.move_search_cursor_to_end(ui.ctx());
             }
-            if !resp.has_focus() && !self.complete.hovered() {
-                self.complete.close();
+            if !resp.has_focus() && !self.v.complete.hovered() {
+                self.v.complete.close();
             }
             self.filter_combo(ui, filter_w);
         });
         // `/key=value` and `/command` (SPEC ch.3 §13) run on Enter.
-        if self.query.starts_with('/') && (enter || ui.input(|i| i.key_pressed(Key::Enter))) {
-            let cmd = std::mem::take(&mut self.query);
+        if self.v.query.starts_with('/') && (enter || ui.input(|i| i.key_pressed(Key::Enter))) {
+            let cmd = std::mem::take(&mut self.v.query);
             self.inline_command(ui.ctx(), &cmd);
             self.send_search();
         }
         // `search_delay` (default 0 ms, like Everything).
-        if let Some(at) = self.edited_at {
+        if let Some(at) = self.v.edited_at {
             let delay = Duration::from_millis(u64::from(self.settings.search_delay));
-            if self.query.starts_with('/') {
-                self.edited_at = None;
+            if self.v.query.starts_with('/') {
+                self.v.edited_at = None;
             } else if at.elapsed() >= delay {
-                if self.sent_query.as_deref() != Some(self.query.as_str()) {
+                if self.v.sent_query.as_deref() != Some(self.v.query.as_str()) {
                     self.send_search();
                 } else {
-                    self.edited_at = None;
+                    self.v.edited_at = None;
                 }
             } else {
                 ui.ctx().request_repaint_after(delay - at.elapsed());
@@ -1351,10 +1489,11 @@ impl FennecApp {
     }
 
     fn filter_combo(&mut self, ui: &mut egui::Ui, width: f32) {
-        let current = if self.active_filters.is_empty() {
+        let current = if self.v.active_filters.is_empty() {
             t("filter-everything")
         } else {
-            self.active_filters
+            self.v
+                .active_filters
                 .iter()
                 .filter_map(|&i| self.filters.list.get(i))
                 .map(|f| f.name.clone())
@@ -1364,11 +1503,11 @@ impl FennecApp {
         let mut choice: Option<Option<usize>> = None;
         let mut organize = false;
         egui::ComboBox::from_id_salt("fennec-filter").selected_text(current).width(width).show_ui(ui, |ui| {
-            if ui.selectable_label(self.active_filters.is_empty(), t("filter-everything")).clicked() {
+            if ui.selectable_label(self.v.active_filters.is_empty(), t("filter-everything")).clicked() {
                 choice = Some(None);
             }
             for (i, f) in self.filters.list.iter().enumerate() {
-                if ui.selectable_label(self.active_filters.contains(&i), &f.name).clicked() {
+                if ui.selectable_label(self.v.active_filters.contains(&i), &f.name).clicked() {
                     choice = Some(Some(i));
                 }
             }
@@ -1390,11 +1529,11 @@ impl FennecApp {
     fn filter_bar(&mut self, ui: &mut egui::Ui) {
         let mut toggle: Option<(Option<usize>, bool)> = None;
         ui.horizontal_wrapped(|ui| {
-            if ui.selectable_label(self.active_filters.is_empty(), t("filter-everything")).clicked() {
+            if ui.selectable_label(self.v.active_filters.is_empty(), t("filter-everything")).clicked() {
                 toggle = Some((None, false));
             }
             for (i, f) in self.filters.list.iter().enumerate() {
-                let r = ui.selectable_label(self.active_filters.contains(&i), &f.name);
+                let r = ui.selectable_label(self.v.active_filters.contains(&i), &f.name);
                 if r.clicked() {
                     toggle = Some((Some(i), ui.input(|inp| inp.modifiers.ctrl)));
                 }
@@ -1404,7 +1543,7 @@ impl FennecApp {
             Some((None, _)) => self.set_filters(Vec::new()),
             // Ctrl+click combines filters (any of them matches).
             Some((Some(i), true)) => {
-                let mut a = self.active_filters.clone();
+                let mut a = self.v.active_filters.clone();
                 if let Some(p) = a.iter().position(|&x| x == i) {
                     a.remove(p);
                 } else {
@@ -1419,17 +1558,18 @@ impl FennecApp {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let n = format::group_digits(self.results.len() as u64);
+            let n = format::group_digits(self.v.results.len() as u64);
             ui.label(t_args("status-objects", &[("count", n.into())]));
-            let sel = self.sel.count(self.results.len());
+            let sel = self.v.sel.count(self.v.results.len());
             if sel > 0 {
                 ui.separator();
                 let mut text = t_args("status-selected", &[("count", format::group_digits(sel as u64).into())]);
-                if !self.sel.all
+                if !self.v.sel.all
                     && sel <= 10_000
                     && let Some(s) = self.shared.try_snapshot_for(Duration::from_millis(1))
                 {
                     let total: u64 = self
+                        .v
                         .sel
                         .ids
                         .iter()
@@ -1441,12 +1581,15 @@ impl FennecApp {
                 ui.label(text);
             }
             ui.separator();
-            ui.label(t_args("status-elapsed", &[("ms", format!("{:.1}", self.elapsed.as_secs_f64() * 1000.0).into())]));
-            if !self.active_filters.is_empty() {
+            ui.label(t_args(
+                "status-elapsed",
+                &[("ms", format!("{:.1}", self.v.elapsed.as_secs_f64() * 1000.0).into())],
+            ));
+            if !self.v.active_filters.is_empty() {
                 ui.separator();
                 ui.label(self.active_filter_name());
             }
-            if let Some(d) = self.diagnostics.first() {
+            if let Some(d) = self.v.diagnostics.first() {
                 ui.separator();
                 ui.colored_label(ui.visuals().warn_fg_color, d);
             }
@@ -1492,10 +1635,10 @@ impl FennecApp {
         let s = &self.settings;
         if old.columns != s.columns {
             self.columns = crate::columns::parse_columns(&s.columns);
-            self.rows.clear();
+            self.v.rows.clear();
         }
         if old.sort != s.sort || old.folders_first != s.folders_first {
-            self.sort = sort_from_settings(s);
+            self.v.sort = sort_from_settings(s);
         }
         #[cfg(windows)]
         if old.show_tray_icon != s.show_tray_icon || old.hotkey_show_window != s.hotkey_show_window {
@@ -1508,7 +1651,7 @@ impl FennecApp {
             self.indexer.set_paused(s.pause_updates);
         }
         if old.date_format != s.date_format || old.size_format != s.size_format {
-            self.rows.clear();
+            self.v.rows.clear();
         }
         let restart = old.language != s.language
             || old.ntfs_auto_include != s.ntfs_auto_include
@@ -1530,7 +1673,7 @@ impl FennecApp {
     /// Persists window-derived state (columns, sort) into the settings.
     fn sync_view_settings(&mut self) {
         self.settings.columns = crate::columns::columns_setting(&self.columns);
-        self.settings.sort = crate::columns::sort_setting(&self.sort);
+        self.settings.sort = crate::columns::sort_setting(&self.v.sort);
     }
 }
 
@@ -1704,58 +1847,15 @@ fn apply_theme(ctx: &egui::Context, theme: Theme) {
     });
 }
 
-/// Searches unchanged for this long count as "used" (search history).
-const HISTORY_IDLE: Duration = Duration::from_secs(3);
-
-impl eframe::App for FennecApp {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.drain_channels(ctx);
-        if ctx.input(|i| i.viewport().close_requested())
-            && !self.quitting
-            && self.settings.close_to_tray
-            && self.can_hide_to_tray()
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.hide_window(ctx);
-        }
-        if !self.history_recorded
-            && self.edited_at.is_none()
-            && !self.results.is_empty()
-            && self.sent_query.as_deref() == Some(self.query.as_str())
-        {
-            match self.history_idle_since {
-                Some(at) if at.elapsed() >= HISTORY_IDLE => self.record_history(),
-                Some(at) => ctx.request_repaint_after(HISTORY_IDLE.saturating_sub(at.elapsed())),
-                None => self.history_idle_since = Some(Instant::now()),
-            }
-        }
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+impl FennecApp {
+    /// The window body: menu bar (main window), search box, filter bar, status bar,
+    /// preview and results.
+    pub(super) fn draw_main(&mut self, ui: &mut egui::Ui, main: bool) {
         let ctx = ui.ctx().clone();
-        // Track the geometry while visible (hidden/minimised windows report nonsense).
-        let geometry = ctx.input(|i| {
-            let v = i.viewport();
-            match (v.outer_rect, v.inner_rect, v.minimized, v.maximized) {
-                (Some(outer), Some(inner), Some(false) | None, maximized) => {
-                    Some((egui::Rect::from_min_size(outer.min, inner.size()), maximized.unwrap_or(false)))
-                }
-                _ => None,
-            }
-        });
-        if !self.hidden && geometry.is_some() {
-            self.window_geometry = geometry;
-        }
-        let hwnd = native_handle(frame);
-        if hwnd != self.hwnd && hwnd != 0 {
-            fnc_platform::shell::watch_ctrl_v(hwnd);
-        }
-        self.hwnd = hwnd;
-        self.handle_keys(&ctx);
         let alt_only = ctx.input(|i| i.modifiers.alt && !i.modifiers.ctrl && !i.modifiers.shift);
         self.menu_peek =
             !self.settings.show_menu_bar && (alt_only || (self.menu_peek && egui::Popup::is_any_open(&ctx)));
-        if self.settings.show_menu_bar || self.menu_peek {
+        if main && (self.settings.show_menu_bar || self.menu_peek) {
             egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
         }
         egui::Panel::top("search").show(ui, |ui| {
@@ -1785,15 +1885,75 @@ impl eframe::App for FennecApp {
                 self.results_grid(ui);
             }
         });
+    }
+
+    fn search_id(&self) -> egui::Id {
+        egui::Id::new((SEARCH_ID, self.v.uid))
+    }
+}
+
+/// Searches unchanged for this long count as "used" (search history).
+const HISTORY_IDLE: Duration = Duration::from_secs(3);
+
+impl eframe::App for FennecApp {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.drain_channels(ctx);
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.quitting
+            && self.settings.close_to_tray
+            && self.can_hide_to_tray()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.hide_window(ctx);
+        }
+        if !self.v.history_recorded
+            && self.v.edited_at.is_none()
+            && !self.v.results.is_empty()
+            && self.v.sent_query.as_deref() == Some(self.v.query.as_str())
+        {
+            match self.v.history_idle_since {
+                Some(at) if at.elapsed() >= HISTORY_IDLE => self.record_history(),
+                Some(at) => ctx.request_repaint_after(HISTORY_IDLE.saturating_sub(at.elapsed())),
+                None => self.v.history_idle_since = Some(Instant::now()),
+            }
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        // Track the geometry while visible (hidden/minimised windows report nonsense).
+        let geometry = ctx.input(|i| {
+            let v = i.viewport();
+            match (v.outer_rect, v.inner_rect, v.minimized, v.maximized) {
+                (Some(outer), Some(inner), Some(false) | None, maximized) => {
+                    Some((egui::Rect::from_min_size(outer.min, inner.size()), maximized.unwrap_or(false)))
+                }
+                _ => None,
+            }
+        });
+        if !self.hidden && geometry.is_some() {
+            self.window_geometry = geometry;
+        }
+        let hwnd = native_handle(frame);
+        if hwnd != self.hwnd && hwnd != 0 {
+            fnc_platform::shell::watch_ctrl_v(hwnd);
+        }
+        self.hwnd = hwnd;
+        self.handle_keys(&ctx);
+        self.draw_main(ui, true);
         self.dialogs(&ctx);
         self.options_viewport(&ctx);
         for cmd in std::mem::take(&mut self.pending) {
             self.run(&ctx, cmd);
         }
         self.after_table(&ctx);
+        self.secondary_windows(&ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        for w in &mut self.windows {
+            w.close();
+        }
         if let Some((rect, maximized)) = self.window_geometry {
             self.settings.window_maximized = maximized;
             if !maximized {

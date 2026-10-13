@@ -92,6 +92,8 @@ pub struct IndexerConfig {
     pub folder_watch: bool,
     /// Index journal file with retention `(days, max records)`.
     pub journal: Option<(PathBuf, u32, usize)>,
+    /// Shared with [`Indexer::rescan_folders`].
+    pub rescan_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
 
 type Callback = Arc<dyn Fn() + Send + Sync>;
@@ -101,6 +103,7 @@ pub struct Indexer {
     stop: StopFlag,
     saver: Arc<Saver>,
     paused: Arc<std::sync::atomic::AtomicBool>,
+    rescan_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Indexer {
@@ -121,6 +124,7 @@ impl Indexer {
             last: parking_lot::Mutex::new(u64::MAX),
         });
         let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let rescan_epoch = cfg.rescan_epoch.clone();
         let ctx = RunCtx {
             shared,
             refresh,
@@ -134,7 +138,12 @@ impl Indexer {
         if let Err(e) = spawn {
             tracing::error!(error = %e, "cannot start indexer");
         }
-        Self { stop, saver, paused }
+        Self { stop, saver, paused, rescan_epoch }
+    }
+
+    /// Rescans every folder index now (`-update`).
+    pub fn rescan_folders(&self) {
+        self.rescan_epoch.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
     /// "Pause indexing updates": journal changes are held back (the journal keeps them)
@@ -168,7 +177,7 @@ impl Indexer {
             published: false.into(),
             last: parking_lot::Mutex::new(0),
         });
-        Self { stop: StopFlag::new(), saver, paused: Arc::default() }
+        Self { stop: StopFlag::new(), saver, paused: Arc::default(), rescan_epoch: Arc::default() }
     }
 }
 
@@ -218,6 +227,7 @@ fn folder_source(cfg: &IndexerConfig, root: PathBuf) -> FolderSource {
         rescan_interval: cfg.folder_rescan,
         watch: cfg.folder_watch,
         exclude: cfg.exclusions.as_ref().map(crate::exclude::Exclusions::as_fn),
+        rescan_epoch: Some(cfg.rescan_epoch.clone()),
         ..Default::default()
     };
     FolderSource::with_options(root, opts)

@@ -198,6 +198,10 @@ commands! {
     About = "about",
     /// Hide the window (tray) or minimise.
     HideWindow = "hide-window",
+    /// Open a new search window.
+    NewWindow = "new-window",
+    /// Close this window (main window: hide).
+    CloseWindow = "close-window",
     /// Exit Fennec.
     Exit = "exit",
 }
@@ -354,6 +358,8 @@ fn defaults() -> Vec<(KeyCtx, Chord, Command)> {
         (G, Chord::new(C, N, N, Key::Minus), K::ZoomOut),
         (G, Chord::new(C, N, C, Key::Num0), K::ZoomReset),
         (G, Chord::new(C, N, N, Key::Q), K::Exit),
+        (G, Chord::new(C, N, N, Key::N), K::NewWindow),
+        (G, Chord::new(C, N, N, Key::W), K::CloseWindow),
         (G, Chord::new(N, N, N, Key::F1), K::Help),
         (G, Chord::new(C, N, N, Key::P), K::TogglePreview),
         (G, Chord::new(C, C, N, Key::Num1), K::ViewDetails),

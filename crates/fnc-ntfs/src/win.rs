@@ -335,6 +335,19 @@ pub fn create_journal(h: &Handle, max_size: u64, allocation_delta: u64) -> io::R
     ioctl(h, FSCTL_CREATE_USN_JOURNAL, Some(&data), None).map(|_| ()).map_err(to_io)
 }
 
+/// Deletes the USN journal `journal_id` of the volume (`-delete-usn-journal`); waits
+/// until the deletion has finished.
+pub fn delete_journal(h: &Handle, journal_id: u64) -> io::Result<()> {
+    use windows::Win32::System::Ioctl::{
+        DELETE_USN_JOURNAL_DATA, FSCTL_DELETE_USN_JOURNAL, USN_DELETE_FLAG_DELETE, USN_DELETE_FLAG_NOTIFY,
+    };
+    let data = DELETE_USN_JOURNAL_DATA {
+        UsnJournalID: journal_id,
+        DeleteFlags: USN_DELETE_FLAG_DELETE | USN_DELETE_FLAG_NOTIFY,
+    };
+    ioctl(h, FSCTL_DELETE_USN_JOURNAL, Some(&data), None).map(|_| ()).map_err(to_io)
+}
+
 /// Enumerates every MFT record with a USN ≤ `high_usn`, calling `f` for each.
 /// Returns the number of records.
 pub fn enum_mft(h: &Handle, high_usn: i64, mut f: impl FnMut(&UsnRecord<'_>) -> bool) -> io::Result<u64> {

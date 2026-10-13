@@ -33,11 +33,13 @@ pub struct FolderOptions {
     pub threads: usize,
     /// Exclusion rules.
     pub exclude: Option<ExcludeFn>,
+    /// Incremented to request a rescan of every folder index (`-update`).
+    pub rescan_epoch: Option<Arc<AtomicU64>>,
 }
 
 impl Default for FolderOptions {
     fn default() -> Self {
-        Self { rescan_interval: Duration::from_secs(3600), watch: true, threads: 8, exclude: None }
+        Self { rescan_interval: Duration::from_secs(3600), watch: true, threads: 8, exclude: None, rescan_epoch: None }
     }
 }
 
@@ -62,6 +64,8 @@ pub struct FolderSource {
     opts: FolderOptions,
     /// Rescan at the start of the next `watch` (after being offline).
     stale: bool,
+    /// Last rescan request seen (see [`FolderOptions::rescan_epoch`]).
+    seen_epoch: u64,
 }
 
 impl FolderSource {
@@ -80,7 +84,8 @@ impl FolderSource {
         if is_network_path(&root) {
             opts.threads = opts.threads.min(4);
         }
-        Self { root, info, opts, stale: false }
+        let seen_epoch = opts.rescan_epoch.as_ref().map_or(0, |e| e.load(Ordering::Acquire));
+        Self { root, info, opts, stale: false, seen_epoch }
     }
 
     fn excluded(&self, path: &Path, name: &std::ffi::OsStr, md: &std::fs::Metadata) -> bool {
@@ -429,6 +434,13 @@ impl VolumeSource for FolderSource {
             }
             if !self.root.exists() {
                 return Err(SourceError::Offline(self.root.display().to_string()));
+            }
+            if let Some(e) = &self.opts.rescan_epoch {
+                let now = e.load(Ordering::Acquire);
+                if now != self.seen_epoch {
+                    self.seen_epoch = now;
+                    rescan_all = true;
+                }
             }
             if next_rescan.is_some_and(|t| Instant::now() >= t) {
                 rescan_all = true;

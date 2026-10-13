@@ -29,7 +29,7 @@ impl FennecApp {
     }
 
     pub(super) fn results_grid(&mut self, ui: &mut egui::Ui) {
-        if self.results.is_empty() {
+        if self.v.results.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.weak(crate::i18n::t("empty-results"));
             });
@@ -39,14 +39,14 @@ impl FennecApp {
         let size = thumb_size(self.settings.view_mode);
         let cell = egui::vec2(size + 24.0, size + 2.0 * ui.text_style_height(&egui::TextStyle::Body) + 16.0);
         let cols = self.grid_columns(ui.available_width());
-        self.grid_cols = cols;
-        let rows = self.results.len().div_ceil(cols);
-        let results = self.results.clone();
+        self.v.grid_cols = cols;
+        let rows = self.v.results.len().div_ceil(cols);
+        let results = self.v.results.clone();
         let snap = self.shared.try_snapshot_for(Duration::from_millis(2));
         let px = (size * ui.ctx().pixels_per_point()).round() as u32;
         let mut action: Option<(usize, egui::Response)> = None;
         let mut area = egui::ScrollArea::vertical().id_salt("fennec-grid").auto_shrink([false, false]);
-        if let Some(i) = self.scroll_to.take() {
+        if let Some(i) = self.v.scroll_to.take() {
             area = area.vertical_scroll_offset((i / cols) as f32 * cell.y - cell.y);
         }
         area.show_rows(ui, cell.y, rows, |ui, range| {
@@ -56,7 +56,8 @@ impl FennecApp {
                         let i = r * cols + c;
                         let Some(&id) = results.ids.get(i) else { break };
                         let (rect, resp) = ui.allocate_exact_size(cell, egui::Sense::click_and_drag());
-                        let selected = self.sel.contains(id) || (self.sel.ids.is_empty() && self.selected == Some(i));
+                        let selected =
+                            self.v.sel.contains(id) || (self.v.sel.ids.is_empty() && self.v.selected == Some(i));
                         if selected {
                             ui.painter().rect_filled(rect.shrink(2.0), 4.0, ui.visuals().selection.bg_fill);
                         } else if resp.hovered() {
@@ -121,44 +122,45 @@ impl FennecApp {
         let id = results.ids[i];
         let mods = ui.input(|inp| inp.modifiers);
         if !resp.drag_started() {
-            self.focus = Focus::Results;
-            ui.ctx().memory_mut(|m| m.surrender_focus(egui::Id::new(super::SEARCH_ID)));
+            self.v.focus = Focus::Results;
+            let sid = self.search_id();
+            ui.ctx().memory_mut(|m| m.surrender_focus(sid));
         }
         if resp.double_clicked() {
             self.select_only(i);
-            self.scroll_to = None;
+            self.v.scroll_to = None;
             self.pending.push(Command::Open);
         } else if resp.middle_clicked() {
             self.select_only(i);
-            self.scroll_to = None;
+            self.v.scroll_to = None;
             self.pending.push(Command::OpenPath);
         } else if resp.secondary_clicked() {
-            if !self.sel.contains(id) {
+            if !self.v.sel.contains(id) {
                 self.select_only(i);
-                self.scroll_to = None;
+                self.v.scroll_to = None;
             }
             self.after.push(After::ContextMenu);
         } else if resp.drag_started() {
-            if !self.sel.contains(id) {
+            if !self.v.sel.contains(id) {
                 self.select_only(i);
-                self.scroll_to = None;
+                self.v.scroll_to = None;
             }
             self.after.push(After::DragOut);
         } else if mods.ctrl {
-            if self.sel.all {
-                self.sel.all = false;
-                self.sel.ids = results.ids.iter().copied().collect();
+            if self.v.sel.all {
+                self.v.sel.all = false;
+                self.v.sel.ids = results.ids.iter().copied().collect();
             }
-            if !self.sel.ids.remove(&id) {
-                self.sel.ids.insert(id);
+            if !self.v.sel.ids.remove(&id) {
+                self.v.sel.ids.insert(id);
             }
-            self.selected = Some(i);
-            self.selected_id = Some(id);
+            self.v.selected = Some(i);
+            self.v.selected_id = Some(id);
         } else if mods.shift {
             self.select_range(i);
         } else {
             self.select_only(i);
-            self.scroll_to = None;
+            self.v.scroll_to = None;
         }
     }
 }

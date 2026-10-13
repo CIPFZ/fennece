@@ -267,7 +267,7 @@ impl FennecApp {
                 let (ok, cancel) = buttons(ui, "dialog-ok");
                 if ok && let Ok(n) = text.trim().parse::<u32>() {
                     let ids = self.target_ids();
-                    let (shared, engine) = (self.shared.clone(), self.engine.handle());
+                    let (shared, engine) = (self.shared.clone(), self.v.engine.handle());
                     let _ = std::thread::Builder::new().name("fennec-run-count".into()).spawn(move || {
                         let mut s = shared.write();
                         for id in ids {
@@ -286,7 +286,7 @@ impl FennecApp {
                 if ok {
                     let q = b.query();
                     self.set_query(q);
-                    self.focus_search = true;
+                    self.v.focus_search = true;
                     return Act::Close;
                 }
                 if cancel { Act::Close } else { Act::Keep }
@@ -406,7 +406,7 @@ impl FennecApp {
                         && let Some(i) = user
                     {
                         self.filters.list.remove(i);
-                        self.active_filters.clear();
+                        self.v.active_filters.clear();
                         *selected = None;
                         self.save_lists();
                         self.rebuild_search_options();
@@ -555,7 +555,7 @@ impl FennecApp {
 
     /// Writes the current results as EFU (`.efu`), CSV (`.csv`) or a path list.
     fn export(&mut self, path: PathBuf) {
-        let ids = self.results.ids.clone();
+        let ids = self.v.results.ids.clone();
         let shared = self.shared.clone();
         let format = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         let done = t_args("msg-exported", &[("count", ids.len().into()), ("path", path.display().to_string().into())]);

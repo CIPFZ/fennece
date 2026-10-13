@@ -24,6 +24,14 @@ impl DataPaths {
         Self::resolve_with(instance, exe_dir.as_deref(), &|k| std::env::var_os(k).map(PathBuf::from))
     }
 
+    /// Portable data folder next to the executable (`-portable`, `-no-app-data`).
+    pub fn portable(instance: &str) -> Self {
+        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default();
+        let base = exe_dir.join("data");
+        let root = if instance.is_empty() { base } else { base.join("instances").join(sanitize_instance(instance)) };
+        Self { root, portable: true }
+    }
+
     /// Testable core of [`DataPaths::resolve`].
     pub fn resolve_with(instance: &str, exe_dir: Option<&Path>, env: &dyn Fn(&str) -> Option<PathBuf>) -> Self {
         let (base, portable) = match exe_dir {
