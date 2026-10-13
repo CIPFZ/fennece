@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 1c8c9bb176c44282887659356f6d5391eddb6786973ecb7c189368a769b97aac # shrinks to q = "!<&amp:amp:> &amp:amp:", and_first = false
+cc 262a95d07ffa6a7ba0abdce5b9f28a276de32ace3e0e69c0df2c3e524d7f0476 # shrinks to q = "!<folder:> folder:", and_first = false

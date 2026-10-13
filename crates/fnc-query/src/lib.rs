@@ -15,6 +15,7 @@
 pub mod ast;
 pub mod date;
 pub mod display;
+pub mod duration;
 pub mod funcs;
 pub mod parser;
 pub mod plan;
