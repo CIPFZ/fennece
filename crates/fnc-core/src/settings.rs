@@ -560,6 +560,21 @@ pub struct Settings {
     /// Closing the last tab clears it instead of closing the window.
     #[setting(key = "close_last_tab_keeps_window", default = true, page = "ui")]
     pub close_last_tab_keeps_window: bool,
+    /// Show the folder/bookmark sidebar.
+    #[setting(key = "show_sidebar", default = false, page = "view")]
+    pub show_sidebar: bool,
+    /// Sidebar page: `folders` or `bookmarks`.
+    #[setting(key = "sidebar_page", default = "folders", page = "view")]
+    pub sidebar_page: String,
+    /// Sidebar width in points.
+    #[setting(key = "sidebar_width", default = 220.0, page = "view")]
+    pub sidebar_width: f32,
+    /// Show the toolbar.
+    #[setting(key = "show_toolbar", default = false, page = "ui")]
+    pub show_toolbar: bool,
+    /// Toolbar buttons: command ids (`|` = separator).
+    #[setting(key = "toolbar", default = vec!["navigate-back".to_string(), "navigate-forward".to_string(), "|".to_string(), "new-tab".to_string(), "new-window".to_string(), "refresh".to_string(), "|".to_string(), "toggle-preview".to_string(), "toggle-sidebar".to_string(), "options".to_string()], page = "ui")]
+    pub toolbar: Vec<String>,
     /// Ctrl+F in the result list opens the find bar instead of focusing the search box.
     #[setting(key = "findbar_ctrl_f", default = false, page = "results")]
     pub findbar_ctrl_f: bool,

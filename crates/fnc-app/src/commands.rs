@@ -74,6 +74,14 @@ commands! {
     Undo = "undo",
     /// New tab.
     NewTab = "new-tab",
+    /// Previous search of this tab.
+    NavigateBack = "navigate-back",
+    /// Next search of this tab.
+    NavigateForward = "navigate-forward",
+    /// Show or hide the folder/bookmark sidebar.
+    ToggleSidebar = "toggle-sidebar",
+    /// Show or hide the toolbar.
+    ToggleToolbar = "toggle-toolbar",
     /// Find in the results (find bar; Ctrl+F in the list when `findbar_ctrl_f` is on).
     FindInResults = "find-in-results",
     /// Next match of the find bar.
@@ -445,6 +453,8 @@ fn defaults() -> Vec<(KeyCtx, Chord, Command)> {
         (R, Chord::new(N, N, N, Key::F2), K::Rename),
         (R, Chord::new(C, N, N, Key::Z), K::Undo),
         (G, Chord::new(C, N, N, Key::T), K::NewTab),
+        (G, Chord::new(N, N, C, Key::ArrowLeft), K::NavigateBack),
+        (G, Chord::new(N, N, C, Key::ArrowRight), K::NavigateForward),
         (R, Chord::new(C, N, N, Key::F), K::FindInResults),
         (R, Chord::new(N, N, N, Key::F3), K::FindNext),
         (R, Chord::new(N, C, N, Key::F3), K::FindPrevious),

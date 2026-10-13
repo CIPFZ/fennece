@@ -18,8 +18,10 @@ mod options;
 mod preview;
 mod semantic_ui;
 mod session;
+mod sidebar;
 pub(super) mod table;
 mod tabs;
+mod toolbar;
 mod window;
 
 use std::collections::{HashMap, HashSet};
@@ -190,6 +192,8 @@ pub(super) struct View {
     preview: preview::PreviewState,
     /// Find bar (Ctrl+F in find-bar mode).
     find: findbar::FindBar,
+    /// Back/forward through the tab's searches.
+    nav: toolbar::Nav,
 }
 
 /// Main application state.
@@ -258,6 +262,8 @@ pub struct FennecApp {
     edit: edit_ui::EditUi,
     /// Tabs of the window being drawn (swapped like `v`).
     tabs: tabs::Tabs,
+    /// Folder tree cache of the sidebar.
+    sidebar_cache: sidebar::SidebarCache,
     /// IPC, Everything-compatible and HTTP servers.
     servers: Option<integration::AppServers>,
 }
@@ -374,6 +380,7 @@ impl FennecApp {
                 grid_cols: 1,
                 preview: preview::PreviewState::default(),
                 find: Default::default(),
+                nav: Default::default(),
             },
             windows: Vec::new(),
             in_secondary: false,
@@ -383,6 +390,7 @@ impl FennecApp {
             sem: Default::default(),
             edit: Default::default(),
             tabs: Default::default(),
+            sidebar_cache: Default::default(),
             servers: None,
         };
         app.semantic_init();
@@ -459,8 +467,12 @@ impl FennecApp {
     }
 
     fn record_history(&mut self) {
-        if !self.v.history_recorded && self.settings.search_history_enabled {
-            self.history.record(&self.v.query);
+        if !self.v.history_recorded {
+            let q = self.v.query.clone();
+            self.v.nav.visit(&q);
+            if self.settings.search_history_enabled {
+                self.history.record(&q);
+            }
             self.v.history_recorded = true;
         }
     }
@@ -885,6 +897,10 @@ impl FennecApp {
             K::AdvancedRename => self.open_advanced_rename(),
             K::Undo => self.undo_last(),
             K::NewTab => self.tab_new(String::new()),
+            K::NavigateBack => self.navigate(true),
+            K::NavigateForward => self.navigate(false),
+            K::ToggleSidebar => self.toggle_setting(|s| &mut s.show_sidebar),
+            K::ToggleToolbar => self.toggle_setting(|s| &mut s.show_toolbar),
             K::FindInResults if self.settings.findbar_ctrl_f => self.open_find_bar(),
             K::FindInResults => self.run(ctx, K::FocusSearch),
             K::FindNext => {
@@ -1963,6 +1979,9 @@ impl FennecApp {
         }
         egui::Panel::top("search").show(ui, |ui| {
             ui.add_space(4.0);
+            if self.settings.show_toolbar {
+                self.toolbar(ui);
+            }
             self.tab_bar(ui);
             self.search_bar(ui);
             if self.settings.show_filter_bar {
@@ -1977,6 +1996,14 @@ impl FennecApp {
             egui::Panel::bottom("find-bar").show(ui, |ui| self.find_bar(ui));
         }
         self.thumbs.poll(&ctx);
+        if self.settings.show_sidebar {
+            let r = egui::Panel::left("sidebar")
+                .resizable(true)
+                .default_size(self.settings.sidebar_width.clamp(120.0, 800.0))
+                .size_range(120.0..=800.0)
+                .show(ui, |ui| self.sidebar(ui));
+            self.settings.sidebar_width = r.response.rect.width();
+        }
         if self.settings.show_preview {
             let r = egui::Panel::right("preview")
                 .resizable(true)

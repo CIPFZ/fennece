@@ -144,6 +144,8 @@ impl FennecApp {
                 self.check(ui, K::ToggleFilterBar, self.settings.show_filter_bar, &mut out);
                 self.check(ui, K::ToggleStatusBar, self.settings.show_status_bar, &mut out);
                 self.check(ui, K::TogglePreview, self.settings.show_preview, &mut out);
+                self.check(ui, K::ToggleSidebar, self.settings.show_sidebar, &mut out);
+                self.check(ui, K::ToggleToolbar, self.settings.show_toolbar, &mut out);
                 ui.separator();
                 {
                     use fnc_core::settings::ViewMode;

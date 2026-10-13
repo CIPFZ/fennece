@@ -98,3 +98,45 @@ fn find_bar_jumps_without_changing_results() {
     h.state_mut().run(&ctx, Command::FindNext);
     assert_eq!(h.state().v.selected, Some(second));
 }
+
+#[test]
+fn sidebar_folder_click_toolbar_and_back_forward() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut deps = deps_for(Some(efu), SharedIndex::default());
+    deps.settings.show_sidebar = true;
+    deps.settings.show_toolbar = true;
+    let mut h = harness(deps);
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && !a.v.results.is_empty());
+    h.run();
+    // The tree starts at the volume root; expand it and click a folder.
+    assert!(h.query_by_label("Folders").is_some());
+    let root = h.state().shared.snapshot().volumes()[0].roots[0];
+    let root_label = {
+        let s = h.state().shared.snapshot();
+        let mut p = String::new();
+        s.full_path(root, &mut p);
+        p
+    };
+    // Only the sidebar shows the root's name once the results are narrowed.
+    h.state_mut().set_query("ext:docx".into());
+    wait_until(&mut h, "docx", |a| a.v.results.len() == 1);
+    h.run();
+    h.get_by_label(&root_label).click();
+    h.run();
+    wait_until(&mut h, "folder search", |a| a.v.query.starts_with('"') && a.v.query.ends_with("\\\""));
+    // Back/forward through used searches.
+    let ctx = h.ctx.clone();
+    for q in ["img", "report"] {
+        h.state_mut().set_query(q.to_string());
+        h.state_mut().record_history();
+    }
+    h.state_mut().run(&ctx, Command::NavigateBack);
+    assert_eq!(h.state().v.query, "img");
+    h.state_mut().run(&ctx, Command::NavigateForward);
+    assert_eq!(h.state().v.query, "report");
+    // Toolbar buttons are there (back is enabled now).
+    h.run();
+    assert!(h.query_by_label("◀").is_some() && h.query_by_label("⟳").is_some());
+}

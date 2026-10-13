@@ -646,7 +646,7 @@ impl FennecApp {
         }
     }
 
-    fn save_lists(&mut self) {
+    pub(super) fn save_lists(&mut self) {
         if let Err(e) = self.filters.save() {
             self.say(t_args("msg-op-failed", &[("error", e.to_string().into())]));
         }

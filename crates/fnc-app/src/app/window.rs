@@ -63,6 +63,7 @@ impl FennecApp {
             grid_cols: 1,
             preview: Default::default(),
             find: Default::default(),
+            nav: Default::default(),
         }
     }
 
