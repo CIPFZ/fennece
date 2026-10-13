@@ -297,3 +297,7 @@ help-syntax =
     Functions: ext:jpg;png  size:>10mb  dm:today  dc:2026  attrib:H  parent:C:\Windows  child:*.mp3  dupe:  empty:  depth:2 …
     Macros: audio: zip: doc: exe: pic: video:
     Commands: type /search_delay=100 or /reindex in the search box and press Enter.
+dialog-confirm-delete = { $count ->
+    [one] Permanently delete this item? This cannot be undone.
+   *[other] Permanently delete these { $count } items? This cannot be undone.
+}

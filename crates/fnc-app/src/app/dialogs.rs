@@ -19,6 +19,7 @@ pub(super) enum Dialog {
     EditFilter { index: Option<usize>, filter: Filter },
     Filters { selected: Option<usize> },
     Export { path: String },
+    ConfirmDelete { paths: Vec<PathBuf> },
     ContextMenu { at: egui::Pos2 },
     Help,
     About,
@@ -204,6 +205,7 @@ impl FennecApp {
             Dialog::EditFilter { .. } => t("dialog-edit-filter"),
             Dialog::Filters { .. } => t("cmd-organize-filters"),
             Dialog::Export { .. } => t("cmd-export"),
+            Dialog::ConfirmDelete { .. } => t("cmd-delete-permanently"),
             Dialog::ContextMenu { .. } => String::new(),
             Dialog::Help => t("cmd-help"),
             Dialog::About => t("cmd-about"),
@@ -423,6 +425,22 @@ impl FennecApp {
                 let (ok, cancel) = buttons(ui, "dialog-save");
                 if ok {
                     self.export(PathBuf::from(path.trim()));
+                    return Act::Close;
+                }
+                if cancel { Act::Close } else { Act::Keep }
+            }
+            Dialog::ConfirmDelete { paths } => {
+                ui.label(t_args("dialog-confirm-delete", &[("count", paths.len().into())]));
+                for p in paths.iter().take(8) {
+                    ui.monospace(p.display().to_string());
+                }
+                if paths.len() > 8 {
+                    ui.weak("…");
+                }
+                let (ok, cancel) = buttons(ui, "dialog-delete");
+                if ok {
+                    let paths = std::mem::take(paths);
+                    self.delete_paths(paths, true);
                     return Act::Close;
                 }
                 if cancel { Act::Close } else { Act::Keep }

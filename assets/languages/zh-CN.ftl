@@ -288,3 +288,4 @@ help-syntax =
     函数：ext:jpg;png  size:>10mb  dm:today  dc:2026  attrib:H  parent:C:\Windows  child:*.mp3  empty:  depth:2 …
     宏：audio: zip: doc: exe: pic: video:
     命令：在搜索框输入 /search_delay=100 或 /reindex 后按回车。
+dialog-confirm-delete = 确定要永久删除这 { $count } 个项目吗？此操作无法撤销。

@@ -670,15 +670,15 @@ impl FennecApp {
             K::CopyAsTsv => self.copy_text(ctx, TextKind::Tsv),
             K::CopyAsCsv => self.copy_text(ctx, TextKind::Csv),
             K::CopyAsEfu => self.copy_text(ctx, TextKind::Efu),
-            K::Delete | K::DeletePermanently => {
+            K::Delete => {
+                let paths: Vec<PathBuf> = self.target_paths().into_iter().map(|(_, p)| p).collect();
+                self.delete_paths(paths, false);
+            }
+            K::DeletePermanently => {
+                // Permanent deletion cannot be undone: always ask (SPEC ch.3 §4.2).
                 let paths: Vec<PathBuf> = self.target_paths().into_iter().map(|(_, p)| p).collect();
                 if !paths.is_empty() {
-                    let owner = self.owner();
-                    let permanent = cmd == K::DeletePermanently;
-                    let n = paths.len();
-                    self.spawn_op(t_args("msg-deleted", &[("count", n.into())]), move || {
-                        fnc_platform::fileops::delete(owner, &paths, permanent).map(|_| ())
-                    });
+                    self.dialog = Some(dialogs::Dialog::ConfirmDelete { paths });
                 }
             }
             K::Rename => self.start_rename(),
@@ -823,6 +823,18 @@ impl FennecApp {
             }
             K::Exit => self.quit(ctx),
         }
+    }
+
+    /// Deletes `paths` on a worker thread (recycle bin unless `permanent`).
+    fn delete_paths(&mut self, paths: Vec<PathBuf>, permanent: bool) {
+        if paths.is_empty() {
+            return;
+        }
+        let owner = self.owner();
+        let n = paths.len();
+        self.spawn_op(t_args("msg-deleted", &[("count", n.into())]), move || {
+            fnc_platform::fileops::delete(owner, &paths, permanent).map(|_| ())
+        });
     }
 
     fn toggle_setting(&mut self, f: impl Fn(&mut Settings) -> &mut bool) {

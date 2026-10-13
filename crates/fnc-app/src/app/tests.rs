@@ -253,3 +253,33 @@ fn mouse_selection_on_rows() {
     h.run_steps(2);
     assert!(h.state().message.as_ref().is_some_and(|(m, _)| !m.is_empty()));
 }
+
+/// UI-03: clicking the Size header re-sorts 1,000,000 results within 300 ms (click to
+/// displayed). `cargo test -p fnc-app --release -- --ignored ui03`.
+#[test]
+#[ignore = "needs a release build; sorts 1M results"]
+fn ui03_size_header_sorts_one_million_within_300ms() {
+    let shared = SharedIndex::new(gen_fixtures::build_index(1_000_000, 42).unwrap());
+    shared.write().rebuild_name_order();
+    let mut h = harness(deps_for(None, shared));
+    wait_until(&mut h, "1M results", |a| a.results.len() == 1_000_000);
+    h.run_steps(3);
+    let mut times = Vec::new();
+    for _ in 0..4 {
+        let before = h.state().latest_shown;
+        let t = Instant::now();
+        h.get_by_label_contains(&t_title("size")).click();
+        while h.state().latest_shown == before {
+            h.step();
+        }
+        times.push(t.elapsed());
+        h.run_steps(1);
+    }
+    eprintln!("UI-03 size header click → sorted 1M shown: {times:?}");
+    assert_eq!(h.state().results.len(), 1_000_000);
+    assert!(times.iter().all(|t| *t < Duration::from_millis(300)), "{times:?}");
+}
+
+fn t_title(key: &str) -> String {
+    crate::columns::ColumnId::from_key(key).map(|c| c.title()).unwrap_or_default()
+}
