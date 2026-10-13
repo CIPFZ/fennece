@@ -14,6 +14,8 @@
 //!
 //! - `cuda` enables CUDA gpu support.
 //! - `sampler` adds the [`context::sample::sampler`] struct for a more rusty way of sampling.
+// Vendored (third_party/README.md): upstream warnings are not ours to fix.
+#![allow(warnings)]
 use std::ffi::{c_char, CStr, CString, NulError};
 use std::fmt::Debug;
 use std::num::NonZeroI32;

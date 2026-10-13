@@ -1,3 +1,5 @@
+// Vendored (third_party/README.md): upstream warnings are not ours to fix.
+#![allow(warnings)]
 use std::env;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};

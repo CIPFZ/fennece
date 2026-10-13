@@ -1,12 +1,19 @@
 [package]
 name = "sem-eval"
+description = "Semantic search evaluation: Recall@10 / MRR of query→file samples (SPEC ch.5 §5)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+default = ["llama"]
+llama = ["fnc-semantic/llama"]
+
 [dependencies]
+fnc-semantic.workspace = true
+walkdir.workspace = true
 
 [lints]
 workspace = true

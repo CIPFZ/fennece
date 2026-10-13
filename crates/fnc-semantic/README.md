@@ -1,7 +1,6 @@
-# fnc-semantic (M5)
+# fnc-semantic
 
-Local semantic search with EmbeddingGemma-2 (SPEC ch.5): `Embedder` trait, llama.cpp backend, chunker,
-vector index, RRF fusion, background indexer.
-
-**Invariants (planned)**: zero overhead when disabled (SEM-06); the model is loaded on demand and
-unloaded when idle; literal results are never delayed by the semantic channel.
+Semantic search for Fennec (SPEC ch.5): the `Embedder` trait and its llama.cpp implementation
+(feature `llama`, EmbeddingGemma-2 GGUF), filename/text/code chunking, the vector store (usearch
+HNSW, int8, cosine) with its chunk table, the background semantic indexer and score fusion.
+The llama.cpp sources are vendored under `third_party/` (ADR-020).

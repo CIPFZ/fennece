@@ -6,7 +6,24 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# llama.cpp embedder (compiles llama.cpp; needs CMake and a C++ compiler).
+llama = ["dep:llama-cpp-2"]
+
 [dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+xxhash-rust.workspace = true
+serde.workspace = true
+toml.workspace = true
+usearch = "2.26"
+llama-cpp-2 = { version = "=0.1.159", default-features = false, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
