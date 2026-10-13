@@ -408,6 +408,64 @@ impl PropertyStore {
         PropertyId::all().filter_map(|p| self.column(p).get(row).map(|v| (p, v.to_value(p)))).collect()
     }
 
+    /// Column text of `p` for `id` (unit-aware, see [`PropertyId::format`]).
+    pub fn display(&self, id: EntryId, p: PropertyId) -> Option<String> {
+        self.get(id, p).map(|v| p.format(&v))
+    }
+
+    /// Sort ranks of a text column's dictionary (natural, case-insensitive order); empty
+    /// for other columns.
+    pub fn text_ranks(&self, p: PropertyId) -> Vec<u32> {
+        let dict = match self.column(p) {
+            ColumnView::Text(_, d) | ColumnView::Multi(_, _, d) => d,
+            _ => return Vec::new(),
+        };
+        let folded: Vec<String> = dict.iter().map(|s| fnc_core::fold::fold_str(s)).collect();
+        let mut order: Vec<u32> = (0..dict.len() as u32).collect();
+        order.sort_by(|&a, &b| {
+            fnc_core::natsort::natural_cmp(folded[a as usize].as_bytes(), folded[b as usize].as_bytes())
+                .then_with(|| dict[a as usize].cmp(&dict[b as usize]))
+        });
+        let mut ranks = vec![0u32; dict.len()];
+        for (r, &i) in order.iter().enumerate() {
+            ranks[i as usize] = r as u32;
+        }
+        ranks
+    }
+
+    /// Total-order sort key of `p` for `id` (`i64::MIN` when unknown); `ranks` from
+    /// [`PropertyStore::text_ranks`] for text columns.
+    #[inline]
+    pub fn sort_key(&self, id: EntryId, p: PropertyId, ranks: &[u32]) -> i64 {
+        match p {
+            PropertyId::DIMENSIONS => return self.dimensions(id).map_or(i64::MIN, |(w, h)| w.saturating_mul(h)),
+            PropertyId::ASPECT_RATIO => {
+                return self
+                    .dimensions(id)
+                    .filter(|d| d.1 > 0)
+                    .map_or(i64::MIN, |(w, h)| crate::value::float_key(w as f64 / h as f64));
+            }
+            _ => {}
+        }
+        match self.get_ref(id, p) {
+            None => i64::MIN,
+            Some(ValueRef::Int(v)) => v,
+            Some(ValueRef::Float(f)) => crate::value::float_key(f),
+            Some(ValueRef::Text(_)) => match self.column(p) {
+                ColumnView::Text(v, _) => self
+                    .rows
+                    .row(id)
+                    .and_then(|r| v.get(r as usize))
+                    .and_then(|&i| ranks.get(i as usize))
+                    .map_or(i64::MIN, |&r| i64::from(r)),
+                _ => i64::MIN,
+            },
+            Some(ValueRef::Multi(ids, _)) => {
+                ids.first().and_then(|&i| ranks.get(i as usize)).map_or(i64::MIN, |&r| i64::from(r))
+            }
+        }
+    }
+
     /// Approximate heap use in bytes.
     pub fn heap_bytes(&self) -> usize {
         let dict = |d: &Dict| d.strings.iter().map(|s| s.len() + 40).sum::<usize>();
@@ -609,7 +667,7 @@ impl PropertyStore {
 
 /// Shared, thread-safe handle to a [`PropertyStore`] (one writer — the app's extraction
 /// thread — many readers: the search engine and the UI).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PropertyIndex(Arc<RwLock<PropertyStore>>);
 
 /// Owned read guard (`Send`): a consistent view for the duration of a query.
@@ -639,6 +697,12 @@ impl PropertyIndex {
     /// `true` if both handles share one store.
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for PropertyIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PropertyIndex(..)")
     }
 }
 

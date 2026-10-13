@@ -3,6 +3,11 @@
 //! Names are matched after normalisation: ASCII lowercase with `-` and `_` removed,
 //! so `date-modified:`, `DateModified:` and `datemodified:` are the same function.
 
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
+use fnc_props::{PropType, PropertyId};
+
 use crate::ast::Modifier;
 
 /// Kind of value a function takes; drives value parsing in the planner.
@@ -31,30 +36,74 @@ macro_rules! funcs {
         /// Built-in search function.
         #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[allow(missing_docs)]
-        pub enum FuncId { $($id),+ }
+        pub enum FuncId {
+            $($id,)+
+            /// A property from the property table (`width:`, `artist:`, `file-version:`).
+            Prop(PropertyId),
+        }
 
         impl FuncId {
             /// Value kind.
             pub fn kind(self) -> ValueKind {
-                match self { $(FuncId::$id => ValueKind::$kind),+ }
+                match self {
+                    $(FuncId::$id => ValueKind::$kind,)+
+                    FuncId::Prop(p) => prop_kind(p),
+                }
             }
-            /// Canonical name (first alias).
+            /// Canonical name (first alias; the canonical property name for properties).
             pub fn name(self) -> &'static str {
-                match self { $(FuncId::$id => funcs!(@first $($name),+)),+ }
+                match self {
+                    $(FuncId::$id => funcs!(@first $($name),+),)+
+                    FuncId::Prop(p) => p.name(),
+                }
             }
-            /// All aliases.
+            /// All aliases (for properties: the aliases besides the canonical name).
             pub fn aliases(self) -> &'static [&'static str] {
-                match self { $(FuncId::$id => &[$($name),+]),+ }
+                match self {
+                    $(FuncId::$id => &[$($name),+],)+
+                    FuncId::Prop(p) => p.def().map_or(&[], |d| d.aliases),
+                }
             }
         }
 
-        /// `(normalised name, function)` for every alias.
-        pub static FUNCTION_TABLE: &[(&str, FuncId)] = &[
+        /// Built-in `(normalised name, function)` pairs.
+        static BUILTIN_FUNCTIONS: &[(&str, FuncId)] = &[
             $($(($name, FuncId::$id),)+)+
         ];
     };
     (@first $first:literal $(, $rest:literal)*) => { $first };
 }
+
+/// Value kind of a property function.
+fn prop_kind(p: PropertyId) -> ValueKind {
+    if p == PropertyId::DIMENSIONS {
+        // `dimensions:>=1920x1080`: comparison operators are part of the value.
+        return ValueKind::Number;
+    }
+    match p.ty() {
+        PropType::Int | PropType::Float | PropType::Bool => ValueKind::Number,
+        PropType::Date => ValueKind::Date,
+        PropType::Duration => ValueKind::Duration,
+        PropType::Text | PropType::MultiText => ValueKind::Text,
+    }
+}
+
+/// `(normalised name, function)` for every alias: built-in functions, then every property
+/// name of the property table (SPEC ch.2 appendix A/B).
+pub static FUNCTION_TABLE: LazyLock<Vec<(&'static str, FuncId)>> = LazyLock::new(|| {
+    let mut v: Vec<(&'static str, FuncId)> = BUILTIN_FUNCTIONS.to_vec();
+    for (name, p) in PropertyId::search_names() {
+        if !v.iter().any(|(n, _)| *n == name) {
+            // One-time table construction: property names become `'static` like the
+            // built-in ones (a few hundred bytes, never freed by design).
+            v.push((String::leak(name), FuncId::Prop(p)));
+        }
+    }
+    v
+});
+
+static FUNCTION_INDEX: LazyLock<HashMap<&'static str, FuncId>> =
+    LazyLock::new(|| FUNCTION_TABLE.iter().map(|&(n, f)| (n, f)).collect());
 
 funcs! {
     // ---- files and folders (core) ----
@@ -138,9 +187,6 @@ funcs! {
     Utf16BeContent: Text = ["utf16becontent"],
     TextPlain: Text = ["textplain"],
     ContentHits: Number = ["contenthits"],
-    LineCount: Number = ["linecount"],
-    WordCount: Number = ["wordcount"],
-    CharCount: Number = ["charcount"],
     // ---- hashes ----
     Crc32: Text = ["crc32"],
     Crc64: Text = ["crc64"],
@@ -148,49 +194,8 @@ funcs! {
     Sha1: Text = ["sha1"],
     Sha256: Text = ["sha256"],
     Sha512: Text = ["sha512"],
-    // ---- image ----
-    Width: Number = ["width"],
-    Height: Number = ["height"],
-    Dimensions: Text = ["dimensions"],
-    AspectRatio: Text = ["aspectratio"],
-    BitDepth: Number = ["bitdepth"],
-    Orientation: Text = ["orientation"],
-    DateTaken: Date = ["datetaken"],
-    CameraMaker: Text = ["cameramaker"],
-    CameraModel: Text = ["cameramodel"],
-    Rating: Number = ["rating"],
-    Tags: Text = ["tags", "keywords"],
-    Title: Text = ["title"],
-    Subject: Text = ["subject"],
-    Comment: Text = ["comment", "comments"],
-    Copyright: Text = ["copyright"],
-    // ---- audio / video ----
-    Length: Duration = ["length", "duration"],
-    Artist: Text = ["artist"],
-    Album: Text = ["album"],
-    AlbumArtist: Text = ["albumartist"],
-    Track: Number = ["track", "tracknumber"],
-    Genre: Text = ["genre"],
-    Year: Number = ["year"],
-    Composer: Text = ["composer"],
-    BitRate: Number = ["bitrate"],
-    SampleRate: Number = ["samplerate"],
-    Channels: Number = ["channels"],
-    FrameWidth: Number = ["framewidth"],
-    FrameHeight: Number = ["frameheight"],
-    FrameRate: Number = ["framerate", "fps"],
-    VideoCodec: Text = ["videocodec"],
-    AudioCodec: Text = ["audiocodec"],
-    // ---- document ----
-    Author: Text = ["author", "authors"],
-    Company: Text = ["company", "companyname"],
-    PageCount: Number = ["pagecount"],
-    // ---- executable ----
-    FileVersion: Text = ["fileversion"],
-    ProductVersion: Text = ["productversion"],
-    ProductName: Text = ["productname"],
-    FileDescription: Text = ["filedescription"],
-    Machine: Text = ["machine"],
+    // Image, audio, video, document and executable properties (`width:`, `artist:`,
+    // `line-count:`, ...) come from the property table: `FuncId::Prop`.
     // ---- semantic (Fennec extension, SPEC ch.5) ----
     Semantic: Text = ["sem", "semantic"],
     SemName: Text = ["semname"],
@@ -213,7 +218,7 @@ pub fn normalize_name(s: &str, out: &mut String) {
 
 /// Looks up a function by (normalised) name.
 pub fn lookup_function(norm: &str) -> Option<FuncId> {
-    FUNCTION_TABLE.iter().find(|(n, _)| *n == norm).map(|&(_, f)| f)
+    FUNCTION_INDEX.get(norm).copied()
 }
 
 /// `(name, modifier, on)` for every modifier spelling.
@@ -444,10 +449,13 @@ mod tests {
     fn table_names_are_normalised_and_unique() {
         let mut seen = std::collections::HashSet::new();
         let mut norm = String::new();
-        for (n, _) in FUNCTION_TABLE {
+        for (n, _) in FUNCTION_TABLE.iter() {
             normalize_name(n, &mut norm);
             assert_eq!(&norm, n, "function alias must be stored normalised");
             assert!(seen.insert(*n), "duplicate function alias {n}");
+        }
+        for (n, p) in PropertyId::search_names() {
+            assert_eq!(lookup_function(&n), Some(FuncId::Prop(p)), "property name {n} shadowed");
         }
         for (n, _, _) in MODIFIER_TABLE {
             assert!(seen.insert(*n), "modifier {n} collides with a function or modifier");

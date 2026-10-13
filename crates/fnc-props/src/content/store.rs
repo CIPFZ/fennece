@@ -195,6 +195,19 @@ impl ContentMatcher {
             .map(ContentMatcher::Regex)
     }
 
+    /// Wildcard matcher: `*` any run within a line, `?` one character, unanchored.
+    pub fn wildcard(pattern: &str, case: bool) -> Result<Self, regex::Error> {
+        let mut re = String::new();
+        for c in pattern.chars() {
+            match c {
+                '*' => re.push_str(".*?"),
+                '?' => re.push('.'),
+                c => re.push_str(&regex::escape(&c.to_string())),
+            }
+        }
+        Self::regex(&re, case, false, false)
+    }
+
     /// Default-folded needle for index pruning (`None` for regexes).
     fn prune_text(&self) -> Option<String> {
         match self {
@@ -207,41 +220,73 @@ impl ContentMatcher {
         }
     }
 
-    /// `(first match byte offset in text, number of matches)`, `None` if no match.
-    pub fn find(&self, text: &str, sc: &mut MatchScratch) -> Option<(usize, u32)> {
+    /// Calls `f(start, end)` (byte offsets in `text`) for every match until it returns
+    /// `false`. An empty needle matches once at 0.
+    pub fn each_match(&self, text: &str, sc: &mut MatchScratch, mut f: impl FnMut(usize, usize) -> bool) {
         match self {
             ContentMatcher::Regex(r) => {
-                let mut it = r.find_iter(text);
-                let first = it.next()?.start();
-                Some((first, 1 + it.take(u32::MAX as usize - 1).count() as u32))
+                for m in r.find_iter(text) {
+                    if !f(m.start(), m.end()) {
+                        return;
+                    }
+                }
             }
             ContentMatcher::Substring { needle, fold } | ContentMatcher::Word { needle, fold } => {
                 if needle.is_empty() {
-                    return Some((0, 1));
+                    f(0, 0);
+                    return;
                 }
                 let word = matches!(self, ContentMatcher::Word { .. });
                 let MatchScratch { buf, map } = sc;
                 let (hay, mapped) = MatchScratch::fold_into(buf, map, text, *fold);
                 let finder = memchr::memmem::Finder::new(needle.as_bytes());
-                let mut first = None;
-                let mut count = 0u32;
-                let hb = hay.as_bytes();
-                for p in finder.find_iter(hb) {
+                for p in finder.find_iter(hay.as_bytes()) {
+                    let end = p + needle.len();
                     if word {
                         let before = hay[..p].chars().next_back();
-                        let after = hay[p + needle.len()..].chars().next();
+                        let after = hay[end..].chars().next();
                         if before.is_some_and(char::is_alphanumeric) || after.is_some_and(char::is_alphanumeric) {
                             continue;
                         }
                     }
-                    if first.is_none() {
-                        first = Some(if mapped { map.get(p).copied().unwrap_or(0) as usize } else { p });
+                    let (s, e) = if mapped {
+                        (
+                            map.get(p).copied().unwrap_or(0) as usize,
+                            map.get(end).copied().unwrap_or(text.len() as u32) as usize,
+                        )
+                    } else {
+                        (p, end)
+                    };
+                    if !f(s, e) {
+                        return;
                     }
-                    count = count.saturating_add(1);
                 }
-                first.map(|f| (f, count))
             }
         }
+    }
+
+    /// `(first match byte offset in text, number of matches)`, `None` if no match.
+    pub fn find(&self, text: &str, sc: &mut MatchScratch) -> Option<(usize, u32)> {
+        let mut first = None;
+        let mut count = 0u32;
+        self.each_match(text, sc, |s, _| {
+            first.get_or_insert(s);
+            count = count.saturating_add(1);
+            true
+        });
+        first.map(|f| (f, count))
+    }
+
+    /// Byte ranges of the first `max` matches in `text` (preview highlighting).
+    pub fn ranges(&self, text: &str, sc: &mut MatchScratch, max: usize) -> Vec<std::ops::Range<usize>> {
+        let mut out = Vec::new();
+        self.each_match(text, sc, |s, e| {
+            if e > s {
+                out.push(s..e);
+            }
+            out.len() < max
+        });
+        out
     }
 }
 
@@ -425,6 +470,11 @@ impl ContentStore {
     #[inline]
     pub fn has(&self, id: EntryId) -> bool {
         self.rows.row(id).is_some()
+    }
+
+    /// Row map (entry ↔ row).
+    pub fn rows(&self) -> &RowMap {
+        &self.rows
     }
 
     /// Stores `text` for `id` (replacing earlier content).
@@ -714,7 +764,7 @@ fn decompress(data: &[u8]) -> Option<String> {
 }
 
 /// Shared handle to a [`ContentStore`].
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ContentIndex(Arc<RwLock<ContentStore>>);
 
 /// Owned read guard.
@@ -744,6 +794,12 @@ impl ContentIndex {
     /// `true` if both handles share one store.
     pub fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for ContentIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ContentIndex(..)")
     }
 }
 

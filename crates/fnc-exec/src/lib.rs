@@ -15,11 +15,13 @@ pub mod cache;
 pub mod engine;
 pub mod eval;
 pub mod exec;
+pub mod ext;
 pub mod fuzzy;
 pub mod highlight;
 pub mod matcher;
 pub mod paths;
 pub mod pinyin;
+pub mod sets;
 pub mod sort;
 pub mod tree;
 pub mod types;
@@ -28,10 +30,15 @@ pub use cache::{Caches, CancelToken, Cancelled};
 pub use engine::{
     EngineEvent, EngineHandle, SearchEngine, SearchOptions, SearchOutcome, SearchRequest, configure_threads,
 };
-pub use exec::{ExecCtx, ExecStats, ResultSet, execute};
+pub use exec::{
+    ContentHitInfo, ExecCtx, ExecStats, ResultExtra, ResultSet, apply_post, execute, execute_ext, execute_filter,
+};
+pub use ext::{ExecWarning, ExtCtx, Shared, SlowPolicy, content_highlights};
 pub use highlight::Highlighter;
-pub use sort::{SortColumn, SortSpec, sort_ids};
+pub use sort::{SortColumn, SortKey, SortSpec, sort_ids, sort_ids_ext};
 pub use types::{TypeNameFn, TypeNames};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_ext;

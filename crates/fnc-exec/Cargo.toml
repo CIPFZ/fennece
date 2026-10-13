@@ -10,6 +10,7 @@ license.workspace = true
 fnc-core.workspace = true
 fnc-index.workspace = true
 fnc-query.workspace = true
+fnc-props.workspace = true
 rayon.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
@@ -18,10 +19,12 @@ pinyin.workspace = true
 regex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+xxhash-rust.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 dhat.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

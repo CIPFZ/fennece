@@ -1649,6 +1649,7 @@ dependencies = [
  "dhat",
  "fnc-core",
  "fnc-index",
+ "fnc-props",
  "fnc-query",
  "memchr",
  "parking_lot",
@@ -1656,8 +1657,10 @@ dependencies = [
  "proptest",
  "rayon",
  "regex",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "xxhash-rust",
 ]
 
 [[package]]
@@ -1771,6 +1774,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "fnc-core",
+ "fnc-props",
  "proptest",
 ]
 

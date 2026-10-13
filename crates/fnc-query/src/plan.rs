@@ -9,11 +9,21 @@ use std::sync::Arc;
 
 use fnc_core::EntryId;
 use fnc_core::fold::{FoldOptions, fold_str_into};
+use fnc_props::PropertyId;
+use fnc_props::hash::HashAlgo;
 
 use crate::ast::{CmpOp, Expr, ModSet, Modifier, Term, Value};
 use crate::date::{DateEnv, DateWild, parse_date};
 use crate::funcs::{FuncId, MacroId, builtin_macro_exts};
 use crate::size::parse_size;
+
+#[path = "plan_ext.rs"]
+mod ext;
+
+pub use ext::{
+    ContentEnc, ContentPred, ContentSource, DupeKey, HashPred, PropPred, PropTest, SetKind, SetOp, binary_needle,
+    collect_content, parse_dupe_keys, uses_stores,
+};
 
 /// How literal text is matched.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -271,6 +281,16 @@ pub enum Pred {
     Reparse(ReparseKind),
     /// Category (`kind:`): extensions of the category, or folders.
     Kind(KindClass),
+    /// Property function (`width:>4000`, `artist:"John Doe"`).
+    Prop(PropPred),
+    /// Content function (`content:`, `utf8content:`, `binary:content:`, ...).
+    Content(ContentPred),
+    /// `contenthits:` — number of content matches of the query's content terms.
+    ContentHits(NumPred, Vec<ContentPred>),
+    /// Hash function (`sha256:`).
+    Hash(HashPred),
+    /// Set function before hoisting (never present in a finished plan's tree).
+    Set(SetOp),
     /// Function not implemented yet: matches nothing, reported in diagnostics.
     Unsupported(FuncId),
     /// Value could not be interpreted: matches nothing.
@@ -449,11 +469,21 @@ pub struct PlanEnv {
     /// Omitted results: excluded from every result set unless the search contains
     /// `omit:` (which then matches exactly the omitted entries).
     pub omit: Option<OmitSet>,
+    /// Properties stored by the property index (cost hints: indexed property terms run
+    /// before string matching, unindexed ones last).
+    pub indexed_props: Vec<PropertyId>,
 }
 
 impl Default for PlanEnv {
     fn default() -> Self {
-        Self { defaults: ModSet::EMPTY, star_all: false, date: DateEnv::now(), pinyin_default: false, omit: None }
+        Self {
+            defaults: ModSet::EMPTY,
+            star_all: false,
+            date: DateEnv::now(),
+            pinyin_default: false,
+            omit: None,
+            indexed_props: Vec::new(),
+        }
     }
 }
 
@@ -466,6 +496,9 @@ pub struct PlannedQuery {
     pub input: InputSet,
     /// Problems found while planning.
     pub diagnostics: Vec<PlanDiag>,
+    /// Set functions (`dupe:`, `distinct:`, ...) applied in order to the sorted result of
+    /// `root` (Everything 1.5: within the current result set, after sorting).
+    pub post: Vec<SetOp>,
 }
 
 /// Plans `ast`. If `prev` is given and the new plan only narrows it, the result's input
@@ -473,6 +506,15 @@ pub struct PlannedQuery {
 pub fn plan(ast: &Expr, env: &PlanEnv, prev: Option<&PlannedQuery>) -> PlannedQuery {
     let mut cx = Cx { env, diags: Vec::new() };
     let mut root = cx.node(ast);
+    let mut post = Vec::new();
+    if contains_set(&root) {
+        root = ext::hoist_sets(root, &mut post, &mut cx.diags);
+    }
+    if contains_hits(&root) {
+        let mut contents = Vec::new();
+        collect_content(&root, &mut contents);
+        root = ext::resolve_content_hits(root, &contents, &mut cx.diags);
+    }
     if let Some(omit) = &env.omit
         && !mentions_omit(&root)
     {
@@ -480,10 +522,28 @@ pub fn plan(ast: &Expr, env: &PlanEnv, prev: Option<&PlannedQuery>) -> PlannedQu
     }
     order_by_cost(&mut root);
     let input = match prev {
-        Some(p) if narrows(&root, &p.root) => InputSet::Previous,
+        Some(p) if post.is_empty() && p.post.is_empty() && narrows(&root, &p.root) => InputSet::Previous,
         _ => InputSet::All,
     };
-    PlannedQuery { root, input, diagnostics: cx.diags }
+    PlannedQuery { root, input, diagnostics: cx.diags, post }
+}
+
+fn contains_set(n: &Node) -> bool {
+    match n {
+        Node::And(v) | Node::Or(v) => v.iter().any(contains_set),
+        Node::Not(c) => contains_set(c),
+        Node::Leaf(Pred::Set(_)) => true,
+        _ => false,
+    }
+}
+
+fn contains_hits(n: &Node) -> bool {
+    match n {
+        Node::And(v) | Node::Or(v) => v.iter().any(contains_hits),
+        Node::Not(c) => contains_hits(c),
+        Node::Leaf(Pred::ContentHits(..)) => true,
+        _ => false,
+    }
 }
 
 fn mentions_omit(n: &Node) -> bool {
@@ -818,6 +878,37 @@ impl Cx<'_> {
             F::Junction => leaf(Pred::Reparse(ReparseKind::Junction)),
             F::Symlink => leaf(Pred::Reparse(ReparseKind::Symlink)),
             F::Kind => self.kind(t),
+            F::Prop(p) => self.prop(p, t),
+            F::Content | F::Utf8Content | F::AnsiContent | F::Utf16Content | F::Utf16BeContent | F::TextPlain => {
+                self.content(f, t)
+            }
+            F::ContentHits => {
+                let mut n = NumPred::default();
+                if self.num_pred(NumProp::RunCount, &t.value, &mut n) {
+                    leaf(Pred::ContentHits(n, Vec::new()))
+                } else {
+                    let text = format!("{:?}", t.value);
+                    self.diags.push(PlanDiag::InvalidValue(f, text.clone()));
+                    leaf(Pred::Invalid(text))
+                }
+            }
+            F::Crc32 => self.hash(f, HashAlgo::Crc32, t),
+            F::Crc64 => self.hash(f, HashAlgo::Crc64, t),
+            F::Md5 => self.hash(f, HashAlgo::Md5, t),
+            F::Sha1 => self.hash(f, HashAlgo::Sha1, t),
+            F::Sha256 => self.hash(f, HashAlgo::Sha256, t),
+            F::Sha512 => self.hash(f, HashAlgo::Sha512, t),
+            F::Dupe
+            | F::SizeDupe
+            | F::NamePartDupe
+            | F::AttribDupe
+            | F::DaDupe
+            | F::DcDupe
+            | F::DmDupe
+            | F::Distinct
+            | F::Unique
+            | F::DupeCount
+            | F::DupeMax => self.set(f, t),
             other => {
                 self.diags.push(PlanDiag::Unsupported(other));
                 leaf(Pred::Unsupported(other))
@@ -1171,6 +1262,19 @@ pub fn cost(n: &Node) -> u32 {
                 base + target + if options { 6 } else { 0 } + fancy
             }
             Pred::Parent(_) | Pred::Ancestor(_) | Pred::Child(_) => 9,
+            // Indexed properties: one bit lookup per entry after a column pass at compile
+            // time; unindexed ones may read files (slow path), so they run last.
+            Pred::Prop(p) => {
+                if p.indexed && !p.not_indexed {
+                    3
+                } else {
+                    100
+                }
+            }
+            Pred::Content(_) => 200,
+            Pred::ContentHits(..) => 250,
+            Pred::Hash(_) => 300,
+            Pred::Set(_) => 0,
         },
     }
 }

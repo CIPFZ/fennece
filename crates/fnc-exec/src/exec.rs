@@ -1,5 +1,7 @@
 //! Query execution: parallel filtered scan producing a [`ResultSet`].
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use fnc_core::{EntryFlags, EntryId};
@@ -9,6 +11,8 @@ use rayon::prelude::*;
 
 use crate::cache::{Caches, CancelToken, Cancelled};
 use crate::eval::{CHUNK, Compiled, Scratch};
+use crate::ext::{ExecWarning, ExtCtx};
+use crate::sets::apply_sets;
 use crate::sort::SortSpec;
 
 /// Execution statistics.
@@ -22,8 +26,32 @@ pub struct ExecStats {
     pub examined: usize,
     /// The previous result set was reused as input.
     pub reused: bool,
-    /// Invalid patterns.
+    /// Invalid patterns, followed by the rendered [`ExecStats::warnings`] (front ends that
+    /// show plain text need nothing else; localising ones use `warnings`).
     pub errors: Vec<String>,
+    /// Non-fatal notes (unindexed functions, slow-path limits).
+    pub warnings: Vec<ExecWarning>,
+}
+
+/// First content match of a result (preview panel, "hit" column).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ContentHitInfo {
+    /// Byte offset of the first match in the text (indexed text for indexed entries,
+    /// else the extracted/decoded text).
+    pub offset: u32,
+    /// Number of matches.
+    pub hits: u32,
+}
+
+/// Per-result data of the extension functions (absent for plain searches).
+#[derive(Clone, Debug, Default)]
+pub struct ResultExtra {
+    /// Duplicate group number (1-based) per entry for `dupe:`-style searches.
+    pub dupe_groups: HashMap<u32, u32>,
+    /// First content hit per entry for `content:` searches.
+    pub content_hits: HashMap<u32, (u32, u32)>,
+    /// Results before the set functions (re-sorted and re-filtered when the sort changes).
+    pub base: Option<Vec<EntryId>>,
 }
 
 /// Ordered result of a query.
@@ -39,6 +67,10 @@ pub struct ResultSet {
     pub sort: Option<SortSpec>,
     /// Statistics.
     pub stats: ExecStats,
+    /// [`ExtCtx::generation`] of the stores the results were computed with.
+    pub ext_generation: u64,
+    /// Extension data (duplicate groups, content hits).
+    pub extra: Option<Arc<ResultExtra>>,
 }
 
 impl ResultSet {
@@ -55,6 +87,16 @@ impl ResultSet {
     /// `true` if the ids are valid for `s` without re-running the query.
     pub fn is_current(&self, s: &IndexStore) -> bool {
         self.generation == s.generation() && self.instance == s.instance()
+    }
+
+    /// Duplicate group number (1-based, by first appearance) of `id` in a `dupe:` search.
+    pub fn dupe_group(&self, id: EntryId) -> Option<u32> {
+        self.extra.as_ref()?.dupe_groups.get(&id.0).copied()
+    }
+
+    /// First content match of `id` in a `content:` search.
+    pub fn content_hit(&self, id: EntryId) -> Option<ContentHitInfo> {
+        self.extra.as_ref()?.content_hits.get(&id.0).map(|&(offset, hits)| ContentHitInfo { offset, hits })
     }
 }
 
@@ -73,15 +115,47 @@ fn visible(s: &IndexStore, id: EntryId) -> bool {
     !s.flags(id).contains(EntryFlags::DELETED)
 }
 
-/// Runs `plan` against snapshot `s`. Output preserves the input order: id order for a
-/// full scan, the previous display order when filtering the previous result set.
+/// Runs `plan` against snapshot `s` without property/content stores (their functions
+/// see every entry as not indexed). Output preserves the input order: id order for a
+/// full scan, the previous display order when filtering the previous result set; set
+/// functions (`dupe:`) are applied in that order.
 pub fn execute(plan: &PlannedQuery, s: &IndexStore, ctx: &ExecCtx<'_>) -> Result<ResultSet, Cancelled> {
+    execute_ext(plan, s, ctx, &ExtCtx::default())
+}
+
+/// [`execute`] with property/content stores, hash cache and slow-path source.
+pub fn execute_ext(
+    plan: &PlannedQuery,
+    s: &IndexStore,
+    ctx: &ExecCtx<'_>,
+    ext: &ExtCtx<'_>,
+) -> Result<ResultSet, Cancelled> {
+    let mut rs = execute_filter(plan, s, ctx, ext)?;
+    apply_post(plan, &mut rs, s, ctx.caches, ext, ctx.cancel)?;
+    Ok(rs)
+}
+
+/// The filter part of [`execute_ext`]: everything except the set functions. Callers
+/// that sort call [`apply_post`] after sorting (Everything 1.5 semantics).
+pub fn execute_filter(
+    plan: &PlannedQuery,
+    s: &IndexStore,
+    ctx: &ExecCtx<'_>,
+    ext: &ExtCtx<'_>,
+) -> Result<ResultSet, Cancelled> {
     let t0 = Instant::now();
+    let ext_generation = ext.generation();
     let prev = match (plan.input, ctx.prev) {
-        (InputSet::Previous, Some(p)) if p.is_current(s) => Some(p),
+        (InputSet::Previous, Some(p))
+            if p.is_current(s)
+                && p.ext_generation == ext_generation
+                && p.extra.as_ref().is_none_or(|e| e.base.is_none()) =>
+        {
+            Some(p)
+        }
         _ => None,
     };
-    let compiled = Compiled::new(&plan.root, s, ctx.caches, ctx.cancel)?;
+    let compiled = Compiled::with_ext(&plan.root, s, ctx.caches, ctx.cancel, ext)?;
     let cancel = ctx.cancel;
     let (ids, examined) = match prev {
         Some(p) => {
@@ -90,6 +164,9 @@ pub fn execute(plan: &PlannedQuery, s: &IndexStore, ctx: &ExecCtx<'_>) -> Result
         }
         None => (scan_all(&plan.root, s, &compiled, cancel)?, s.len()),
     };
+    let content_hits = compiled.content_hits();
+    let warnings = compiled.warnings();
+    let extra = (!content_hits.is_empty()).then(|| Arc::new(ResultExtra { content_hits, ..ResultExtra::default() }));
     Ok(ResultSet {
         ids,
         generation: s.generation(),
@@ -100,9 +177,47 @@ pub fn execute(plan: &PlannedQuery, s: &IndexStore, ctx: &ExecCtx<'_>) -> Result
             sort: Duration::ZERO,
             examined,
             reused: prev.is_some(),
-            errors: compiled.errors.clone(),
+            errors: compiled.errors.iter().cloned().chain(warnings.iter().map(ToString::to_string)).collect(),
+            warnings,
         },
+        ext_generation,
+        extra,
     })
+}
+
+/// Applies the plan's set functions (`dupe:`, `distinct:`, ...) to `rs` in its current
+/// order. Idempotent: re-applying after a re-sort starts from the pre-set results.
+pub fn apply_post(
+    plan: &PlannedQuery,
+    rs: &mut ResultSet,
+    s: &IndexStore,
+    caches: &Caches,
+    ext: &ExtCtx<'_>,
+    cancel: &CancelToken,
+) -> Result<(), Cancelled> {
+    if plan.post.is_empty() {
+        return Ok(());
+    }
+    let mut extra = rs.extra.as_deref().cloned().unwrap_or_default();
+    let base = extra.base.take().unwrap_or_else(|| rs.ids.clone());
+    let out = apply_sets(&plan.post, &base, s, ext, &caches.query_hashes(), cancel)?;
+    rs.ids = out.ids;
+    for w in out.warnings {
+        if !rs.stats.warnings.contains(&w) {
+            rs.stats.errors.push(w.to_string());
+            rs.stats.warnings.push(w);
+        }
+    }
+    extra.dupe_groups = out.groups;
+    extra.base = Some(base);
+    rs.extra = Some(Arc::new(extra));
+    Ok(())
+}
+
+/// Sorts the pre-set results of `rs` (when set functions were applied) so that
+/// [`apply_post`] can re-run in a new order.
+pub fn base_ids_mut(rs: &mut ResultSet) -> Option<&mut Vec<EntryId>> {
+    rs.extra.as_mut().map(Arc::make_mut).and_then(|e| e.base.as_mut())
 }
 
 fn scan_all(root: &Node, s: &IndexStore, c: &Compiled, cancel: &CancelToken) -> Result<Vec<EntryId>, Cancelled> {

@@ -15,9 +15,15 @@ use fnc_query::plan::{OmitSet, PlanDiag, PlanEnv, PlannedQuery};
 use fnc_query::{Expr, FilterSet, ModSet, Modifier, Term, Value, parse, plan};
 use parking_lot::Mutex;
 
+use fnc_props::content::ContentIndex;
+use fnc_props::hash::HashCache;
+use fnc_props::ondemand::OnDemand;
+use fnc_props::store::PropertyIndex;
+
 use crate::cache::{Caches, CancelToken, Cancelled};
-use crate::exec::{ExecCtx, ResultSet, execute};
-use crate::sort::{SortSpec, sort_ids};
+use crate::exec::{ExecCtx, ResultSet, apply_post, base_ids_mut, execute_filter};
+use crate::ext::{ExtCtx, Shared, SlowPolicy};
+use crate::sort::{SortSpec, sort_ids_ext};
 use crate::types::TypeNames;
 
 /// Search-wide options (from settings).
@@ -44,6 +50,17 @@ pub struct SearchOptions {
     /// fallback "`EXT` File" names. Create it once and reuse it: descriptions are
     /// cached per extension until a different provider is installed.
     pub type_names: Option<TypeNames>,
+    /// Property index (`width:`, `artist:`, property sort columns); `None` = not indexed.
+    pub props: Option<PropertyIndex>,
+    /// Content index (`content:`); `None` = not indexed.
+    pub content: Option<ContentIndex>,
+    /// Hash cache shared with the app (persisted as `hashes.fnx`); `None` = an
+    /// engine-private cache.
+    pub hashes: Option<Shared<HashCache>>,
+    /// File access for unindexed entries (slow path); `None` = no file reads.
+    pub on_demand: Option<Shared<dyn OnDemand>>,
+    /// Slow-path policy (file read budget per search).
+    pub slow: SlowPolicy,
 }
 
 impl Default for SearchOptions {
@@ -58,6 +75,11 @@ impl Default for SearchOptions {
             pinyin_default: false,
             omit: None,
             type_names: None,
+            props: None,
+            content: None,
+            hashes: None,
+            on_demand: None,
+            slow: SlowPolicy::default(),
         }
     }
 }
@@ -320,19 +342,34 @@ fn run(
 ) -> Result<(SearchOutcome, Arc<PlannedQuery>), Cancelled> {
     let t0 = Instant::now();
     let (ast, parse_diagnostics) = request_ast(req);
+    caches.set_type_names(req.options.type_names.clone());
+    // Lock order: the index first, then the stores (the app never holds an index guard
+    // while taking a store's write lock, see `fnc_props` docs).
+    let snap = index.snapshot();
+    let props = req.options.props.as_ref().map(PropertyIndex::snapshot);
+    let content = req.options.content.as_ref().map(ContentIndex::snapshot);
+    let ext = ExtCtx {
+        props: props.as_deref(),
+        content: content.as_deref(),
+        hashes: req.options.hashes.as_ref().map(|h| &h.0),
+        on_demand: req.options.on_demand.as_ref().map(|o| &o.0),
+        policy: req.options.slow,
+    };
     let env = PlanEnv {
         defaults: req.options.defaults,
         star_all: req.options.star_all,
         date: fnc_query::date::DateEnv::now(),
         pinyin_default: req.options.pinyin_default,
         omit: req.options.omit.clone(),
+        indexed_props: props.as_deref().map(|p| p.indexed().to_vec()).unwrap_or_default(),
     };
-    caches.set_type_names(req.options.type_names.clone());
-    let snap = index.snapshot();
     if cancel.is_cancelled() {
         return Err(Cancelled);
     }
-    let last = last.filter(|l| l.results.is_current(&snap) && *l.req.options == *req.options);
+    let ext_generation = ext.generation();
+    let last = last.filter(|l| {
+        l.results.is_current(&snap) && l.results.ext_generation == ext_generation && *l.req.options == *req.options
+    });
     let same_search = last.is_some_and(|l| l.req.text == req.text && l.req.filter == req.filter);
     let (plan, mut results) = match last {
         // Only the sort (or nothing) changed: reuse the ids.
@@ -347,16 +384,28 @@ fn run(
             let prev_plan = last.filter(|_| req.options.reuse).map(|l| &*l.plan);
             let plan = plan(&ast, &env, prev_plan);
             let ctx = ExecCtx { cancel, prev: last.map(|l| &*l.results), caches };
-            let results = execute(&plan, &snap, &ctx)?;
+            let results = execute_filter(&plan, &snap, &ctx, &ext)?;
             (plan, results)
         }
     };
-    if results.sort != Some(req.sort) {
+    let fresh_post = !plan.post.is_empty() && results.extra.as_ref().is_none_or(|e| e.base.is_none());
+    let mut resorted = false;
+    if results.sort != Some(req.sort) || fresh_post {
         let ts = Instant::now();
-        sort_ids(&mut results.ids, &req.sort, &snap, caches, cancel)?;
+        // With set functions, the pre-set results are sorted and the sets re-applied.
+        match base_ids_mut(&mut results) {
+            Some(base) => sort_ids_ext(base, &req.sort, &snap, caches, cancel, ext.props)?,
+            None => sort_ids_ext(&mut results.ids, &req.sort, &snap, caches, cancel, ext.props)?,
+        }
         results.sort = Some(req.sort);
         results.stats.sort = ts.elapsed();
+        resorted = true;
     }
+    if resorted && !plan.post.is_empty() {
+        apply_post(&plan, &mut results, &snap, caches, &ext, cancel)?;
+    }
+    drop(content);
+    drop(props);
     drop(snap);
     let plan = Arc::new(plan);
     let outcome = SearchOutcome {

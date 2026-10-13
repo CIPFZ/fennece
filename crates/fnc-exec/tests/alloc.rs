@@ -85,6 +85,38 @@ fn hot_paths_do_not_allocate() {
         dhat::assert_eq!(after.total_blocks, before.total_blocks, "query {q:?} allocated while matching");
     }
     assert!(hits > 0);
+    hits = 0;
+
+    // M3: property/content/hash leaves without stores and with an indexed property store
+    // evaluate with bit tests only.
+    let mut props = fnc_props::PropertyStore::new(s.instance());
+    props.set_indexed(&[fnc_props::PropertyId::WIDTH, fnc_props::PropertyId::HEIGHT, fnc_props::PropertyId::ARTIST]);
+    for &id in ids.iter().step_by(3) {
+        props.insert(
+            id,
+            vec![
+                (fnc_props::PropertyId::WIDTH, fnc_props::Value::Int(i64::from(id.0))),
+                (fnc_props::PropertyId::ARTIST, fnc_props::Value::Text("John Doe".into())),
+            ],
+        );
+    }
+    let ext = fnc_exec::ExtCtx { props: Some(&props), ..fnc_exec::ExtCtx::default() };
+    for q in
+        ["width:>100", "width:unknown", "artist:doe", "dimensions:1x1", "content:x", "md5:unknown", "ext:jpg width:>10"]
+    {
+        let p = plan(&parse(q, &ParseEnv::default()).ast, &PlanEnv::default(), None);
+        let c = Compiled::with_ext(&p.root, &s, &caches, &cancel, &ext).unwrap();
+        for &id in &ids {
+            hits += usize::from(c.matches(&s, id, &mut sc));
+        }
+        let before = dhat::HeapStats::get();
+        for &id in &ids {
+            hits += usize::from(c.matches(&s, id, &mut sc));
+        }
+        let after = dhat::HeapStats::get();
+        dhat::assert_eq!(after.total_blocks, before.total_blocks, "query {q:?} allocated while matching");
+    }
+    assert!(hits > 0, "property queries matched");
 
     for &id in &ids {
         s.full_path(id, &mut path);

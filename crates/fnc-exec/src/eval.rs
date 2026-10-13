@@ -1,24 +1,50 @@
 //! Plan compilation and per-entry evaluation.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use fnc_core::fold::{FoldOptions, fold_str_into};
 use fnc_core::{EntryFlags, EntryId, FileTime};
 use fnc_index::ext::{NO_EXT, OVERFLOW_EXT, ext_of, stem_of};
 use fnc_index::{IndexStore, SIZE_UNKNOWN};
+use fnc_props::PropertyId;
+use fnc_props::hash::HashAlgo;
 use fnc_query::date::DateWild;
 use fnc_query::plan::{
     ATTRIB_UNIVERSE, DateCol, EntryVar, KindClass, Node, NumPred, NumProp, PathPiece, PatternKind, Pred, ReparseKind,
-    SiblingScope, Target, TextPred,
+    SiblingScope, Target, TextPred, uses_stores,
 };
 use rayon::prelude::*;
 
 use crate::cache::{Caches, CancelToken, Cancelled, ChildCounts};
+use crate::ext::{
+    ContentHitsLeaf, ContentLeaf, ExecWarning as ExtWarning, ExtCtx, HashLeaf, PropLeaf, SlowState, compile_content,
+    compile_content_hits, compile_hash, compile_prop,
+};
 use crate::matcher::{Pattern, SubjectMode, compile_pattern, name_subject, strip_chars, subject_mode};
 use crate::paths::DirPaths;
 use crate::tree::{LinkCounts, NameLookup, TreeAggregates, resolve_path, root_paths};
 use crate::types::{FOLDER_TYPE, NO_EXT_TYPE};
+
+/// Properties referenced by property predicates in `n`.
+fn collect_props(n: &Node, out: &mut Vec<PropertyId>) {
+    match n {
+        Node::And(v) | Node::Or(v) => v.iter().for_each(|c| collect_props(c, out)),
+        Node::Not(c) => collect_props(c, out),
+        Node::Leaf(Pred::Prop(p)) if !out.contains(&p.id) => out.push(p.id),
+        _ => {}
+    }
+}
+
+/// Hash algorithms referenced in `n` (computed together in one pass per file).
+fn collect_hashes(n: &Node, out: &mut Vec<HashAlgo>) {
+    match n {
+        Node::And(v) | Node::Or(v) => v.iter().for_each(|c| collect_hashes(c, out)),
+        Node::Not(c) => collect_hashes(c, out),
+        Node::Leaf(Pred::Hash(h)) if !out.contains(&h.algo) => out.push(h.algo),
+        _ => {}
+    }
+}
 
 /// Fixed-size bit set over rows or ids.
 #[derive(Clone, Debug)]
@@ -122,6 +148,14 @@ pub enum Leaf {
     VolumeIn(Vec<bool>),
     /// Reparse points.
     Reparse(ReparseKind),
+    /// Property (`width:`, `artist:`).
+    Prop(Box<PropLeaf>),
+    /// Content (`content:`, `utf8content:`, ...).
+    Content(Box<ContentLeaf>),
+    /// `contenthits:`.
+    ContentHits(Box<ContentHitsLeaf>),
+    /// Hash (`sha256:`).
+    Hash(Box<HashLeaf>),
     /// Never matches.
     Nothing,
 }
@@ -173,11 +207,11 @@ pub enum CNode {
 /// Per-thread scratch buffers.
 #[derive(Default)]
 pub struct Scratch {
-    a: Vec<u8>,
-    b: Vec<u8>,
-    s: String,
-    t: String,
-    u: String,
+    pub(crate) a: Vec<u8>,
+    pub(crate) b: Vec<u8>,
+    pub(crate) s: String,
+    pub(crate) t: String,
+    pub(crate) u: String,
 }
 
 /// A compiled query ready for evaluation against one snapshot.
@@ -187,6 +221,8 @@ pub struct Compiled {
     dir_paths: Option<Arc<DirPaths>>,
     /// Invalid patterns (rendered as diagnostics).
     pub errors: Vec<String>,
+    /// Slow-path state of property/content/hash leaves (`None` when the plan has none).
+    pub(crate) slow: Option<Arc<SlowState>>,
 }
 
 fn needs_paths(n: &Node) -> bool {
@@ -204,15 +240,49 @@ fn needs_paths(n: &Node) -> bool {
 }
 
 impl Compiled {
-    /// Compiles `root` for snapshot `s`, precomputing folder sets and caches.
+    /// Compiles `root` for snapshot `s`, precomputing folder sets and caches. Property,
+    /// content and hash predicates see no stores (everything "not indexed").
     pub fn new(root: &Node, s: &IndexStore, caches: &Caches, cancel: &CancelToken) -> Result<Self, Cancelled> {
+        Self::with_ext(root, s, caches, cancel, &ExtCtx::default())
+    }
+
+    /// Like [`Compiled::new`] with property/content stores, hash cache and slow-path
+    /// source.
+    pub fn with_ext(
+        root: &Node,
+        s: &IndexStore,
+        caches: &Caches,
+        cancel: &CancelToken,
+        ext: &ExtCtx<'_>,
+    ) -> Result<Self, Cancelled> {
         let dir_paths = needs_paths(root).then(|| caches.dir_paths(s));
-        let mut c = Compiled { root: CNode::All, dir_paths, errors: Vec::new() };
-        c.root = c.compile(root, s, caches, cancel)?;
+        let slow = uses_stores(root).then(|| {
+            let mut st = SlowState::new(ext, cancel, caches);
+            let mut props = Vec::new();
+            collect_props(root, &mut props);
+            for p in props {
+                st.want(p);
+            }
+            Arc::new(st)
+        });
+        let mut algos = Vec::new();
+        collect_hashes(root, &mut algos);
+        let mut c = Compiled { root: CNode::All, dir_paths, errors: Vec::new(), slow };
+        c.root = c.compile(root, s, caches, cancel, ext, &algos)?;
         Ok(c)
     }
 
-    fn text_leaf(&mut self, t: &TextPred, s: &IndexStore) -> Option<TextLeaf> {
+    /// Warnings collected so far (slow-path limits, unindexed functions).
+    pub fn warnings(&self) -> Vec<ExtWarning> {
+        self.slow.as_ref().map(|s| s.finish()).unwrap_or_default()
+    }
+
+    /// Content first-hit `(offset, hits)` per entry recorded by content leaves.
+    pub fn content_hits(&self) -> HashMap<u32, (u32, u32)> {
+        self.slow.as_ref().map(|s| s.content_hits.lock().clone()).unwrap_or_default()
+    }
+
+    pub(crate) fn text_leaf(&mut self, t: &TextPred, s: &IndexStore) -> Option<TextLeaf> {
         let pattern = match compile_pattern(t) {
             Ok(p) => p,
             Err(e) => {
@@ -332,7 +402,7 @@ impl Compiled {
     }
 
     /// Matches `l` against arbitrary text (folded like an entry name).
-    fn match_str(l: &TextLeaf, text: &str, sc: &mut Scratch) -> bool {
+    pub(crate) fn match_str(l: &TextLeaf, text: &str, sc: &mut Scratch) -> bool {
         sc.u.clear();
         match l.mode {
             SubjectMode::StoredFold => fold_str_into(text, FoldOptions::DEFAULT, &mut sc.u),
@@ -351,17 +421,29 @@ impl Compiled {
         l.pattern.is_match(sc.u.as_bytes())
     }
 
-    fn compile(&mut self, n: &Node, s: &IndexStore, caches: &Caches, cancel: &CancelToken) -> Result<CNode, Cancelled> {
+    fn compile(
+        &mut self,
+        n: &Node,
+        s: &IndexStore,
+        caches: &Caches,
+        cancel: &CancelToken,
+        ext: &ExtCtx<'_>,
+        algos: &[HashAlgo],
+    ) -> Result<CNode, Cancelled> {
         if cancel.is_cancelled() {
             return Err(Cancelled);
         }
         Ok(match n {
             Node::All => CNode::All,
             Node::Nothing => CNode::Nothing,
-            Node::And(v) => CNode::And(v.iter().map(|c| self.compile(c, s, caches, cancel)).collect::<Result<_, _>>()?),
-            Node::Or(v) => CNode::Or(v.iter().map(|c| self.compile(c, s, caches, cancel)).collect::<Result<_, _>>()?),
-            Node::Not(c) => CNode::Not(Box::new(self.compile(c, s, caches, cancel)?)),
-            Node::Leaf(p) => CNode::Leaf(self.leaf(p, s, caches, cancel)?),
+            Node::And(v) => {
+                CNode::And(v.iter().map(|c| self.compile(c, s, caches, cancel, ext, algos)).collect::<Result<_, _>>()?)
+            }
+            Node::Or(v) => {
+                CNode::Or(v.iter().map(|c| self.compile(c, s, caches, cancel, ext, algos)).collect::<Result<_, _>>()?)
+            }
+            Node::Not(c) => CNode::Not(Box::new(self.compile(c, s, caches, cancel, ext, algos)?)),
+            Node::Leaf(p) => CNode::Leaf(self.leaf(p, s, caches, cancel, ext, algos)?),
         })
     }
 
@@ -375,7 +457,15 @@ impl Compiled {
         (ids, exts.iter().map(|e| e.as_bytes().to_vec()).collect())
     }
 
-    fn leaf(&mut self, p: &Pred, s: &IndexStore, caches: &Caches, cancel: &CancelToken) -> Result<Leaf, Cancelled> {
+    fn leaf(
+        &mut self,
+        p: &Pred,
+        s: &IndexStore,
+        caches: &Caches,
+        cancel: &CancelToken,
+        ext: &ExtCtx<'_>,
+        algos: &[HashAlgo],
+    ) -> Result<Leaf, Cancelled> {
         Ok(match p {
             Pred::Text(t) => match self.text_leaf(t, s) {
                 Some(l) => Leaf::Text(Box::new(l)),
@@ -489,6 +579,33 @@ impl Compiled {
             Pred::VolumeKind(k) => Leaf::VolumeIn(s.volumes().iter().map(|v| v.info.kind.as_str() == k).collect()),
             Pred::Online(on) => Leaf::VolumeIn(s.volumes().iter().map(|v| v.online == *on).collect()),
             Pred::Reparse(k) => Leaf::Reparse(*k),
+            Pred::Prop(pp) => {
+                let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
+                match compile_prop(self, pp, s, ext, &slow) {
+                    Some(l) => Leaf::Prop(Box::new(l)),
+                    None => Leaf::Nothing,
+                }
+            }
+            Pred::Content(cp) => {
+                let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
+                match compile_content(self, cp, s, ext, &slow, cancel) {
+                    Some(l) => Leaf::Content(Box::new(l)),
+                    None if cancel.is_cancelled() => return Err(Cancelled),
+                    None => Leaf::Nothing,
+                }
+            }
+            Pred::ContentHits(n, parts) => {
+                let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
+                match compile_content_hits(self, n, parts, s, ext, &slow, cancel) {
+                    Some(l) => Leaf::ContentHits(Box::new(l)),
+                    None => Leaf::Nothing,
+                }
+            }
+            Pred::Hash(h) => {
+                let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
+                Leaf::Hash(Box::new(compile_hash(h, algos, ext, &slow)))
+            }
+            Pred::Set(_) => Leaf::Nothing,
             Pred::Unsupported(_) | Pred::Invalid(_) => Leaf::Nothing,
         })
     }
@@ -780,6 +897,10 @@ impl Compiled {
                         ReparseKind::Symlink => !f.contains(EntryFlags::IS_DIR),
                     }
             }
+            Leaf::Prop(p) => p.eval(s, id, sc),
+            Leaf::Content(c) => c.eval(s, id, sc),
+            Leaf::ContentHits(c) => c.eval(s, id, sc),
+            Leaf::Hash(h) => h.eval(s, id, sc),
             Leaf::Nothing => false,
         }
     }

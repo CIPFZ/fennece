@@ -255,6 +255,11 @@ pub struct HashKey {
 impl HashKey {
     /// Key of a file entry (`None` for folders and entries without a known size).
     pub fn of(s: &IndexStore, id: EntryId) -> Option<HashKey> {
+        Self::of_with(s, id, &mut Vec::new())
+    }
+
+    /// [`HashKey::of`] with a reusable path buffer (no allocation once it has grown).
+    pub fn of_with(s: &IndexStore, id: EntryId, buf: &mut Vec<u8>) -> Option<HashKey> {
         if s.is_dir(id) {
             return None;
         }
@@ -264,9 +269,9 @@ impl HashKey {
         let file = if stable {
             s.frn(id)
         } else {
-            let mut p = Vec::new();
-            s.full_path_fold(id, &mut p);
-            xxh3_64(&p)
+            buf.clear();
+            s.full_path_fold(id, buf);
+            xxh3_64(buf)
         };
         Some(HashKey { volume: xxh3_64(vol.info.root_path.as_bytes()), file, size, dm: s.date_modified(id).0 })
     }
