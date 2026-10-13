@@ -517,6 +517,8 @@ impl FennecApp {
                 self.sort.column = col;
             }
             self.send_search();
+            // Keep typing in the search box after sorting.
+            self.keep_focus = true;
         }
     }
 
