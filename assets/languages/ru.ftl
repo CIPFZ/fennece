@@ -38,8 +38,6 @@ diag-pattern = Недопустимый шаблон: { $message }
 diag-quote = Незакрытая кавычка
 diag-group = Незакрытая скобка <
 msg-restart-required = Перезапустите Fennec, чтобы изменить индексируемые папки и списки файлов.
-
-## Интерфейс M2
 cmd-focus-search = Перейти к поиску
 cmd-refresh = Обновить
 cmd-open = Открыть
@@ -379,6 +377,128 @@ menu-import-export = Импорт и экспорт
 dialog-transfer-path = Файл:
 msg-transfer-done = Готово: { $path }
 msg-ini-imported = Импортировано параметров из Everything.ini: { $count }
+index-extracting = Свойства и содержимое: { $done } / { $total }
+warn-not-indexed = { $name }: не индексируется (включите индекс в параметрах или используйте notindexed:{ $name }:)
+warn-slow-limit = Медленный поиск остановлен, прочитано файлов: { $count }; добавьте фильтры, чтобы сузить его.
+warn-semantic = Семантический поиск: { $reason }
+value-yes = Да
+value-no = Нет
+unit-pixels = { $count ->
+    [one] { $count } пиксель
+    [few] { $count } пикселя
+    [many] { $count } пикселей
+   *[other] { $count } пикселей
+}
+unit-stars = { $count ->
+    [one] { $count } звезда
+    [few] { $count } звезды
+    [many] { $count } звезд
+   *[other] { $count } звезд
+}
+menu-property-columns = Столбцы свойств
+col-dupegroup = Группа дубликатов
+preview-hits = { $count ->
+    [one] { $count } совпадение
+    [few] { $count } совпадения
+    [many] { $count } совпадений
+   *[other] { $count } совпадений
+}
+prop-width = Ширина
+prop-height = Высота
+prop-dimensions = Размеры
+prop-aspect-ratio = Соотношение сторон
+prop-bit-depth = Глубина цвета
+prop-horizontal-resolution = Разрешение по горизонтали
+prop-vertical-resolution = Разрешение по вертикали
+prop-orientation = Ориентация
+prop-date-taken = Дата съемки
+prop-camera-maker = Производитель камеры
+prop-camera-model = Модель камеры
+prop-exposure-time = Выдержка
+prop-f-stop = Диафрагма
+prop-iso-speed = Светочувствительность ISO
+prop-focal-length = Фокусное расстояние
+prop-flash = Вспышка
+prop-latitude = Широта
+prop-longitude = Долгота
+prop-altitude = Высота над уровнем моря
+prop-people = Люди
+prop-tags = Теги
+prop-rating = Оценка
+prop-title = Название
+prop-subject = Тема
+prop-comment = Комментарии
+prop-copyright = Авторские права
+prop-length = Продолжительность
+prop-artist = Исполнитель
+prop-album = Альбом
+prop-album-artist = Исполнитель альбома
+prop-track = {"#"}
+prop-disc = Диск
+prop-genre = Жанр
+prop-year = Год
+prop-composer = Композитор
+prop-conductor = Дирижер
+prop-publisher = Издатель
+prop-bit-rate = Битрейт
+prop-sample-rate = Частота дискретизации
+prop-channels = Каналы
+prop-bits-per-sample = Бит на выборку
+prop-is-variable-bit-rate = Переменный битрейт
+prop-lyrics = Текст песни
+prop-mood = Настроение
+prop-bpm = Ударов в минуту
+prop-initial-key = Начальная тональность
+prop-encoded-by = Кодировщик
+prop-frame-width = Ширина кадра
+prop-frame-height = Высота кадра
+prop-frame-rate = Частота кадров
+prop-video-bitrate = Скорость передачи данных
+prop-total-bitrate = Общая скорость потока
+prop-compression = Сжатие видео
+prop-video-codec = Видеокодек
+prop-audio-codec = Аудиокодек
+prop-date-encoded = Дата кодирования
+prop-director = Режиссеры
+prop-producer = Продюсеры
+prop-writer = Сценаристы
+prop-stream-count = Потоки
+prop-four-cc = FourCC
+prop-author = Авторы
+prop-last-author = Кем сохранен
+prop-category = Категория
+prop-company = Организация
+prop-manager = Руководитель
+prop-page-count = Страницы
+prop-slide-count = Слайды
+prop-word-count = Число слов
+prop-char-count = Число знаков
+prop-line-count = Число строк
+prop-paragraph-count = Число абзацев
+prop-revision-number = Номер редакции
+prop-template = Шаблон
+prop-date-printed = Дата последней печати
+prop-date-last-saved = Дата последнего сохранения
+prop-content-created = Содержимое создано
+prop-total-editing-time = Общее время правки
+prop-security = Безопасность
+prop-file-version = Версия файла
+prop-product-version = Версия продукта
+prop-product-name = Название продукта
+prop-file-description = Описание файла
+prop-original-filename = Исходное имя файла
+prop-internal-name = Внутреннее имя
+prop-legal-trademarks = Товарные знаки
+prop-private-build = Частная сборка
+prop-special-build = Особая сборка
+prop-language = Язык
+prop-machine = Платформа
+prop-subsystem = Подсистема
+prop-is-dll = DLL
+prop-is-signed = Подписан
+prop-linker-version = Версия компоновщика
+prop-os-version = Версия ОС
+prop-image-version = Версия образа
 sem-err-no-model = Для семантического поиска нужен файл модели { $path } (Параметры → Индексы → Семантический поиск → Скачать модель)
 sem-err-no-images = Для поиска изображений (semimage:) нужен мультимодальный проектор, которого нет в этой сборке
 sem-err-no-url = У этой модели нет адреса загрузки; скачайте ее вручную и укажите файл в параметрах
@@ -418,8 +538,6 @@ sem-setup-apply = Применить
 sem-setup-rebuild = Перестроить семантический индекс
 sem-setup-loaded = Модель загружена в память.
 sem-setup-unloaded = Модель не загружена в память (она загрузится при следующем семантическом поиске).
-
-## Интеграция M4 (IPC, совместимость с Everything, HTTP-сервер)
 status-http = HTTP: { $url }
 status-http-failed = HTTP-сервер: { $error }
 msg-http-bad-bind = Недопустимый адрес привязки HTTP: { $value }

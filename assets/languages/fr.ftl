@@ -42,8 +42,6 @@ diag-pattern = Motif non valide : { $message }
 diag-quote = Guillemet non fermé
 diag-group = < non fermé
 msg-restart-required = Redémarrez Fennec pour modifier les dossiers indexés et les listes de fichiers.
-
-## M2 Interface utilisateur
 cmd-focus-search = Activer la zone de recherche
 cmd-refresh = Actualiser
 cmd-open = Ouvrir
@@ -378,6 +376,122 @@ msg-ini-imported = { $count ->
     [one] { $count } paramètre importé depuis Everything.ini
    *[other] { $count } paramètres importés depuis Everything.ini
 }
+index-extracting = Propriétés/contenu : { $done } / { $total }
+warn-not-indexed = { $name } : non indexé (activez l'index dans les options ou utilisez notindexed:{ $name }:)
+warn-slow-limit = Recherche lente arrêtée après la lecture de { $count } fichiers ; ajoutez des filtres pour l'affiner.
+warn-semantic = Recherche sémantique : { $reason }
+value-yes = Oui
+value-no = Non
+unit-pixels = { $count ->
+    [one] { $count } pixel
+   *[other] { $count } pixels
+}
+unit-stars = { $count ->
+    [one] { $count } étoile
+   *[other] { $count } étoiles
+}
+menu-property-columns = Colonnes de propriétés
+col-dupegroup = Groupe de doublons
+preview-hits = { $count ->
+    [one] { $count } correspondance
+   *[other] { $count } correspondances
+}
+prop-width = Largeur
+prop-height = Hauteur
+prop-dimensions = Dimensions
+prop-aspect-ratio = Rapport hauteur/largeur
+prop-bit-depth = Profondeur de bits
+prop-horizontal-resolution = Résolution horizontale
+prop-vertical-resolution = Résolution verticale
+prop-orientation = Orientation
+prop-date-taken = Prise de vue
+prop-camera-maker = Fabricant de l'appareil photo
+prop-camera-model = Modèle de l'appareil photo
+prop-exposure-time = Temps d'exposition
+prop-f-stop = Ouverture
+prop-iso-speed = Sensibilité ISO
+prop-focal-length = Distance focale
+prop-flash = Flash
+prop-latitude = Latitude
+prop-longitude = Longitude
+prop-altitude = Altitude
+prop-people = Personnes
+prop-tags = Mots clés
+prop-rating = Notation
+prop-title = Titre
+prop-subject = Objet
+prop-comment = Commentaires
+prop-copyright = Copyright
+prop-length = Durée
+prop-artist = Artiste
+prop-album = Album
+prop-album-artist = Artiste de l'album
+prop-track = {"#"}
+prop-disc = Disque
+prop-genre = Genre
+prop-year = Année
+prop-composer = Compositeur
+prop-conductor = Chef d'orchestre
+prop-publisher = Éditeur
+prop-bit-rate = Débit binaire
+prop-sample-rate = Fréquence d'échantillonnage
+prop-channels = Canaux
+prop-bits-per-sample = Bits par échantillon
+prop-is-variable-bit-rate = Débit binaire variable
+prop-lyrics = Paroles
+prop-mood = Ambiance
+prop-bpm = Battements par minute
+prop-initial-key = Tonalité
+prop-encoded-by = Encodé par
+prop-frame-width = Largeur d'image
+prop-frame-height = Hauteur d'image
+prop-frame-rate = Fréquence d'images
+prop-video-bitrate = Débit de données
+prop-total-bitrate = Débit total
+prop-compression = Compression vidéo
+prop-video-codec = Codec vidéo
+prop-audio-codec = Codec audio
+prop-date-encoded = Date d'encodage
+prop-director = Réalisateurs
+prop-producer = Producteurs
+prop-writer = Scénaristes
+prop-stream-count = Flux
+prop-four-cc = FourCC
+prop-author = Auteurs
+prop-last-author = Dernier enregistrement par
+prop-category = Catégorie
+prop-company = Société
+prop-manager = Responsable
+prop-page-count = Pages
+prop-slide-count = Diapositives
+prop-word-count = Nombre de mots
+prop-char-count = Nombre de caractères
+prop-line-count = Nombre de lignes
+prop-paragraph-count = Nombre de paragraphes
+prop-revision-number = Numéro de révision
+prop-template = Modèle de document
+prop-date-printed = Dernière impression
+prop-date-last-saved = Dernier enregistrement
+prop-content-created = Contenu créé
+prop-total-editing-time = Durée totale de modification
+prop-security = Sécurité
+prop-file-version = Version du fichier
+prop-product-version = Version du produit
+prop-product-name = Nom du produit
+prop-file-description = Description du fichier
+prop-original-filename = Nom de fichier d'origine
+prop-internal-name = Nom interne
+prop-legal-trademarks = Marques déposées
+prop-private-build = Build privée
+prop-special-build = Build spéciale
+prop-language = Langue
+prop-machine = Plateforme cible
+prop-subsystem = Sous-système
+prop-is-dll = DLL
+prop-is-signed = Signé
+prop-linker-version = Version de l'éditeur de liens
+prop-os-version = Version du système d'exploitation
+prop-image-version = Version de l'image
 sem-err-no-model = La recherche sémantique nécessite le fichier de modèle { $path } (Options → Index → Recherche sémantique → Télécharger le modèle)
 sem-err-no-images = La recherche d'images (semimage:) nécessite le projecteur multimodal, absent de cette version
 sem-err-no-url = Ce modèle n'a pas d'adresse de téléchargement ; téléchargez-le vous-même et indiquez son fichier dans les options
@@ -412,8 +526,6 @@ sem-setup-apply = Appliquer
 sem-setup-rebuild = Reconstruire l'index sémantique
 sem-setup-loaded = Le modèle est en mémoire.
 sem-setup-unloaded = Le modèle n'est pas en mémoire (il sera chargé à la prochaine recherche sémantique).
-
-## M4 Intégration (IPC, compatibilité Everything, serveur HTTP)
 status-http = HTTP : { $url }
 status-http-failed = Serveur HTTP : { $error }
 msg-http-bad-bind = Adresse d'écoute HTTP non valide : { $value }

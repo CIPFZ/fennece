@@ -38,8 +38,6 @@ diag-pattern = Nieprawidłowy wzorzec: { $message }
 diag-quote = Niezamknięty cudzysłów
 diag-group = Niezamknięty nawias <
 msg-restart-required = Uruchom ponownie Fennec, aby zmienić indeksowane foldery i listy plików.
-
-## Interfejs użytkownika M2
 cmd-focus-search = Przejdź do wyszukiwania
 cmd-refresh = Odśwież
 cmd-open = Otwórz
@@ -378,6 +376,128 @@ menu-import-export = Import / eksport
 dialog-transfer-path = Plik:
 msg-transfer-done = Gotowe: { $path }
 msg-ini-imported = Zaimportowano ustawienia z Everything.ini: { $count }
+index-extracting = Właściwości/zawartość: { $done } / { $total }
+warn-not-indexed = { $name }: nieindeksowane (włącz indeks w opcjach lub użyj notindexed:{ $name }:)
+warn-slow-limit = Wolne wyszukiwanie zatrzymane, odczytane pliki: { $count }; dodaj filtry, aby je zawęzić.
+warn-semantic = Wyszukiwanie semantyczne: { $reason }
+value-yes = Tak
+value-no = Nie
+unit-pixels = { $count ->
+    [one] { $count } piksel
+    [few] { $count } piksele
+    [many] { $count } pikseli
+   *[other] { $count } pikseli
+}
+unit-stars = { $count ->
+    [one] { $count } gwiazdka
+    [few] { $count } gwiazdki
+    [many] { $count } gwiazdek
+   *[other] { $count } gwiazdek
+}
+menu-property-columns = Kolumny właściwości
+col-dupegroup = Grupa duplikatów
+preview-hits = { $count ->
+    [one] { $count } dopasowanie
+    [few] { $count } dopasowania
+    [many] { $count } dopasowań
+   *[other] { $count } dopasowań
+}
+prop-width = Szerokość
+prop-height = Wysokość
+prop-dimensions = Wymiary
+prop-aspect-ratio = Proporcje obrazu
+prop-bit-depth = Głębia bitowa
+prop-horizontal-resolution = Rozdzielczość pozioma
+prop-vertical-resolution = Rozdzielczość pionowa
+prop-orientation = Orientacja
+prop-date-taken = Data wykonania
+prop-camera-maker = Producent aparatu
+prop-camera-model = Model aparatu
+prop-exposure-time = Czas naświetlania
+prop-f-stop = Przysłona
+prop-iso-speed = Czułość ISO
+prop-focal-length = Ogniskowa
+prop-flash = Lampa błyskowa
+prop-latitude = Szerokość geograficzna
+prop-longitude = Długość geograficzna
+prop-altitude = Wysokość n.p.m.
+prop-people = Osoby
+prop-tags = Tagi
+prop-rating = Klasyfikacja
+prop-title = Tytuł
+prop-subject = Temat
+prop-comment = Komentarze
+prop-copyright = Prawa autorskie
+prop-length = Długość
+prop-artist = Wykonawca
+prop-album = Album
+prop-album-artist = Wykonawca albumu
+prop-track = {"#"}
+prop-disc = Dysk
+prop-genre = Gatunek
+prop-year = Rok
+prop-composer = Kompozytor
+prop-conductor = Dyrygent
+prop-publisher = Wydawca
+prop-bit-rate = Szybkość transmisji bitów
+prop-sample-rate = Częstotliwość próbkowania
+prop-channels = Kanały
+prop-bits-per-sample = Bity na próbkę
+prop-is-variable-bit-rate = Zmienna szybkość transmisji
+prop-lyrics = Tekst utworu
+prop-mood = Nastrój
+prop-bpm = Uderzenia na minutę
+prop-initial-key = Tonacja początkowa
+prop-encoded-by = Zakodowane przez
+prop-frame-width = Szerokość klatki
+prop-frame-height = Wysokość klatki
+prop-frame-rate = Szybkość klatek
+prop-video-bitrate = Szybkość transmisji danych
+prop-total-bitrate = Całkowita szybkość transmisji
+prop-compression = Kompresja wideo
+prop-video-codec = Kodek wideo
+prop-audio-codec = Kodek audio
+prop-date-encoded = Data zakodowania
+prop-director = Reżyserzy
+prop-producer = Producenci
+prop-writer = Scenarzyści
+prop-stream-count = Strumienie
+prop-four-cc = FourCC
+prop-author = Autorzy
+prop-last-author = Ostatnio zapisany przez
+prop-category = Kategoria
+prop-company = Firma
+prop-manager = Menedżer
+prop-page-count = Strony
+prop-slide-count = Slajdy
+prop-word-count = Liczba wyrazów
+prop-char-count = Liczba znaków
+prop-line-count = Liczba wierszy
+prop-paragraph-count = Liczba akapitów
+prop-revision-number = Numer wersji
+prop-template = Szablon
+prop-date-printed = Data ostatniego wydruku
+prop-date-last-saved = Data ostatniego zapisu
+prop-content-created = Zawartość utworzona
+prop-total-editing-time = Całkowity czas edycji
+prop-security = Zabezpieczenia
+prop-file-version = Wersja pliku
+prop-product-version = Wersja produktu
+prop-product-name = Nazwa produktu
+prop-file-description = Opis pliku
+prop-original-filename = Oryginalna nazwa pliku
+prop-internal-name = Nazwa wewnętrzna
+prop-legal-trademarks = Znaki towarowe
+prop-private-build = Kompilacja prywatna
+prop-special-build = Kompilacja specjalna
+prop-language = Język
+prop-machine = Platforma
+prop-subsystem = Podsystem
+prop-is-dll = DLL
+prop-is-signed = Podpisany
+prop-linker-version = Wersja konsolidatora
+prop-os-version = Wersja systemu operacyjnego
+prop-image-version = Wersja obrazu
 sem-err-no-model = Wyszukiwanie semantyczne wymaga pliku modelu { $path } (Opcje → Indeksy → Wyszukiwanie semantyczne → Pobierz model)
 sem-err-no-images = Wyszukiwanie obrazów (semimage:) wymaga projektora multimodalnego, którego ta kompilacja nie zawiera
 sem-err-no-url = Ten model nie ma adresu pobierania; pobierz go samodzielnie i wskaż jego plik w opcjach
@@ -417,8 +537,6 @@ sem-setup-apply = Zastosuj
 sem-setup-rebuild = Odbuduj indeks semantyczny
 sem-setup-loaded = Model jest w pamięci.
 sem-setup-unloaded = Modelu nie ma w pamięci (zostanie załadowany przy następnym wyszukiwaniu semantycznym).
-
-## Integracja M4 (IPC, zgodność z Everything, serwer HTTP)
 status-http = HTTP: { $url }
 status-http-failed = Serwer HTTP: { $error }
 msg-http-bad-bind = Nieprawidłowy adres powiązania HTTP: { $value }
