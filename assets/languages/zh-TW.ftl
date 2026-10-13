@@ -550,3 +550,5 @@ sidebar-folders = 資料夾
 sidebar-bookmarks = 書籤
 sidebar-no-bookmarks = 尚無書籤（「書籤」→「加入書籤」）。
 cmd-theme-high-contrast = 高對比
+col-relevance = 相關度
+col-custom = 自訂 { $n }

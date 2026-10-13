@@ -622,3 +622,5 @@ sidebar-folders = Dossiers
 sidebar-bookmarks = Signets
 sidebar-no-bookmarks = Aucun signet pour l'instant (Signets → Ajouter aux signets).
 cmd-theme-high-contrast = Contraste élevé
+col-relevance = Pertinence
+col-custom = Personnalisée { $n }

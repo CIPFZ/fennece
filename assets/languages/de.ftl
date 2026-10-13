@@ -607,3 +607,5 @@ sidebar-folders = Ordner
 sidebar-bookmarks = Lesezeichen
 sidebar-no-bookmarks = Noch keine Lesezeichen (Lesezeichen → Zu Lesezeichen hinzufügen).
 cmd-theme-high-contrast = Hoher Kontrast
+col-relevance = Relevanz
+col-custom = Benutzerdefiniert { $n }

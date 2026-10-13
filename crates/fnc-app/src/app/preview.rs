@@ -209,10 +209,32 @@ pub(super) fn load_content(
         Some(t) => t,
         None => read_text(path)?.0,
     };
-    let mut highlights = fnc_exec::content_highlights(plan, &text, MAX_HIGHLIGHTS);
+    let highlights = fnc_exec::content_highlights(plan, &text, MAX_HIGHLIGHTS);
     let first = hit.filter(|&h| h < text.len()).or_else(|| highlights.first().map(|r| r.start));
+    Ok(windowed(text, highlights, first))
+}
+
+/// Text for a semantic hit: the extracted text with the best chunk marked (SPEC ch.5 §3.3).
+pub(super) fn load_semantic(
+    path: &Path,
+    on_demand: &dyn fnc_props::ondemand::OnDemand,
+    chunk: Range<usize>,
+) -> LoadResult {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let text = match on_demand.content(path, &ext) {
+        Some(t) => t,
+        None => read_text(path)?.0,
+    };
+    let end = floor_boundary(&text, chunk.end.min(text.len()));
+    let start = floor_boundary(&text, chunk.start.min(end));
+    let highlights: Vec<Range<usize>> = if start < end { std::iter::once(start..end).collect() } else { Vec::new() };
+    Ok(windowed(text, highlights, Some(start)))
+}
+
+/// Cuts long texts to a window of [`TEXT_LIMIT`] bytes around `first`.
+fn windowed(text: String, mut highlights: Vec<Range<usize>>, first: Option<usize>) -> Loaded {
     if text.len() <= TEXT_LIMIT {
-        return Ok(Loaded { text, truncated: false, highlights, first_hit: first });
+        return Loaded { text, truncated: false, highlights, first_hit: first };
     }
     let start = floor_boundary(&text, first.unwrap_or(0).saturating_sub(TEXT_LIMIT / 4));
     let end = floor_boundary(&text, start + TEXT_LIMIT);
@@ -220,12 +242,12 @@ pub(super) fn load_content(
     for r in &mut highlights {
         *r = r.start - start..r.end - start;
     }
-    Ok(Loaded {
+    Loaded {
         text: text[start..end].to_string(),
         truncated: true,
         highlights,
         first_hit: first.map(|f| f.saturating_sub(start)),
-    })
+    }
 }
 
 /// Lays out `text` in monospace with `highlights` marked.
@@ -362,8 +384,16 @@ impl FennecApp {
                         .collect();
                 }
                 let hit = self.v.results.content_hit(id).map(|h| h.offset as usize);
+                let chunk = self.v.results.semantic_range(id);
                 p.body = if is_dir {
                     Body::Empty
+                } else if let (Some(chunk), None) = (chunk, &p.plan) {
+                    // Semantic hit in a content/code chunk: show that passage.
+                    let (tx, path, od) = (p.tx.clone(), info.path.clone(), self.stores.on_demand());
+                    let _ = std::thread::Builder::new().name("fennec-preview".into()).spawn(move || {
+                        let _ = tx.send((id, load_semantic(&path, &*od, chunk)));
+                    });
+                    Body::Loading
                 } else if let Some(plan) = p.plan.clone() {
                     // `content:` search: extracted text with highlights.
                     let (tx, path) = (p.tx.clone(), info.path.clone());
@@ -570,5 +600,45 @@ mod tests {
         let (t, truncated) = read_text(&big).unwrap();
         assert!(truncated && t.len() == TEXT_LIMIT);
         assert!(is_text(Path::new("x.RS")) && !is_text(Path::new("x.exe")));
+    }
+}
+
+#[cfg(test)]
+mod semantic_tests {
+    use super::*;
+
+    struct NoExtract;
+    impl fnc_props::ondemand::OnDemand for NoExtract {
+        fn properties(
+            &self,
+            _: &Path,
+            _: &str,
+            _: &[fnc_props::PropertyId],
+        ) -> Vec<(fnc_props::PropertyId, fnc_props::Value)> {
+            Vec::new()
+        }
+        fn content(&self, _: &Path, _: &str) -> Option<String> {
+            None
+        }
+        fn text_as(&self, _: &Path, _: fnc_props::content::TextEncoding) -> Option<String> {
+            None
+        }
+        fn bytes(&self, _: &Path) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    #[test]
+    fn semantic_chunk_is_marked() {
+        crate::i18n::init("en");
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("notes.txt");
+        std::fs::write(&p, "Intro.\n\nTo rotate an API key, open the console.\n\nOutro.").unwrap();
+        let l = load_semantic(&p, &NoExtract, 8..47).unwrap();
+        assert_eq!(&l.text[l.highlights[0].clone()], "To rotate an API key, open the console.");
+        assert_eq!(l.first_hit, Some(8));
+        // Out-of-range chunks (file changed) are clamped, never panic.
+        let l = load_semantic(&p, &NoExtract, 40..4000).unwrap();
+        assert!(l.highlights[0].end <= l.text.len());
     }
 }

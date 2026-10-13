@@ -556,3 +556,5 @@ sidebar-folders = 文件夹
 sidebar-bookmarks = 书签
 sidebar-no-bookmarks = 还没有书签（书签 → 添加到书签）。
 cmd-theme-high-contrast = 高对比度
+col-relevance = 相关度
+col-custom = 自定义 { $n }

@@ -606,6 +606,9 @@ pub struct Settings {
     /// Closing the last tab clears it instead of closing the window.
     #[setting(key = "close_last_tab_keeps_window", default = true, page = "ui")]
     pub close_last_tab_keeps_window: bool,
+    /// Custom columns 1–9: `Title=formula` (the `eval:` language, e.g. `Megapixels=$width:*$height:/1e6`).
+    #[setting(key = "custom_columns", default = Vec::new(), page = "results")]
+    pub custom_columns: Vec<String>,
     /// Show the folder/bookmark sidebar.
     #[setting(key = "show_sidebar", default = false, page = "view")]
     pub show_sidebar: bool,

@@ -158,3 +158,24 @@ fn high_contrast_theme() {
     h.run();
     assert_ne!(h.ctx.style_of(egui::Theme::Dark).visuals.panel_fill, egui::Color32::BLACK, "plain dark restored");
 }
+
+#[test]
+fn custom_formula_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut deps = deps_for(Some(efu), SharedIndex::default());
+    deps.settings.custom_columns = vec!["Big=IF($size:>3mb,\"yes\",\"no\")".into(), "UPPER($ext:)".into()];
+    deps.settings.columns = vec!["name:300".into(), "custom1:80".into(), "custom2:80".into()];
+    let mut h = harness(deps);
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && !a.v.results.is_empty());
+    h.state_mut().set_query("ext:jpg".into());
+    wait_until(&mut h, "jpg", |a| a.v.results.len() == 2);
+    h.run();
+    // Titles from the setting (or "Custom n"), values from the formulas.
+    assert!(h.query_by_label("Big").is_some());
+    assert!(h.query_by_label("Custom 2").is_some());
+    assert!(h.query_by_label("yes").is_some(), "4 MB photo");
+    assert!(h.query_by_label("no").is_some(), "3 MB photo");
+    assert!(!h.query_all_by_label("JPG").collect::<Vec<_>>().is_empty());
+}

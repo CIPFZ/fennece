@@ -19,7 +19,8 @@ pub struct EvalLeaf {
     props: HashMap<String, HashMap<u32, Val>>,
 }
 
-fn prop_val(v: Value) -> Val {
+/// A property value as a formula value.
+pub fn prop_val(v: Value) -> Val {
     match v {
         Value::Int(i) => Val::Num(i as f64),
         Value::Float(f) => Val::Num(f),
@@ -98,51 +99,75 @@ pub struct EntryVars<'a> {
 
 impl Vars for EntryVars<'_> {
     fn var(&self, name: &str) -> Val {
-        let (s, id) = (self.s, self.id);
-        let date = |t: fnc_core::FileTime| if t.0 == 0 { Val::Empty } else { Val::Date(t.0) };
-        let name_s = || s.name_string(id);
-        match name {
-            "name" => Val::Text(name_s()),
-            "stem" => {
-                let n = name_s();
-                Val::Text(if s.is_dir(id) { n } else { n.rsplit_once('.').map_or(n.clone(), |(a, _)| a.to_string()) })
-            }
-            "ext" | "extension" => Val::Text(if s.is_dir(id) {
-                String::new()
-            } else {
-                name_s().rsplit_once('.').map(|(_, e)| e.to_string()).unwrap_or_default()
-            }),
-            "path" => {
-                let mut p = String::new();
-                s.parent_path(id, &mut p);
-                Val::Text(p)
-            }
-            "parent" => {
-                let p = s.parent(id);
-                Val::Text(if p.is_some() { s.name_string(p) } else { String::new() })
-            }
-            "fullpath" => {
-                let mut p = String::new();
-                s.full_path(id, &mut p);
-                Val::Text(p)
-            }
-            "size" => s.size(id).map_or(Val::Empty, |v| Val::Num(v as f64)),
-            "dm" | "datemodified" => date(s.date_modified(id)),
-            "dc" | "datecreated" => date(s.date_created(id)),
-            "da" | "dateaccessed" => date(s.date_accessed(id)),
-            "dr" | "daterun" => date(s.run_info(id).last),
-            "rc" | "daterecentlychanged" => date(s.date_recently_changed(id)),
-            "attrib" | "attributes" => Val::Num(f64::from(s.attributes(id))),
-            "depth" => Val::Num(s.depth(id) as f64),
-            "runcount" => Val::Num(f64::from(s.run_info(id).count)),
-            "namelength" => Val::Num(s.name(id).len() as f64),
-            "isfolder" | "isdir" => Val::Bool(s.is_dir(id)),
-            other => match self.props.get(other) {
-                Some(m) => m.get(&id.0).cloned().unwrap_or(Val::Empty),
-                None => Val::Error("#NAME?"),
-            },
-        }
+        entry_var(self.s, self.id, name).unwrap_or_else(|| match self.props.get(name) {
+            Some(m) => m.get(&self.id.0).cloned().unwrap_or(Val::Empty),
+            None => Val::Error("#NAME?"),
+        })
     }
+}
+
+/// Variables of one entry with property variables read from the store directly (formula
+/// columns: one entry at a time).
+pub struct StoreVars<'a> {
+    /// Index.
+    pub s: &'a IndexStore,
+    /// Entry.
+    pub id: EntryId,
+    /// Property store, if any.
+    pub props: Option<&'a PropertyStore>,
+}
+
+impl Vars for StoreVars<'_> {
+    fn var(&self, name: &str) -> Val {
+        entry_var(self.s, self.id, name).unwrap_or_else(|| match PropertyId::lookup(name) {
+            Some(p) => self.props.and_then(|st| st.get(self.id, p)).map_or(Val::Empty, prop_val),
+            None => Val::Error("#NAME?"),
+        })
+    }
+}
+
+/// The entry's own fields (`None` for property and unknown names).
+fn entry_var(s: &IndexStore, id: EntryId, name: &str) -> Option<Val> {
+    let date = |t: fnc_core::FileTime| if t.0 == 0 { Val::Empty } else { Val::Date(t.0) };
+    let name_s = || s.name_string(id);
+    Some(match name {
+        "name" => Val::Text(name_s()),
+        "stem" => {
+            let n = name_s();
+            Val::Text(if s.is_dir(id) { n } else { n.rsplit_once('.').map_or(n.clone(), |(a, _)| a.to_string()) })
+        }
+        "ext" | "extension" => Val::Text(if s.is_dir(id) {
+            String::new()
+        } else {
+            name_s().rsplit_once('.').map(|(_, e)| e.to_string()).unwrap_or_default()
+        }),
+        "path" => {
+            let mut p = String::new();
+            s.parent_path(id, &mut p);
+            Val::Text(p)
+        }
+        "parent" => {
+            let p = s.parent(id);
+            Val::Text(if p.is_some() { s.name_string(p) } else { String::new() })
+        }
+        "fullpath" => {
+            let mut p = String::new();
+            s.full_path(id, &mut p);
+            Val::Text(p)
+        }
+        "size" => s.size(id).map_or(Val::Empty, |v| Val::Num(v as f64)),
+        "dm" | "datemodified" => date(s.date_modified(id)),
+        "dc" | "datecreated" => date(s.date_created(id)),
+        "da" | "dateaccessed" => date(s.date_accessed(id)),
+        "dr" | "daterun" => date(s.run_info(id).last),
+        "rc" | "daterecentlychanged" => date(s.date_recently_changed(id)),
+        "attrib" | "attributes" => Val::Num(f64::from(s.attributes(id))),
+        "depth" => Val::Num(s.depth(id) as f64),
+        "runcount" => Val::Num(f64::from(s.run_info(id).count)),
+        "namelength" => Val::Num(s.name(id).len() as f64),
+        "isfolder" | "isdir" => Val::Bool(s.is_dir(id)),
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

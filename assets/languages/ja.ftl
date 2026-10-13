@@ -550,3 +550,5 @@ sidebar-folders = フォルダー
 sidebar-bookmarks = ブックマーク
 sidebar-no-bookmarks = ブックマークはまだありません（［ブックマーク］→［ブックマークに追加］）。
 cmd-theme-high-contrast = ハイ コントラスト
+col-relevance = 関連度
+col-custom = カスタム { $n }

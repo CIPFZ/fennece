@@ -640,3 +640,5 @@ sidebar-folders = Foldery
 sidebar-bookmarks = Zakładki
 sidebar-no-bookmarks = Brak zakładek (Zakładki → Dodaj do zakładek).
 cmd-theme-high-contrast = Duży kontrast
+col-relevance = Trafność
+col-custom = Niestandardowa { $n }

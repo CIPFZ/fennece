@@ -299,6 +299,7 @@ impl FennecApp {
         }
         let active_filters: Vec<usize> = filters.find(&deps.settings.filter).into_iter().collect();
         let sort = sort_from_settings(&deps.settings);
+        crate::columns::set_custom_columns(&deps.settings.custom_columns);
         let columns = crate::columns::parse_columns(&deps.settings.columns);
         let (worker_tx, worker_rx) = crossbeam_channel::unbounded();
         let thumb_dir =
@@ -1778,6 +1779,10 @@ impl FennecApp {
         let s = &self.settings;
         if old.columns != s.columns {
             self.columns = crate::columns::parse_columns(&s.columns);
+            self.v.rows.clear();
+        }
+        if old.custom_columns != s.custom_columns {
+            crate::columns::set_custom_columns(&s.custom_columns);
             self.v.rows.clear();
         }
         if old.sort != s.sort || old.folders_first != s.folders_first {

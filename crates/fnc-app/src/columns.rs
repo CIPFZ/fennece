@@ -1,7 +1,9 @@
 //! Result list columns (SPEC ch.3 §4.3): ids, titles, cell text, sort mapping and the
 //! `columns` setting (`id:width;...`). Property columns use the property's canonical
 //! name as id (`width:90`), sort through `SortSpec::props` and read the property store;
-//! the duplicate group column shows `ResultSet::dupe_group`.
+//! the duplicate group column shows `ResultSet::dupe_group`, the relevance column the
+//! semantic similarity, and custom columns 1–9 evaluate the formulas of the
+//! `custom_columns` setting (`Title=formula`, the `eval:` language).
 
 use fnc_core::settings::{DateFormat, SizeFormat};
 use fnc_core::{EntryFlags, EntryId, FileTime};
@@ -57,12 +59,56 @@ pub enum ColumnId {
     DupeGroup,
     /// A property (`width`, `artist`, …).
     Property(PropertyId),
+    /// Semantic relevance (0–100) of searches with semantic terms.
+    Relevance,
+    /// Custom column `n` (0-based) of the `custom_columns` setting.
+    Custom(u8),
+}
+
+/// Custom columns supported.
+pub const MAX_CUSTOM: usize = 9;
+
+const CUSTOM_KEYS: [&str; MAX_CUSTOM] =
+    ["custom1", "custom2", "custom3", "custom4", "custom5", "custom6", "custom7", "custom8", "custom9"];
+
+/// Title and parsed formula of one custom column.
+type CustomColumn = (String, Option<std::sync::Arc<fnc_query::formula::Formula>>);
+
+// The UI thread formats every cell; tests run one app per thread.
+thread_local! {
+    static CUSTOM: std::cell::RefCell<Vec<CustomColumn>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Installs the `custom_columns` setting (`Title=formula`, or just a formula).
+pub fn set_custom_columns(spec: &[String]) {
+    let parsed: Vec<CustomColumn> = spec
+        .iter()
+        .take(MAX_CUSTOM)
+        .enumerate()
+        .map(|(i, s)| {
+            let (title, formula) = match s.split_once('=') {
+                // `=` also starts formulas and is an operator: a title has no `$`, `(` or quote.
+                Some((a, b)) if !a.is_empty() && !a.contains(['$', '(', '"', '<', '>', '!']) => {
+                    (a.trim().to_string(), b)
+                }
+                _ => (String::new(), s.as_str()),
+            };
+            let title =
+                if title.is_empty() { crate::i18n::t_args("col-custom", &[("n", (i + 1).into())]) } else { title };
+            (title, fnc_query::formula::Formula::parse(formula).ok().map(std::sync::Arc::new))
+        })
+        .collect();
+    CUSTOM.with(|c| *c.borrow_mut() = parsed);
+}
+
+fn custom(i: u8) -> Option<CustomColumn> {
+    CUSTOM.with(|c| c.borrow().get(usize::from(i)).cloned())
 }
 
 impl ColumnId {
     /// Every built-in column, in the column chooser's order (property columns are listed
     /// separately, see [`ColumnId::properties`]).
-    pub const ALL: [ColumnId; 20] = [
+    pub const ALL: [ColumnId; 21] = [
         ColumnId::Name,
         ColumnId::Path,
         ColumnId::Size,
@@ -83,7 +129,14 @@ impl ColumnId {
         ColumnId::NameLength,
         ColumnId::Frn,
         ColumnId::DupeGroup,
+        ColumnId::Relevance,
     ];
+
+    /// The custom columns defined in the settings.
+    pub fn customs() -> Vec<ColumnId> {
+        let n = CUSTOM.with(|c| c.borrow().len());
+        (0..n as u8).map(ColumnId::Custom).collect()
+    }
 
     /// Every property column, sorted by localised title.
     pub fn properties() -> Vec<ColumnId> {
@@ -116,6 +169,8 @@ impl ColumnId {
             ColumnId::NameLength => "namelength",
             ColumnId::Frn => "frn",
             ColumnId::DupeGroup => "dupegroup",
+            ColumnId::Relevance => "relevance",
+            ColumnId::Custom(i) => CUSTOM_KEYS.get(usize::from(i)).copied().unwrap_or("custom1"),
             ColumnId::Property(p) => p.name(),
         }
     }
@@ -123,6 +178,9 @@ impl ColumnId {
     /// Parses a setting key (built-in id or property name).
     pub fn from_key(k: &str) -> Option<Self> {
         let k = k.trim();
+        if let Some(i) = CUSTOM_KEYS.iter().position(|c| *c == k) {
+            return Some(ColumnId::Custom(i as u8));
+        }
         Self::ALL.iter().copied().find(|c| c.key() == k).or_else(|| PropertyId::lookup(k).map(ColumnId::Property))
     }
 
@@ -133,6 +191,9 @@ impl ColumnId {
                 let key = format!("prop-{}", p.name());
                 let s = t(&key);
                 if s == key { p.title().to_string() } else { s }
+            }
+            ColumnId::Custom(i) => {
+                custom(i).map(|c| c.0).unwrap_or_else(|| crate::i18n::t_args("col-custom", &[("n", (i + 1).into())]))
             }
             c => t(&format!("col-{}", c.key())),
         }
@@ -147,6 +208,8 @@ impl ColumnId {
             ColumnId::DateModified | ColumnId::DateCreated | ColumnId::DateAccessed | ColumnId::DateRun => 140.0,
             ColumnId::DateRecentlyChanged => 140.0,
             ColumnId::FileListFilename => 200.0,
+            ColumnId::Relevance => 80.0,
+            ColumnId::Custom(_) => 140.0,
             ColumnId::Property(p) => match p.ty() {
                 PropType::Text | PropType::MultiText => 160.0,
                 PropType::Date => 140.0,
@@ -168,6 +231,7 @@ impl ColumnId {
                     | ColumnId::NameLength
                     | ColumnId::Frn
                     | ColumnId::DupeGroup
+                    | ColumnId::Relevance
             ),
         }
     }
@@ -176,7 +240,8 @@ impl ColumnId {
     pub fn sort(self) -> Option<SortKey> {
         match self {
             ColumnId::Property(p) => Some(SortKey::Property(p)),
-            ColumnId::DupeGroup => None,
+            // SPEC-GAP: formula columns are not sortable (values are computed per row).
+            ColumnId::DupeGroup | ColumnId::Custom(_) => None,
             c => Some(SortKey::Column(c.sort_column())),
         }
     }
@@ -185,7 +250,8 @@ impl ColumnId {
     // engine; extension order groups the same types together.
     fn sort_column(self) -> SortColumn {
         match self {
-            ColumnId::Name | ColumnId::DupeGroup | ColumnId::Property(_) => SortColumn::Name,
+            ColumnId::Name | ColumnId::DupeGroup | ColumnId::Property(_) | ColumnId::Custom(_) => SortColumn::Name,
+            ColumnId::Relevance => SortColumn::Relevance,
             ColumnId::Path => SortColumn::Path,
             ColumnId::Size => SortColumn::Size,
             ColumnId::Extension | ColumnId::Type => SortColumn::Extension,
@@ -220,6 +286,7 @@ impl ColumnId {
                 | ColumnId::FileListFilename
                 | ColumnId::IndexSource
                 | ColumnId::Volume
+                | ColumnId::Custom(_)
         )
     }
 }
@@ -439,6 +506,21 @@ pub fn cell(s: &IndexSnapshot, id: EntryId, col: ColumnId, f: &mut CellFormat<'_
             }
         }
         ColumnId::DupeGroup => f.results.and_then(|r| r.dupe_group(id)).map(|g| g.to_string()).unwrap_or_default(),
+        ColumnId::Relevance => f
+            .results
+            .and_then(|r| r.relevance(id))
+            .map(|v| format!("{:.0}", (v * 100.0).clamp(0.0, 100.0)))
+            .unwrap_or_default(),
+        ColumnId::Custom(i) => match custom(i).and_then(|c| c.1) {
+            Some(formula) => {
+                let props = f.props.filter(|st| st.instance() == s.instance());
+                match formula.eval(&fnc_exec::formula::StoreVars { s, id, props }) {
+                    fnc_query::formula::Val::Date(t) => date(FileTime(t)),
+                    v => v.to_string(),
+                }
+            }
+            None => String::new(),
+        },
         ColumnId::Property(p) => f
             .props
             .filter(|st| st.instance() == s.instance())

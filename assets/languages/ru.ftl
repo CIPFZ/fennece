@@ -641,3 +641,5 @@ sidebar-folders = Папки
 sidebar-bookmarks = Закладки
 sidebar-no-bookmarks = Закладок пока нет (Закладки → Добавить в закладки).
 cmd-theme-high-contrast = Высокая контрастность
+col-relevance = Релевантность
+col-custom = Пользовательский { $n }

@@ -574,3 +574,5 @@ sidebar-folders = Folders
 sidebar-bookmarks = Bookmarks
 sidebar-no-bookmarks = No bookmarks yet (Bookmarks → Add to Bookmarks).
 cmd-theme-high-contrast = High Contrast
+col-relevance = Relevance
+col-custom = Custom { $n }

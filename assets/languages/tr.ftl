@@ -553,3 +553,5 @@ sidebar-folders = Klasörler
 sidebar-bookmarks = Yer işaretleri
 sidebar-no-bookmarks = Henüz yer işareti yok (Yer işaretleri → Yer işaretlerine ekle).
 cmd-theme-high-contrast = Yüksek karşıtlık
+col-relevance = İlgi düzeyi
+col-custom = Özel { $n }

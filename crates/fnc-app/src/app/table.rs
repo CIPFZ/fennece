@@ -73,6 +73,11 @@ impl FennecApp {
             let at = cols.len().min(1);
             cols.insert(at, ColumnState { id: ColumnId::DupeGroup, width: ColumnId::DupeGroup.default_width() });
         }
+        // Relevance appears while semantic terms take part (SPEC ch.5 §3.3).
+        if self.v.results.has_relevance() && !cols.iter().any(|c| c.id == ColumnId::Relevance) {
+            let at = cols.len().min(1);
+            cols.insert(at, ColumnState { id: ColumnId::Relevance, width: ColumnId::Relevance.default_width() });
+        }
         cols
     }
 
@@ -98,6 +103,12 @@ impl FennecApp {
                 let mut on = self.columns.iter().any(|s| s.id == c);
                 let enabled = c != ColumnId::Name;
                 if ui.add_enabled(enabled, egui::Checkbox::new(&mut on, c.title())).changed() {
+                    ev.toggle_column = Some(c);
+                }
+            }
+            for c in ColumnId::customs() {
+                let mut on = self.columns.iter().any(|s| s.id == c);
+                if ui.checkbox(&mut on, c.title()).changed() {
                     ev.toggle_column = Some(c);
                 }
             }
