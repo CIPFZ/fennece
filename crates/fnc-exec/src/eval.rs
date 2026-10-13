@@ -18,8 +18,8 @@ use rayon::prelude::*;
 
 use crate::cache::{Caches, CancelToken, Cancelled, ChildCounts};
 use crate::ext::{
-    ContentHitsLeaf, ContentLeaf, ExecWarning as ExtWarning, ExtCtx, HashLeaf, PropLeaf, SlowState, compile_content,
-    compile_content_hits, compile_hash, compile_prop,
+    ExecWarning as ExtWarning, ExtCtx, ExtLeaf, SlowState, compile_content, compile_content_hits, compile_hash,
+    compile_prop,
 };
 use crate::matcher::{Pattern, SubjectMode, compile_pattern, name_subject, strip_chars, subject_mode};
 use crate::paths::DirPaths;
@@ -148,14 +148,9 @@ pub enum Leaf {
     VolumeIn(Vec<bool>),
     /// Reparse points.
     Reparse(ReparseKind),
-    /// Property (`width:`, `artist:`).
-    Prop(Box<PropLeaf>),
-    /// Content (`content:`, `utf8content:`, ...).
-    Content(Box<ContentLeaf>),
-    /// `contenthits:`.
-    ContentHits(Box<ContentHitsLeaf>),
-    /// Hash (`sha256:`).
-    Hash(Box<HashLeaf>),
+    /// Property, content or hash function (one boxed arm keeps the evaluator of the
+    /// literal leaves unchanged).
+    Extension(Box<ExtLeaf>),
     /// Never matches.
     Nothing,
 }
@@ -582,14 +577,14 @@ impl Compiled {
             Pred::Prop(pp) => {
                 let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
                 match compile_prop(self, pp, s, ext, &slow) {
-                    Some(l) => Leaf::Prop(Box::new(l)),
+                    Some(l) => Leaf::Extension(Box::new(ExtLeaf::Prop(l))),
                     None => Leaf::Nothing,
                 }
             }
             Pred::Content(cp) => {
                 let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
                 match compile_content(self, cp, s, ext, &slow, cancel) {
-                    Some(l) => Leaf::Content(Box::new(l)),
+                    Some(l) => Leaf::Extension(Box::new(ExtLeaf::Content(l))),
                     None if cancel.is_cancelled() => return Err(Cancelled),
                     None => Leaf::Nothing,
                 }
@@ -597,13 +592,13 @@ impl Compiled {
             Pred::ContentHits(n, parts) => {
                 let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
                 match compile_content_hits(self, n, parts, s, ext, &slow, cancel) {
-                    Some(l) => Leaf::ContentHits(Box::new(l)),
+                    Some(l) => Leaf::Extension(Box::new(ExtLeaf::ContentHits(l))),
                     None => Leaf::Nothing,
                 }
             }
             Pred::Hash(h) => {
                 let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
-                Leaf::Hash(Box::new(compile_hash(h, algos, ext, &slow)))
+                Leaf::Extension(Box::new(ExtLeaf::Hash(compile_hash(h, algos, ext, &slow))))
             }
             Pred::Set(_) => Leaf::Nothing,
             Pred::Unsupported(_) | Pred::Invalid(_) => Leaf::Nothing,
@@ -820,6 +815,7 @@ impl Compiled {
             .is_some_and(|found| s.is_dir(found) == x.folder)
     }
 
+    #[inline]
     fn eval_leaf(&self, l: &Leaf, s: &IndexStore, id: EntryId, sc: &mut Scratch) -> bool {
         match l {
             Leaf::Text(t) => self.eval_text(t, s, id, sc),
@@ -897,10 +893,7 @@ impl Compiled {
                         ReparseKind::Symlink => !f.contains(EntryFlags::IS_DIR),
                     }
             }
-            Leaf::Prop(p) => p.eval(s, id, sc),
-            Leaf::Content(c) => c.eval(s, id, sc),
-            Leaf::ContentHits(c) => c.eval(s, id, sc),
-            Leaf::Hash(h) => h.eval(s, id, sc),
+            Leaf::Extension(x) => x.eval(s, id, sc),
             Leaf::Nothing => false,
         }
     }

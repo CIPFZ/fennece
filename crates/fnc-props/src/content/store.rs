@@ -267,14 +267,53 @@ impl ContentMatcher {
 
     /// `(first match byte offset in text, number of matches)`, `None` if no match.
     pub fn find(&self, text: &str, sc: &mut MatchScratch) -> Option<(usize, u32)> {
+        let (needle, fold, word) = match self {
+            ContentMatcher::Substring { needle, fold } => (needle, *fold, false),
+            ContentMatcher::Word { needle, fold } => (needle, *fold, true),
+            ContentMatcher::Regex(_) => {
+                let mut first = None;
+                let mut count = 0u32;
+                self.each_match(text, sc, |s, _| {
+                    first.get_or_insert(s);
+                    count = count.saturating_add(1);
+                    true
+                });
+                return first.map(|f| (f, count));
+            }
+        };
+        if needle.is_empty() {
+            return Some((0, 1));
+        }
+        // Fast path: fold without an offset map (bulk-copying characters that fold to
+        // themselves), map only the first hit back.
+        let hay: &str = if !fold.fold_case && !fold.strip_diacritics {
+            text
+        } else {
+            fold_fast(text, fold, &mut sc.buf);
+            &sc.buf
+        };
+        let finder = memchr::memmem::Finder::new(needle.as_bytes());
         let mut first = None;
         let mut count = 0u32;
-        self.each_match(text, sc, |s, _| {
-            first.get_or_insert(s);
+        for p in finder.find_iter(hay.as_bytes()) {
+            let end = p + needle.len();
+            if word {
+                let before = hay[..p].chars().next_back();
+                let after = hay[end..].chars().next();
+                if before.is_some_and(char::is_alphanumeric) || after.is_some_and(char::is_alphanumeric) {
+                    continue;
+                }
+            }
+            first.get_or_insert(p);
             count = count.saturating_add(1);
-            true
-        });
-        first.map(|f| (f, count))
+        }
+        let first = first?;
+        let offset = if std::ptr::eq(hay, text) || hay.len() == text.len() && text.is_ascii() {
+            first
+        } else {
+            original_offset(text, fold, first)
+        };
+        Some((offset, count))
     }
 
     /// Byte ranges of the first `max` matches in `text` (preview highlighting).
@@ -288,6 +327,57 @@ impl ContentMatcher {
         });
         out
     }
+}
+
+/// `true` for characters every fold leaves unchanged (lowercase ASCII, CJK unified
+/// ideographs) — copied in bulk by [`fold_fast`].
+#[inline]
+fn fold_fixed(c: char, fold: FoldOptions) -> bool {
+    if c.is_ascii() {
+        return !(fold.fold_case && c.is_ascii_uppercase());
+    }
+    matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0x20000..=0x2A6DF)
+}
+
+/// Folds `text` into `out` (same result as `fold_str_into`, faster on ASCII/CJK runs).
+fn fold_fast(text: &str, fold: FoldOptions, out: &mut String) {
+    out.clear();
+    out.reserve(text.len());
+    let mut run = 0;
+    for (pos, c) in text.char_indices() {
+        if fold_fixed(c, fold) {
+            continue;
+        }
+        out.push_str(&text[run..pos]);
+        let end = pos + c.len_utf8();
+        if c.is_ascii() {
+            out.push(c.to_ascii_lowercase());
+        } else {
+            fold_str_into(&text[pos..end], fold, out);
+        }
+        run = end;
+    }
+    out.push_str(&text[run..]);
+}
+
+/// Byte offset in `text` of the character whose fold starts at `folded` (or covers it).
+fn original_offset(text: &str, fold: FoldOptions, folded: usize) -> usize {
+    let mut acc = 0usize;
+    let mut tmp = String::new();
+    for (pos, c) in text.char_indices() {
+        let len = if fold_fixed(c, fold) {
+            c.len_utf8()
+        } else {
+            tmp.clear();
+            fold_str_into(&text[pos..pos + c.len_utf8()], fold, &mut tmp);
+            tmp.len()
+        };
+        if acc + len > folded {
+            return pos;
+        }
+        acc += len;
+    }
+    text.len()
 }
 
 /// Reusable buffers for [`ContentMatcher::find`].
@@ -857,6 +947,39 @@ mod tests {
         );
         assert_eq!(pattern_tokens("季度"), [PatTok::Exact("季度".into())]);
         assert_eq!(pattern_tokens("季"), [PatTok::Within("季".into())]);
+    }
+
+    #[test]
+    fn fast_fold_matches_the_reference_fold() {
+        let samples = [
+            "Plain ASCII Text",
+            "Café crème — CAFE au lait, ﬁne ẞtraße",
+            "第三季度的计划：季度报告和预算",
+            "がぎぐ カタカナ ﾊﾝｶｸ 한국어 ＡＢＣ　全角",
+            "mixed 季度 Report é\u{301} 𠀀 end",
+        ];
+        for s in samples {
+            for fold in [
+                FoldOptions::DEFAULT,
+                FoldOptions { fold_case: true, strip_diacritics: false },
+                FoldOptions { fold_case: false, strip_diacritics: true },
+            ] {
+                let mut a = String::new();
+                fold_str_into(s, fold, &mut a);
+                let mut b = String::new();
+                fold_fast(s, fold, &mut b);
+                assert_eq!(a, b, "{s:?} {fold:?}");
+                let (mut m, mut map) = (String::new(), Vec::new());
+                fold_str_mapped(s, fold, &mut m, &mut map);
+                for (k, _) in m.char_indices() {
+                    assert_eq!(original_offset(s, fold, k), map[k] as usize, "{s:?} at {k}");
+                }
+            }
+        }
+        let m = ContentMatcher::substring("季度", false, false);
+        let text = "Ａ 第三季度的计划";
+        let (off, n) = m.find(text, &mut MatchScratch::default()).unwrap();
+        assert_eq!((&text[off..off + 6], n), ("季度", 1));
     }
 
     #[test]

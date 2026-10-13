@@ -472,6 +472,7 @@ dependencies = [
  "fnc-core",
  "fnc-exec",
  "fnc-index",
+ "fnc-props",
  "fnc-query",
  "gen-fixtures",
  "serde",

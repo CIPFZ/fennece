@@ -811,3 +811,28 @@ pub fn content_highlights(plan: &fnc_query::PlannedQuery, text: &str, max: usize
     merged.truncate(max);
     merged
 }
+
+/// Compiled property/content/hash leaf.
+pub enum ExtLeaf {
+    /// Property.
+    Prop(PropLeaf),
+    /// Content.
+    Content(ContentLeaf),
+    /// `contenthits:`.
+    ContentHits(ContentHitsLeaf),
+    /// Hash.
+    Hash(HashLeaf),
+}
+
+impl ExtLeaf {
+    /// Evaluates entry `id` (kept out of line so the literal evaluator stays small).
+    #[inline(never)]
+    pub(crate) fn eval(&self, s: &IndexStore, id: EntryId, sc: &mut Scratch) -> bool {
+        match self {
+            ExtLeaf::Prop(p) => p.eval(s, id, sc),
+            ExtLeaf::Content(c) => c.eval(s, id, sc),
+            ExtLeaf::ContentHits(c) => c.eval(s, id, sc),
+            ExtLeaf::Hash(h) => h.eval(s, id, sc),
+        }
+    }
+}
