@@ -99,8 +99,10 @@ pub trait ChangeSink {
 
 /// Receives metadata for children of a folder (size/date back-fill).
 pub trait MetaSink {
-    /// `meta` for the child `name` of folder `dir`.
-    fn meta(&mut self, dir: EntryId, name: &[u16], meta: Meta);
+    /// `meta` for the child `name` of folder `dir`. `file_id` is the child's FRN when
+    /// the source can report it reliably (NTFS); it identifies hard-link names that MFT
+    /// enumeration does not return.
+    fn meta(&mut self, dir: EntryId, name: &[u16], meta: Meta, file_id: Option<u64>);
 }
 
 /// A metadata reader independent of its source, so the back-fill can run while the

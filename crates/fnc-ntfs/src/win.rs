@@ -1,6 +1,6 @@
 //! Win32 primitives for NTFS/ReFS indexing: volume enumeration, MFT enumeration
 //! (`FSCTL_ENUM_USN_DATA`), journal queries/reads (`FSCTL_*_USN_JOURNAL`), stat by FRN
-//! (`OpenFileById`) and directory listing (`FindFirstFileExW`).
+//! (`OpenFileById`) and directory listing with file ids (`FileIdBothDirectoryInfo`).
 //!
 //! Every `unsafe` block passes buffers that are owned by the caller, correctly sized
 //! and alive for the duration of the call; handles are owned by [`Handle`] and closed
@@ -14,11 +14,11 @@ use fnc_index::Meta;
 use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_ID_INFO, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FILE_STANDARD_INFO, FIND_FIRST_EX_LARGE_FETCH, FileBasicInfo, FileIdInfo, FileIdType,
-    FileStandardInfo, FindClose, FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW,
-    GetDriveTypeW, GetFileInformationByHandle, GetFileInformationByHandleEx, GetLogicalDrives, GetVolumeInformationW,
-    GetVolumeNameForVolumeMountPointW, OPEN_EXISTING, OpenFileById, WIN32_FIND_DATAW,
+    FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileBasicInfo, FileIdBothDirectoryInfo,
+    FileIdBothDirectoryRestartInfo, FileIdInfo, FileIdType, FileStandardInfo, GetDriveTypeW,
+    GetFileInformationByHandle, GetFileInformationByHandleEx, GetLogicalDrives, GetVolumeInformationW,
+    GetVolumeNameForVolumeMountPointW, OPEN_EXISTING, OpenFileById,
 };
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Ioctl::{
@@ -41,6 +41,8 @@ pub mod code {
     pub const JOURNAL_NOT_ACTIVE: u32 = 1179;
     /// `ERROR_JOURNAL_ENTRY_DELETED`
     pub const JOURNAL_ENTRY_DELETED: u32 = 1181;
+    /// `ERROR_NO_MORE_FILES`
+    pub const NO_MORE_FILES: u32 = 18;
     /// `ERROR_NOT_READY` (media removed)
     pub const NOT_READY: u32 = 21;
     /// `ERROR_DEV_NOT_EXIST`
@@ -429,10 +431,6 @@ pub fn read_journal(
     }
 }
 
-fn filetime(low: u32, high: u32) -> FileTime {
-    FileTime(((u64::from(high) << 32) | u64::from(low)) as i64)
-}
-
 /// Size, dates and attributes of the file with `frn` (no path needed).
 // SPEC-GAP: genuine 128-bit ReFS ids are stored folded (see `record::fold_file_id`) and
 // cannot be reopened with `FileIdType`; such refreshes fail quietly until the index
@@ -490,56 +488,57 @@ pub fn stat_frn(volume: &Handle, frn: u64) -> io::Result<Meta> {
     })
 }
 
-/// Lists the children of folder `dir` (full path), calling `f(name, meta)` for each.
-pub fn list_dir(dir: &str, mut f: impl FnMut(&[u16], Meta)) -> io::Result<()> {
-    let pattern = if dir.ends_with('\\') { format!("{dir}*") } else { format!("{dir}\\*") };
-    // Long paths: use the `\\?\` prefix for absolute drive paths.
-    let pattern =
-        if pattern.len() > 240 && !pattern.starts_with("\\\\") { format!("\\\\?\\{pattern}") } else { pattern };
-    let pattern = wide(&pattern);
-    let mut data = WIN32_FIND_DATAW::default();
-    // SAFETY: `pattern` is NUL-terminated; `data` is a valid WIN32_FIND_DATAW out-buffer
-    // for the FindExInfoBasic level.
+// The hand-written parser in `dirinfo` must match the Win32 layout.
+const _: () = {
+    use crate::dirinfo::offset as o;
+    use std::mem::offset_of;
+    use windows::Win32::Storage::FileSystem::FILE_ID_BOTH_DIR_INFO as I;
+    assert!(offset_of!(I, NextEntryOffset) == o::NEXT);
+    assert!(offset_of!(I, CreationTime) == o::CREATION);
+    assert!(offset_of!(I, LastAccessTime) == o::ACCESS);
+    assert!(offset_of!(I, LastWriteTime) == o::WRITE);
+    assert!(offset_of!(I, EndOfFile) == o::SIZE);
+    assert!(offset_of!(I, FileAttributes) == o::ATTRIBUTES);
+    assert!(offset_of!(I, FileNameLength) == o::NAME_LEN);
+    assert!(offset_of!(I, FileId) == o::FILE_ID);
+    assert!(offset_of!(I, FileName) == o::NAME);
+};
+
+/// Lists the children of folder `dir` (full path) with their file ids, calling
+/// `f(name, meta, file_id)` for each (`GetFileInformationByHandleEx`,
+/// `FileIdBothDirectoryInfo`, 64 KiB per call).
+pub fn list_dir_ids(dir: &str, mut f: impl FnMut(&[u16], Meta, u64)) -> io::Result<()> {
+    // `\\?\` lifts the MAX_PATH limit for drive paths.
+    let path = if dir.starts_with("\\\\") { dir.to_string() } else { format!("\\\\?\\{dir}") };
+    let path = wide(&path);
+    // SAFETY: `path` is NUL-terminated and outlives the call; BACKUP_SEMANTICS opens a
+    // directory handle; no security attributes or template.
     let h = unsafe {
-        FindFirstFileExW(
-            PCWSTR(pattern.as_ptr()),
-            FindExInfoBasic,
-            std::ptr::from_mut(&mut data).cast(),
-            FindExSearchNameMatch,
+        CreateFileW(
+            PCWSTR(path.as_ptr()),
+            FILE_LIST_DIRECTORY.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             None,
-            FIND_FIRST_EX_LARGE_FETCH,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            None,
         )
     }
     .map_err(to_io)?;
+    let h = Handle(h);
+    let mut buf = AlignedBuf::new(64 * 1024);
+    let mut name = Vec::with_capacity(256);
+    let mut class = FileIdBothDirectoryRestartInfo;
     loop {
-        let end = data.cFileName.iter().position(|&c| c == 0).unwrap_or(data.cFileName.len());
-        let name = &data.cFileName[..end];
-        if name != [b'.' as u16] && name != [b'.' as u16, b'.' as u16] {
-            let is_dir = data.dwFileAttributes & attr::DIRECTORY != 0;
-            let size = (u64::from(data.nFileSizeHigh) << 32) | u64::from(data.nFileSizeLow);
-            f(
-                name,
-                Meta {
-                    attributes: Some(data.dwFileAttributes),
-                    size: (!is_dir).then_some(size),
-                    date_modified: Some(filetime(
-                        data.ftLastWriteTime.dwLowDateTime,
-                        data.ftLastWriteTime.dwHighDateTime,
-                    )),
-                    date_created: Some(filetime(data.ftCreationTime.dwLowDateTime, data.ftCreationTime.dwHighDateTime)),
-                    date_accessed: Some(filetime(
-                        data.ftLastAccessTime.dwLowDateTime,
-                        data.ftLastAccessTime.dwHighDateTime,
-                    )),
-                },
-            );
+        let cap = buf.len_bytes() as u32;
+        // SAFETY: `buf` is an owned, 8-byte aligned buffer of `cap` bytes; `h` is an
+        // open directory handle; the call is synchronous.
+        let r = unsafe { GetFileInformationByHandleEx(h.0, class, buf.as_mut_ptr(), cap) };
+        match r {
+            Ok(()) => crate::dirinfo::for_each_entry(buf.bytes(cap as usize), &mut name, &mut f),
+            Err(e) if win32_code(&e) == code::NO_MORE_FILES => return Ok(()),
+            Err(e) => return Err(to_io(e)),
         }
-        // SAFETY: `h` is a valid find handle; `data` is a valid out-buffer.
-        if unsafe { FindNextFileW(h, &mut data) }.is_err() {
-            break;
-        }
+        class = FileIdBothDirectoryInfo;
     }
-    // SAFETY: `h` came from FindFirstFileExW and is closed once.
-    let _ = unsafe { FindClose(h) };
-    Ok(())
 }

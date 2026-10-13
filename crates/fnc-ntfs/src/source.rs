@@ -34,6 +34,11 @@ impl Default for NtfsOptions {
     }
 }
 
+/// MFT record number bits of an NTFS file reference.
+const RECORD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+/// MFT record of the `$Extend` metafile directory.
+const EXTEND_RECORD: u64 = 11;
+
 /// Lists local NTFS and ReFS volumes on fixed drives.
 // SPEC-GAP: removable NTFS drives are skipped until device-arrival/removal handling
 // (WM_DEVICECHANGE, DBT_DEVICEQUERYREMOVE) lands in M2; holding their volume handle
@@ -118,12 +123,37 @@ impl VolumeSource for NtfsSource {
         let mut failed: Option<SourceError> = None;
         let mut done = 0u64;
         let t0 = Instant::now();
+        let root_frn = self.root_frn;
+        // ReFS has no MFT; its (hashed) ids must not be mistaken for record 11.
+        let mut extend_emitted = self.drive.fs_name != "NTFS";
         // HighUsn = MAX: records modified while enumerating are included (not skipped);
         // replaying the journal from the position captured in `open` is idempotent.
         win::enum_mft(&self.handle, i64::MAX, |r| {
             if stop.is_stopped() {
                 failed = Some(SourceError::Stopped);
                 return false;
+            }
+            // `FSCTL_ENUM_USN_DATA` never returns the `$Extend` metafile directory (MFT
+            // record 11), but does return its children (`$RmMetadata`, `$Txf`, ...).
+            // Synthesize it under the root so they get their real path instead of
+            // landing in `$Orphans`.
+            if !extend_emitted && r.parent_frn & RECORD_MASK == EXTEND_RECORD && r.parent_frn != root_frn {
+                extend_emitted = true;
+                let extend: Vec<u16> = "$Extend".encode_utf16().collect();
+                let e = RawEntry {
+                    frn: r.parent_frn,
+                    parent_frn: root_frn,
+                    name: &extend,
+                    meta: fnc_index::Meta::attrs(
+                        fnc_core::flags::attr::DIRECTORY
+                            | fnc_core::flags::attr::HIDDEN
+                            | fnc_core::flags::attr::SYSTEM,
+                    ),
+                };
+                if let Err(err) = sink.entry(&e) {
+                    failed = Some(err);
+                    return false;
+                }
             }
             r.name_into(&mut name);
             let e = RawEntry {
@@ -202,11 +232,11 @@ impl VolumeSource for NtfsSource {
         out: &mut dyn MetaSink,
         stop: &StopFlag,
     ) -> Result<(), SourceError> {
-        DirLister.fetch(dirs, out, stop)
+        self.lister().fetch(dirs, out, stop)
     }
 
     fn metadata_fetcher(&self) -> Option<Box<dyn MetadataFetcher>> {
-        Some(Box::new(DirLister))
+        Some(Box::new(self.lister()))
     }
 
     fn enumerates_metadata(&self) -> bool {
@@ -218,9 +248,19 @@ impl VolumeSource for NtfsSource {
     }
 }
 
-/// Size/date back-fill by listing folders (`FindFirstFileExW`); needs no volume handle,
-/// so it runs concurrently with journal monitoring.
-struct DirLister;
+impl NtfsSource {
+    fn lister(&self) -> DirLister {
+        DirLister { file_ids: self.drive.fs_name == "NTFS" }
+    }
+}
+
+/// Size/date back-fill by listing folders (`FileIdBothDirectoryInfo`); needs no volume
+/// handle, so it runs concurrently with journal monitoring.
+struct DirLister {
+    /// The listing's 64-bit file ids equal the volume's FRNs (NTFS; not ReFS, whose
+    /// ids are 128-bit).
+    file_ids: bool,
+}
 
 impl MetadataFetcher for DirLister {
     fn fetch(&self, dirs: &[(EntryId, String)], out: &mut dyn MetaSink, stop: &StopFlag) -> Result<(), SourceError> {
@@ -228,7 +268,8 @@ impl MetadataFetcher for DirLister {
             if stop.is_stopped() {
                 return Err(SourceError::Stopped);
             }
-            if let Err(e) = win::list_dir(path, |name, meta| out.meta(*id, name, meta)) {
+            let ids = self.file_ids;
+            if let Err(e) = win::list_dir_ids(path, |name, meta, fid| out.meta(*id, name, meta, ids.then_some(fid))) {
                 tracing::debug!(dir = %path, error = %e, "cannot list folder");
             }
         }

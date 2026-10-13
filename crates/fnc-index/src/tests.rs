@@ -374,3 +374,80 @@ mod model {
         }
     }
 }
+
+#[test]
+fn hard_links_become_aliases() {
+    let (mut s, vol) = sample();
+    let cmd = s.resolve(EntryRef::Frn(vol, 12)).unwrap();
+    let users = s.resolve(EntryRef::Frn(vol, 20)).unwrap();
+    // A listing of C:\Users shows the same file (FRN 12) as "cmd-link.exe".
+    let touch = |name: &str, parent: u64, size: u64| Change::Touch {
+        volume: vol,
+        frn: 12,
+        parent: EntryRef::Frn(vol, parent),
+        name: u16s(name),
+        meta: file(size),
+    };
+    let st = s.apply(vec![touch("cmd-link.exe", 20, 300_000)]);
+    assert_eq!(st.created, 1);
+    assert_eq!(s.hardlink_count(cmd), 2);
+    let alias = s.children(users).find(|&c| s.name_string(c) == "cmd-link.exe").unwrap();
+    assert!(s.flags(alias).contains(fnc_core::EntryFlags::HARDLINK_ALIAS));
+    assert_eq!(s.size(alias), Some(300_000));
+    // Seeing a known name again only refreshes metadata (no duplicate, no rename).
+    let st = s.apply(vec![touch("cmd-link.exe", 20, 1), touch("cmd.exe", 11, 1)]);
+    assert_eq!((st.created, st.renamed, st.updated), (0, 0, 2));
+    assert_eq!(path(&s, cmd), "C:\\Windows\\System32\\cmd.exe");
+    assert_eq!((s.size(cmd), s.size(alias)), (Some(1), Some(1)));
+    // A USN create/rename record naming the alias does not move the primary.
+    s.apply(vec![Change::Create {
+        volume: vol,
+        frn: 12,
+        parent: EntryRef::Frn(vol, 20),
+        name: u16s("cmd-link.exe"),
+        meta: file(2),
+    }]);
+    assert_eq!(path(&s, cmd), "C:\\Windows\\System32\\cmd.exe");
+    // Metadata by FRN reaches every name.
+    s.apply(vec![Change::Meta { target: EntryRef::Frn(vol, 12), meta: file(5) }]);
+    assert_eq!(s.size(alias), Some(5));
+    // Compaction keeps the FRN on the primary and the alias list.
+    s.compact();
+    let cmd = s.resolve(EntryRef::Frn(vol, 12)).unwrap();
+    assert_eq!(s.name_string(cmd), "cmd.exe");
+    assert_eq!(s.hardlink_count(cmd), 2);
+    // Deleting the primary's folder hands the FRN to the alias.
+    s.apply(vec![Change::Delete(EntryRef::Frn(vol, 11))]);
+    let heir = s.resolve(EntryRef::Frn(vol, 12)).unwrap();
+    assert_eq!(path(&s, heir), "C:\\Users\\cmd-link.exe");
+    assert!(!s.flags(heir).contains(fnc_core::EntryFlags::HARDLINK_ALIAS));
+    // Deleting the file removes every remaining name.
+    s.apply(vec![touch("third.exe", 10, 5)]);
+    assert_eq!(s.hardlink_count(heir), 2);
+    let st = s.apply(vec![Change::Delete(EntryRef::Frn(vol, 12))]);
+    assert_eq!(st.deleted, 2);
+    assert!(!all_paths(&s).iter().any(|p| p.ends_with(".exe")));
+}
+
+#[test]
+fn touch_inserts_unknown_files_and_renames_folders() {
+    let (mut s, vol) = sample();
+    let st = s.apply(vec![Change::Touch {
+        volume: vol,
+        frn: 90,
+        parent: EntryRef::Frn(vol, 20),
+        name: u16s("missed.txt"),
+        meta: file(3),
+    }]);
+    assert_eq!(st.created, 1);
+    assert_eq!(path(&s, s.resolve(EntryRef::Frn(vol, 90)).unwrap()), "C:\\Users\\missed.txt");
+    // Folders cannot be hard-linked: a different name is a rename.
+    s.apply(vec![Change::Touch {
+        volume: vol,
+        frn: 20,
+        parent: EntryRef::Frn(vol, 5),
+        name: u16s("Users2"),
+        meta: dir(),
+    }]);
+    assert_eq!(path(&s, s.resolve(EntryRef::Frn(vol, 90)).unwrap()), "C:\\Users2\\missed.txt");
+}

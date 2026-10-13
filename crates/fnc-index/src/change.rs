@@ -67,6 +67,22 @@ pub enum Change {
         /// New values (`None` fields unchanged).
         meta: Meta,
     },
+    /// "The file `frn` currently has the name `name` in `parent`" without implying a
+    /// rename: from USN data/attribute records and folder listings. Unknown FRNs are
+    /// inserted (self-healing); a known file seen under a name it does not have yet
+    /// gets that name as a hard-link alias; otherwise only metadata is updated.
+    Touch {
+        /// Volume.
+        volume: VolumeId,
+        /// File reference number.
+        frn: u64,
+        /// Folder containing the name.
+        parent: EntryRef,
+        /// Name (UTF-16).
+        name: Box<[u16]>,
+        /// Metadata.
+        meta: Meta,
+    },
 }
 
 /// A batch applied under one write lock.

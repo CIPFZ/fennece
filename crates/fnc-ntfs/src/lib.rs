@@ -11,6 +11,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(windows, allow(unsafe_code))]
 
+pub mod dirinfo;
 pub mod journal;
 pub mod record;
 

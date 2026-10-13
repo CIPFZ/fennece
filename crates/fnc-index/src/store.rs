@@ -80,6 +80,9 @@ pub struct IndexStore {
     pub(crate) frn_maps: Vec<FrnMap>,
     pub(crate) orphans: Vec<Option<EntryId>>,
     pub(crate) name_order: NameOrder,
+    /// Additional (hard-link) names per file: `(volume, frn)` → alias rows. The FRN map
+    /// points at the primary row.
+    pub(crate) links: HashMap<(VolumeId, u64), Vec<EntryId>>,
     generation: u64,
     tree_generation: u64,
     instance: u64,
@@ -119,6 +122,7 @@ impl Clone for IndexStore {
             frn_maps: self.frn_maps.clone(),
             orphans: self.orphans.clone(),
             name_order: self.name_order.clone(),
+            links: self.links.clone(),
             generation: self.generation,
             tree_generation: self.tree_generation,
             instance: next_instance(),
@@ -159,6 +163,7 @@ impl IndexStore {
             frn_maps: Vec::new(),
             orphans: Vec::new(),
             name_order: NameOrder::default(),
+            links: HashMap::new(),
             generation: 0,
             tree_generation: 0,
             instance: next_instance(),
@@ -715,7 +720,7 @@ impl IndexStore {
     /// `true` if every entry the change refers to exists.
     fn is_resolvable(&self, change: &Change) -> bool {
         match change {
-            Change::Create { parent, .. } => self.resolve(*parent).is_some(),
+            Change::Create { parent, .. } | Change::Touch { parent, .. } => self.resolve(*parent).is_some(),
             Change::Delete(t) | Change::Meta { target: t, .. } => self.resolve(*t).is_some(),
             Change::Rename { target, new_parent, .. } => {
                 self.resolve(*target).is_some() && self.resolve(*new_parent).is_some()
@@ -733,7 +738,12 @@ impl IndexStore {
             Change::Delete(target) => match self.resolve(target) {
                 Some(id) => {
                     tree_changed |= self.is_dir(id);
-                    stats.deleted += self.delete_subtree(id, now);
+                    // The file is gone: all of its names go with it.
+                    for n in self.names_of(id) {
+                        if self.is_live(n) {
+                            stats.deleted += self.delete_subtree(n, now);
+                        }
+                    }
                 }
                 None => stats.unresolved += 1,
             },
@@ -751,14 +761,93 @@ impl IndexStore {
             },
             Change::Meta { target, meta } => match self.resolve(target) {
                 Some(id) => {
-                    self.update_meta(id, &meta);
-                    self.recent.insert(id, now);
+                    // Every name of a hard-linked file shares its metadata.
+                    for n in self.names_of(id) {
+                        self.update_meta(n, &meta);
+                        self.recent.insert(n, now);
+                    }
                     stats.updated += 1;
                 }
                 None => stats.unresolved += 1,
             },
+            Change::Touch { volume, frn, parent, name, meta } => {
+                tree_changed |= self.apply_touch(volume, frn, parent, &name, &meta, now, stats);
+            }
         }
         tree_changed
+    }
+
+    /// The primary entry of `id`'s file followed by its live hard-link aliases.
+    fn names_of(&self, id: EntryId) -> Vec<EntryId> {
+        let key = (self.volume[id.idx()], self.frn[id.idx()]);
+        let mut v = vec![id];
+        if let Some(links) = self.links.get(&key) {
+            v.extend(links.iter().copied().filter(|&l| l != id && self.is_live(l)));
+        }
+        v
+    }
+
+    /// Entry of file `frn` with name `fold` in folder `p` (primary or alias).
+    fn find_name(&self, primary: EntryId, p: EntryId, name: &[u16]) -> Option<EntryId> {
+        let mut fold = Vec::with_capacity(name.len());
+        fold_utf16_into(name, &mut fold);
+        self.names_of(primary).into_iter().find(|&n| self.parent(n) == p && self.fold(n) == fold.as_slice())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_touch(
+        &mut self,
+        volume: VolumeId,
+        frn: u64,
+        parent: EntryRef,
+        name: &[u16],
+        meta: &Meta,
+        now: FileTime,
+        stats: &mut ApplyStats,
+    ) -> bool {
+        let (Some(primary), Some(p)) = (self.resolve(EntryRef::Frn(volume, frn)), self.resolve(parent)) else {
+            // Unknown file: insert it (or report the missing parent).
+            return self.apply_create(volume, frn, parent, name, meta, now, stats);
+        };
+        if self.find_name(primary, p, name).is_some() {
+            for n in self.names_of(primary) {
+                self.update_meta(n, meta);
+            }
+            stats.updated += 1;
+            return false;
+        }
+        if self.is_dir(primary) {
+            // Folders cannot have hard links: this is a rename we have not seen.
+            return self.apply_create(volume, frn, parent, name, meta, now, stats);
+        }
+        // A new name of a known file: add a hard-link alias carrying the file's metadata.
+        let i = primary.idx();
+        let shared = Meta {
+            attributes: meta.attributes.or(Some(self.attr[i])),
+            size: meta.size.or((self.size[i] != SIZE_UNKNOWN).then_some(self.size[i])),
+            date_modified: meta.date_modified.or(self.dm[i].is_known().then_some(self.dm[i])),
+            date_created: meta.date_created.or(self.dc[i].is_known().then_some(self.dc[i])),
+            date_accessed: meta.date_accessed,
+        };
+        match self.push_row(volume, frn, p, name, &shared, EntryFlags::HARDLINK_ALIAS) {
+            Ok(id) => {
+                self.links.entry((volume, frn)).or_default().push(id);
+                self.children.add(p, id);
+                self.name_order.mark_dirty(id);
+                self.recent.insert(id, now);
+                stats.created += 1;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot insert hard-link alias");
+                stats.unresolved += 1;
+            }
+        }
+        false
+    }
+
+    /// Number of names (hard links) of the file of `id`.
+    pub fn hardlink_count(&self, id: EntryId) -> usize {
+        self.names_of(id).len()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -780,12 +869,15 @@ impl IndexStore {
             stats.unresolved += 1;
             return false;
         };
-        // A create for an FRN we already know (re-reported record): treat as move+meta.
+        // A create for an FRN we already know (re-reported record): treat as move+meta,
+        // unless the name is one the file already has (e.g. one of its hard links).
         if let Some(existing) = self.resolve(EntryRef::Frn(volume, frn)) {
-            if !self.is_ancestor_or_self(existing, p) {
+            if self.find_name(existing, p, name).is_none() && !self.is_ancestor_or_self(existing, p) {
                 self.rename(existing, name, p, now);
             }
-            self.update_meta(existing, meta);
+            for n in self.names_of(existing) {
+                self.update_meta(n, meta);
+            }
             stats.renamed += 1;
             return self.is_dir(existing);
         }
@@ -875,6 +967,21 @@ impl IndexStore {
         for &d in &doomed {
             let i = d.idx();
             let vol = self.volume[i];
+            let key = (vol, self.frn[i]);
+            if let Some(links) = self.links.get_mut(&key) {
+                links.retain(|&l| l != d && !self.flags[l.idx()].contains(EntryFlags::DELETED));
+                // A deleted primary hands the FRN over to a surviving alias.
+                if !self.flags[i].contains(EntryFlags::HARDLINK_ALIAS)
+                    && let Some(&heir) = links.first()
+                {
+                    links.remove(0);
+                    self.flags[heir.idx()].set(EntryFlags::HARDLINK_ALIAS, false);
+                    self.frn_maps[vol.idx()].insert(key.1, heir);
+                }
+                if links.is_empty() {
+                    self.links.remove(&key);
+                }
+            }
             self.frn_maps[vol.idx()].remove(self.frn[i], d);
             if self.flags[i].contains(EntryFlags::IS_DIR) {
                 self.folders -= 1;
@@ -954,6 +1061,13 @@ impl IndexStore {
         self.run = self.run.iter().filter(|(k, _)| remap[k.idx()] != u32::MAX).map(|(k, v)| (map_id(*k), *v)).collect();
         self.recent =
             self.recent.iter().filter(|(k, _)| remap[k.idx()] != u32::MAX).map(|(k, v)| (map_id(*k), *v)).collect();
+        self.links = std::mem::take(&mut self.links)
+            .into_iter()
+            .filter_map(|(k, v)| {
+                let v: Vec<EntryId> = v.into_iter().map(map_id).filter(|e| e.is_some()).collect();
+                (!v.is_empty()).then_some((k, v))
+            })
+            .collect();
         for v in &mut self.volumes {
             v.roots = v.roots.iter().map(|&r| map_id(r)).filter(|r| r.is_some()).collect();
         }
@@ -964,7 +1078,7 @@ impl IndexStore {
             let in_vol = |n: &usize| self.volume[*n].idx() == vi;
             let pairs: Vec<(u64, EntryId)> = (0..order.len())
                 .filter(in_vol)
-                .filter(|&n| self.frn[n] != ORPHANS_FRN)
+                .filter(|&n| self.frn[n] != ORPHANS_FRN && !self.flags[n].contains(EntryFlags::HARDLINK_ALIAS))
                 .map(|n| (self.frn[n], EntryId(n as u32)))
                 .collect();
             let ntfs_like = matches!(self.volumes[vi].info.kind, VolumeKind::Ntfs);
