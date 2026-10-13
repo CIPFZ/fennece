@@ -253,7 +253,21 @@ fn worker(
 ) {
     let mut cur = Desired::default();
     let mut run = Running::default();
-    while let Ok(mut want) = rx.recv() {
+    loop {
+        // While a real Everything owns the IPC window, try again every 30 s (it may exit).
+        let conflict = status.lock().compat == CompatStatus::Conflict;
+        let (mut want, retry) = if conflict {
+            match rx.recv_timeout(COMPAT_RETRY) {
+                Ok(w) => (w, false),
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => (cur.clone(), true),
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            match rx.recv() {
+                Ok(w) => (w, false),
+                Err(_) => break,
+            }
+        };
         // Only the latest configuration matters.
         while let Ok(w) = rx.try_recv() {
             want = w;
@@ -273,7 +287,9 @@ fn worker(
                     }
                 });
         }
-        if want.compat != cur.compat || (want.compat && run.compat.is_none() && st.compat != CompatStatus::Conflict) {
+        if want.compat != cur.compat
+            || (want.compat && run.compat.is_none() && (st.compat != CompatStatus::Conflict || retry))
+        {
             run.compat = None;
             st.compat = if want.compat { start_compat(instance, backend, &mut run) } else { CompatStatus::Off };
         }
@@ -306,6 +322,9 @@ fn worker(
     drop(run.compat.take());
     drop(run.ipc.take());
 }
+
+/// Retry interval for the Everything IPC window while Everything itself owns it.
+const COMPAT_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn start_compat(instance: &str, backend: &Arc<IndexBackend>, run: &mut Running) -> CompatStatus {
     use fnc_platform::compat::{CompatConfig, CompatError, CompatWindow};
