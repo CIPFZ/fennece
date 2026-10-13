@@ -261,7 +261,7 @@ impl FennecApp {
         }
         let fmt = self.settings.date_format;
         let now = FileTime::now();
-        egui::ScrollArea::vertical().id_salt("preview-scroll").show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("preview-scroll").auto_shrink([false, false]).show(ui, |ui| {
             if let Some((n, total, types)) = &self.preview.multi {
                 ui.heading(t_args("preview-selected", &[("count", (*n).into())]));
                 ui.label(t_args("preview-total-size", &[("size", crate::format::size(*total).into())]));
