@@ -119,6 +119,7 @@ fn names(s: &IndexStore, p: &PropertyStore, q: &str) -> Vec<String> {
         on_demand: None,
         policy: SlowPolicy::default(),
         semantic: None,
+        system_index: None,
     };
     let rs = execute_ext(&planned, s, &ExecCtx { cancel: &cancel, prev: None, caches: &caches }, &ext).unwrap();
     let mut v: Vec<String> = rs.ids.iter().map(|&i| s.name_string(i)).collect();

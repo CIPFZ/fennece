@@ -154,6 +154,7 @@ impl<'a> Run<'a> {
             on_demand: self.on_demand.as_ref(),
             policy: self.policy,
             semantic: None,
+            system_index: None,
         };
         execute_ext(&p, self.s, &ExecCtx { cancel: &cancel, prev: None, caches: &caches }, &ext).unwrap()
     }

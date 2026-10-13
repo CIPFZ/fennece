@@ -330,10 +330,19 @@ impl Lexer<'_, '_> {
         let mut quote_len = 0usize;
         let mut quote_start = start;
         let mut literal_rest = false;
+        // `si*:"a phrase"`: the system index gets the rest verbatim, double quotes
+        // included (they make an AQS phrase).
+        let mut keep_quotes = false;
         while let Some(c) = self.peek(0) {
             let pos = self.pos();
             if in_quote {
                 match c {
+                    '"' if keep_quotes => {
+                        out.push(Ch { c: '"', lit: true, pos });
+                        in_quote = false;
+                        self.i += 1;
+                        continue;
+                    }
                     '"' => {
                         if self.peek(1) == Some('"') && quote_len > 0 {
                             out.push(Ch { c: '"', lit: true, pos });
@@ -369,6 +378,9 @@ impl Lexer<'_, '_> {
                     in_quote = true;
                     quote_len = 0;
                     quote_start = pos;
+                    if keep_quotes {
+                        out.push(Ch { c: '"', lit: true, pos });
+                    }
                     self.i += 1;
                     continue;
                 }
@@ -381,9 +393,10 @@ impl Lexer<'_, '_> {
                     let mut norm = String::new();
                     normalize_name(ident.trim_start_matches(['?', ':']), &mut norm);
                     if out.iter().all(|ch| !ch.lit && (is_ident_char(ch.c) || ch.c == '?' || ch.c == ':'))
-                        && lookup_function(&norm).is_some()
+                        && let Some(f) = lookup_function(&norm)
                     {
                         literal_rest = true;
+                        keep_quotes = f == FuncId::SystemIndex;
                     }
                 }
                 _ => {}

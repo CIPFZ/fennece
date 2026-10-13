@@ -64,6 +64,9 @@ pub struct SearchOptions {
     pub slow: SlowPolicy,
     /// Embedding index for `sem:` terms; `None` = semantic search off (zero cost).
     pub semantic: Option<Shared<dyn SemanticSource>>,
+    /// Windows Search system index for `si:`; `None` = `si:` finds nothing (with a
+    /// warning).
+    pub system_index: Option<Shared<dyn crate::sysindex::SystemIndexSource>>,
     /// Smart mode: also send plain searches to the semantic channel and fuse the
     /// rankings (as if every search started with `?sem:`).
     pub semantic_fuse: bool,
@@ -91,6 +94,7 @@ impl Default for SearchOptions {
             on_demand: None,
             slow: SlowPolicy::default(),
             semantic: None,
+            system_index: None,
             semantic_fuse: false,
             formulas: Vec::new(),
         }
@@ -389,6 +393,7 @@ fn run(
         on_demand: req.options.on_demand.as_ref().map(|o| &o.0),
         policy: req.options.slow,
         semantic: req.options.semantic.as_ref().map(|v| &v.0),
+        system_index: req.options.system_index.as_ref().map(|v| &v.0),
     };
     let env = PlanEnv {
         defaults: req.options.defaults,

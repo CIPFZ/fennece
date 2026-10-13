@@ -9,6 +9,8 @@
 //!   formula and type-description keys).
 //! * [`files`] — `target:`, `fsi:` and `recycled:` (file reads on the slow path, recycle
 //!   bin membership from the index).
+//! * [`sysindex`] — `si:` (the Windows Search system index, through a source the app
+//!   installs).
 //! * [`highlight`] — match ranges for visible rows.
 //! * [`engine`] — the background search service used by every front end.
 
@@ -29,6 +31,7 @@ pub mod pinyin;
 pub mod semantic;
 pub mod sets;
 pub mod sort;
+pub mod sysindex;
 pub mod tree;
 pub mod types;
 
@@ -43,6 +46,7 @@ pub use ext::{ExecWarning, ExtCtx, Shared, SlowPolicy, content_highlights};
 pub use highlight::Highlighter;
 pub use semantic::{SemHit, SemanticSource};
 pub use sort::{SortColumn, SortExt, SortKey, SortSpec, sort_ids, sort_ids_ext, sort_ids_with};
+pub use sysindex::{SystemIndexError, SystemIndexHits, SystemIndexSource};
 pub use types::{TypeNameFn, TypeNames};
 
 #[cfg(test)]
@@ -53,3 +57,5 @@ mod tests_ext;
 mod tests_files;
 #[cfg(test)]
 mod tests_sem;
+#[cfg(test)]
+mod tests_sysindex;

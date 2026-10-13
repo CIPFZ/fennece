@@ -9,6 +9,7 @@
 //! * [`ifilter`] — IFilter text extraction in a separate host process (client, protocol, host).
 //! * [`session`] — session id / integrity level of IPC clients.
 //! * [`compat`] — the hidden Everything-compatible IPC window.
+//! * [`winsearch`] — queries of the Windows Search system index (`si:`).
 //!
 //! `unsafe` is permitted here (and in `fnc-ntfs`) for Win32 calls only; every block
 //! carries a safety argument.
@@ -31,5 +32,6 @@ pub mod shell;
 pub mod source;
 pub mod thumb;
 pub mod walk;
+pub mod winsearch;
 
 pub use source::{ChangeSink, EntrySink, MetaSink, MetadataFetcher, RawEntry, SourceError, StopFlag, VolumeSource};

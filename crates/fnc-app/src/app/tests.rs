@@ -100,9 +100,9 @@ fn typing_searches_and_keyboard_navigates() {
     wait_until(&mut h, "cleared search", |a| a.v.query.is_empty() && a.v.results.len() == 7);
 
     // Unsupported functions are reported in the status bar, not silently ignored.
-    h.get_by_role(Role::TextInput).type_text("si:x");
+    h.get_by_role(Role::TextInput).type_text("random:x");
     wait_until(&mut h, "diagnostic", |a| !a.v.diagnostics.is_empty());
-    assert!(h.state().v.diagnostics[0].contains("si"));
+    assert!(h.state().v.diagnostics[0].contains("random"));
 }
 
 #[test]
