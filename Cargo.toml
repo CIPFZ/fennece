@@ -114,3 +114,8 @@ debug = "line-tables-only"
 
 [profile.bench]
 inherits = "release"
+
+# Vendored llama.cpp with EmbeddingGemma-2 support (ADR-020).
+[patch.crates-io]
+llama-cpp-sys-2 = { path = "third_party/llama-cpp-sys-2" }
+llama-cpp-2 = { path = "third_party/llama-cpp-2" }
