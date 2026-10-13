@@ -80,3 +80,24 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 - [M4][fnc-app] File → Export and Copy as CSV/EFU through `fnc_ipc::export` (EFU/CSV/TSV/JSON/M3U/M3U8/TXT by extension, visible columns) (INT-07).
 - [M4][fnc-app] Enter runs a `/key=value` inline command instead of opening the selection; passwords are masked in Options and never echoed.
 - [M4][docs] ADR-034, `docs/reports/M4.md`.
+
+## M5 — semantic search
+- [M5][third_party] vendored `llama-cpp-sys-2`/`llama-cpp-2` 0.1.159 with llama.cpp master (EmbeddingGemma-2 `gemma-embedding2`), trimmed to 42 MB (ADR-020).
+- [M5][fnc-semantic] `Embedder` trait, llama.cpp embedder with separate query/index contexts, Matryoshka truncation, `ModelHost` (lazy load, idle unload, failed-load cache), task prefixes, model registry (`models.toml`), chunker (noise-free file names, sentence-bounded text with overlap, code windows), usearch int8 cosine store with chunk reuse by text hash, checksummed save/load, compaction, background semantic indexer (scope, debounce, CPU limit, status), RRF (ADR-021).
+- [M5][sem-eval] `sem-eval` (Recall@1/@10, MRR, query p95) and `tools/sem-corpus.py` (10k-document acceptance corpus).
+- [M5][fnc-query] `sem:` `semantic:` `semname:` `semcontent:` `semcode:` `semimage:`, `sem:>0.6 text`, `sem-min-score:`, `sem-top:`, `?sem:`; semantic plans never reuse previous results.
+- [M5][fnc-exec] `SemanticSource`; top-level terms run after the literal filters (exact scoring below 5000 candidates, widening ANN above), nested terms as ANN sets; `?sem:`/smart-mode fusion; `SortColumn::Relevance`; best chunk per hit.
+- [M5][fnc-app] semantic search in the app: engine from settings, index catalog, model download with SHA-256 check, "Semantic" toggle, status bar, setup window, relevance column, preview of the matching passage, `semantic_gpu_layers` + `vulkan` feature (SEM-06/07 kittests).
+- [M5][fnc-platform] `process::{cpu_time, private_bytes}` (CPU-limit and memory checks).
+- [M5] measured: query embedding 32–85 ms (Linux, 8 threads) / p95 78 ms (Windows); ANN top-200 over 1M vectors p95 1.27 ms; sem-eval Recall@1 100 % on the sample corpus.
+
+## M6 — polish
+- [M6][fnc-query][fnc-exec] `eval:` formulas: Excel-style operators and ~70 functions over entry fields and every property; formula-aware lexing of `<`/`>`.
+- [M6][fnc-app] custom columns 1–9 (`custom_columns`, `Title=formula`).
+- [M6][fnc-app] tabs (Ctrl+T/W/Tab, per-tab search/sort/selection/engine, tab bar) and sessions (`restore_session`, `session.toml`).
+- [M6][fnc-app] find bar (case/whole word/regex, F3/Shift+F3, `findbar_ctrl_f`).
+- [M6][fnc-app] folder/bookmark sidebar (lazy tree, `"path\"` search, shell menu, drag-to-reorder bookmarks), customizable toolbar, back/forward per tab (Alt+Left/Right).
+- [M6][fnc-app][fnc-platform] advanced rename (template variables, counter, literal/regex find-replace, case, trim, conflict preview, swap-safe steps) and undo/redo (Ctrl+Z/Ctrl+Y) of delete (recycle-bin restore via `undelete`), rename, new folder and advanced rename; cross-device trash on Linux.
+- [M6][fnc-app] UI languages: en, zh-CN, zh-TW, ja, de, fr, ru, pl, tr; high-contrast theme.
+- [M6][packaging] portable zip and WiX MSI (service, Explorer menu, autostart features); settings/Everything.ini import, filters/bookmarks/history CSV export.
+- [M6] Linux backend: folder index + inotify, freedesktop trash; the app runs under X11 (verified on Xvfb).

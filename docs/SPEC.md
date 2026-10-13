@@ -956,6 +956,16 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | IPC 重建数据库（`REBUILD_DB` / `Op::Rebuild`）| 重建索引 | 运行中的应用拒绝（返回失败）；需以 `-reindex` 重启 | 索引源在启动时固定，索引器不能原地重启（ADR-034，SPEC-GAP）|
 | IPC 管理命令鉴权 | — | 原生管道客户端须与 Fennec 同会话且完整性 ≥ Medium（Linux：同 uid）；Everything 兼容窗口的客户端不额外校验（窗口消息不跨会话，受 UIPI 约束，`EVERYTHING_WM_IPC` 不带发送者）；HTTP 不执行管理命令 | SPEC 第 4 章 §3.1（ADR-034）|
 | `-instance` 与服务 | — | 每个实例连接自己的服务管道 `Fennec.<instance>.svc`；安装包只为默认实例安装服务，其他实例以非管理员运行时退回文件夹索引 | SPEC 第 4 章 §8：服务管道按实例命名 |
+| `sem:` 系列（Fennec 扩展）| 无 | `sem:` `semantic:` `semname:` `semcontent:` `semcode:` 语义检索；`sem:>0.6 文本` / `sem-min-score:` 阈值；`sem-top:` 候选数；`?sem:` 与工具栏"语义"开关把整条搜索同时送语义通道并 RRF 融合 | 第 5 章 |
+| `semimage:` | 无 | 解析并返回"本版本不含多模态投影模型"提示，结果为空 | llama-cpp-2 未暴露嵌入模型的 mtmd 图片路径（ADR-021，SPEC `[MAY]`）|
+| 语义索引后台优先级 | — | CPU 限额以 llama.cpp 线程数实现（默认 25%）；未使用 THREAD_MODE_BACKGROUND_BEGIN | llama.cpp/ggml 的工作线程不继承调用线程优先级（SPEC-GAP，ADR-021）|
+| 语义索引吞吐 | — | CPU（Q8_0，2 线程）实测约 2 块/秒（≈500 token/s），低于第 5 章 §4 的 ≥20 块/秒 | 270M 模型在 CPU 上受算力限制；`vulkan` 特性 + `semantic_gpu_layers` 可用 GPU 加速 |
+| 模型/维度变更 | — | 立即改用新的空向量库并后台重建，期间语义结果来自已重建部分 | 新旧模型向量不可比较，同时驻留两模型内存翻倍（ADR-021）|
+| `eval:` 公式 | Excel 风格公式 | 约 70 个函数（IF/IFS/SWITCH/AND/OR/LEN/LEFT/MID/SUBSTITUTE/SEARCH/ROUND/MOD/DATE/YEAR/… 以及 STARTSWITH/ENDSWITH/CONTAINS 扩展）；变量 `$name:` `$stem:` `$ext:` `$path:` `$parent:` `$fullpath:` `$size:` `$dm:` `$dc:` `$da:` `$dr:` `$rc:` `$attrib:` `$depth:` `$runcount:` `$isfolder:` 及全部属性名；数字可带大小单位（`1.5mb`）；未加引号时 `<` `>` 在 `eval:` 值内视为运算符 | 官方未给出完整函数表（SPEC-GAP）|
+| 自定义列 | 可排序 | `custom_columns`（`标题=公式`，最多 9 列）只显示不排序 | 值逐行计算，未进入排序引擎（SPEC-GAP）|
+| 撤销 | — | 记录 Fennec 发起的删除（回收站）、重命名、新建文件夹、高级重命名；剪贴板/拖放的移动与复制、永久删除不记录 | Shell 不回报粘贴/拖放结果；永久删除不可逆 |
+| 查找栏 | Ctrl+F（查找栏模式）| 默认 Ctrl+F 仍聚焦搜索框（Everything 默认）；`findbar_ctrl_f` 打开后在结果列表中 Ctrl+F 打开查找栏；F3/Shift+F3 在查找栏打开时查找下一个/上一个 | 与 Everything 默认行为一致 |
+| ETP/FTP 服务器 | 支持 | 未实现 | SPEC `[MAY]` |
 
 ---
 
