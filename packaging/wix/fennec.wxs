@@ -29,9 +29,11 @@
       <Component Id="FesExe" Guid="*" Win64="yes">
         <File Id="fes.exe" Source="$(var.BinDir)\fes.exe" KeyPath="yes" />
       </Component>
-      <Component Id="Licenses" Guid="*" Win64="yes">
+      <Component Id="LicenseMit" Guid="*" Win64="yes">
         <File Id="LICENSE_MIT" Source="$(var.SrcDir)\LICENSE-MIT" KeyPath="yes" />
-        <File Id="LICENSE_APACHE" Source="$(var.SrcDir)\LICENSE-APACHE" />
+      </Component>
+      <Component Id="LicenseApache" Guid="*" Win64="yes">
+        <File Id="LICENSE_APACHE" Source="$(var.SrcDir)\LICENSE-APACHE" KeyPath="yes" />
       </Component>
     </ComponentGroup>
 
