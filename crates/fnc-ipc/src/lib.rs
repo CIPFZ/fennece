@@ -5,8 +5,22 @@
 //!
 //! ```text
 //! // 1. Backend: queries run on index snapshots, independent of the UI's SearchEngine.
-//! pub trait Host: Send + Sync { /* all methods have defaults, see `Host` */ }
+//! pub trait Host: Send + Sync {                       // every method has a default
+//!     fn search_options(&self) -> fnc_exec::SearchOptions;          // precedence, macros, type names…
+//!     fn folders_first(&self) -> fnc_core::settings::FoldersFirst;
+//!     fn is_db_loaded(&self) -> bool;  fn is_busy(&self) -> bool;
+//!     fn is_admin(&self) -> bool;      fn is_appdata(&self) -> bool;
+//!     fn status_text(&self) -> String;
+//!     fn authorize(&self, cmd: AdminCommand, peer: &Peer) -> bool;    // default: allow
+//!     fn command(&self, cmd: AdminCommand) -> Result<(), HostError>;  // Rebuild/Update/SaveDb/
+//!                                                     // SaveRunHistory/DeleteRunHistory/Exit
+//!     fn run_count_changed(&self);                     // after IPC changed a run count
+//!     fn filters(&self) -> Vec<FilterEntry>;  fn bookmarks(&self) -> Vec<BookmarkEntry>;
+//!     fn command_line(&self, show_command: u32, command_line: &str) -> bool;
+//!     fn everything_version(&self) -> [u32; 4];        // default 1.4.1.<fennec build>
+//! }
 //! pub fn IndexBackend::new(shared: fnc_index::SharedIndex, host: Arc<dyn Host>) -> IndexBackend
+//! pub fn IndexBackend::with_config(shared, host, config: BackendConfig) -> IndexBackend
 //!
 //! // 2. Native protocol server (`\\.\pipe\Fennec.<instance>.ipc`):
 //! pub fn server::spawn(instance: &str, backend: Arc<IndexBackend>, config: ServerConfig)
@@ -41,9 +55,13 @@
 //!
 //! ## Win32 plumbing expected from the app (sketch)
 //!
+//! Working reference: `examples/compat_window.rs` (verified with official es.exe 1.1.0.38 and
+//! Everything64.dll, ADR-031).
+//!
 //! ```text
-//! RegisterClassW(compat::window_class(instance)); CreateWindowExW(.., HWND_MESSAGE?) // must be
-//!   // a top-level hidden window: FindWindow() does not see message-only windows.
+//! RegisterClassW(compat::window_class(instance));
+//! CreateWindowExW(0, class, class, WS_OVERLAPPED, 0, 0, 0, 0, None, ..) // top-level, never shown:
+//!   // FindWindow() does not see HWND_MESSAGE (message-only) windows.
 //! WndProc:
 //!   EVERYTHING_WM_IPC (WM_USER) => return compat::handle_wm_ipc(wParam, lParam, &backend)
 //!   WM_COPYDATA => {
@@ -55,7 +73,8 @@
 //!                 if let Some(r) = out.reply { SendMessageTimeoutW(r.hwnd, WM_COPYDATA, our_hwnd,
 //!                     &COPYDATASTRUCT { dwData: r.copydata_id, cbData: r.bytes.len(), lpData: r.bytes }) }
 //!                 return TRUE }
-//!           Ok(other) => return execute_copydata(&other, &backend).result,  // run counts: fast
+//!           Ok(other) => return execute_copydata(&other, &backend).result,  // run counts: take the
+//!                                                     // index write lock briefly (a worker is safer)
 //!       }
 //!   }
 //! ChangeWindowMessageFilterEx(hwnd, WM_COPYDATA / WM_USER, MSGFLT_ALLOW) so non-elevated
@@ -63,8 +82,11 @@
 //! (`FindWindowW("EVERYTHING_TASKBAR_NOTIFICATION")` from another process) is running.
 //! ```
 //!
+//! Searches from every front end may contain the Everything 1.5 `count:<max>` limit (es 1.1.0.38
+//! sends `-n` that way); [`backend::extract_count_limit`] applies it after sorting.
+//!
 //! Modules: [`proto`] (wire types, frames), [`backend`] (execution, [`Host`]), [`server`],
-//! [`client`], [`compat`] (Everything 1.4), [`export`] and [`format`] (es formats), [`rows`].
+//! [`client`], [`compat`] (Everything 1.4), [`export`] and [`mod@format`] (es formats), [`rows`].
 
 #![forbid(unsafe_code)]
 
