@@ -643,3 +643,5 @@ sidebar-no-bookmarks = Закладок пока нет (Закладки → Д
 cmd-theme-high-contrast = Высокая контрастность
 col-relevance = Релевантность
 col-custom = Пользовательский { $n }
+cmd-rebuild-index = Перестроить индекс
+msg-rebuilding-index = Индекс перестраивается; до завершения поиск идёт по текущему индексу

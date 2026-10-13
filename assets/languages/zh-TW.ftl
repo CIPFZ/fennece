@@ -552,3 +552,5 @@ sidebar-no-bookmarks = 尚無書籤（「書籤」→「加入書籤」）。
 cmd-theme-high-contrast = 高對比
 col-relevance = 相關度
 col-custom = 自訂 { $n }
+cmd-rebuild-index = 重建索引
+msg-rebuilding-index = 正在重建索引；完成前搜尋仍使用目前的索引

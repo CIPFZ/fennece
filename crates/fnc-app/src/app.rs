@@ -57,6 +57,9 @@ use crate::indexer::{IndexEvent, IndexStatus, Indexer};
 const ACCENT: Color32 = Color32::from_rgb(0xE8, 0x76, 0x2B);
 const SEARCH_ID: &str = "fennec-search";
 
+/// Restarts indexing from scratch with the current settings.
+pub type Reindex = Arc<dyn Fn(&mut Indexer, &Settings) + Send + Sync>;
+
 /// Everything the window needs from `main`.
 pub struct AppDeps {
     /// Shared index.
@@ -74,6 +77,8 @@ pub struct AppDeps {
     pub instance: Option<Primary>,
     /// Indexer handle (stopped on exit).
     pub indexer: Indexer,
+    /// Rebuilds the index while running (Tools → Rebuild Index, IPC `REBUILD_DB`).
+    pub reindex: Option<Reindex>,
     /// Property, content and hash stores (M3).
     pub stores: Arc<crate::stores::Stores>,
     /// Settings.
@@ -236,6 +241,7 @@ pub struct FennecApp {
     index_rx: Receiver<IndexEvent>,
     instance: Option<Primary>,
     indexer: Indexer,
+    reindex: Option<Reindex>,
     stores: Arc<crate::stores::Stores>,
     settings: Settings,
     settings_path: PathBuf,
@@ -352,6 +358,7 @@ impl FennecApp {
             index_rx: deps.index_rx,
             instance: deps.instance,
             indexer: deps.indexer,
+            reindex: deps.reindex,
             stores: deps.stores,
             keymap,
             columns,
@@ -516,6 +523,20 @@ impl FennecApp {
         self.v.query = q;
         self.v.complete.close();
         self.send_search();
+    }
+
+    /// Rebuilds the index from scratch with the current settings (Tools → Rebuild Index,
+    /// IPC `REBUILD_DB`, changed index sources).
+    pub(super) fn rebuild_index(&mut self) {
+        let Some(r) = self.reindex.clone() else {
+            self.say(t("msg-restart-required"));
+            return;
+        };
+        self.indexer.save();
+        r(&mut self.indexer, &self.settings);
+        self.indexer.set_paused(self.settings.pause_updates);
+        self.status = IndexStatus::Starting;
+        self.say(t("msg-rebuilding-index"));
     }
 
     /// The index was renumbered: every view keeps its selection, cursor, omitted entries
@@ -1169,6 +1190,7 @@ impl FennecApp {
                 self.indexer.save();
                 self.say(t("msg-db-saved"));
             }
+            K::RebuildIndex => self.rebuild_index(),
             K::PauseUpdates => self.toggle_pause(),
             K::IndexJournal => {
                 let file = crate::filters::data_file(&self.settings_path, "journal.tsv");
@@ -1878,14 +1900,24 @@ impl FennecApp {
             self.v.rows.clear();
         }
         self.stores.configure(s);
-        let restart = old.language != s.language
-            || old.ntfs_auto_include != s.ntfs_auto_include
+        // What is indexed changed: rebuild in the background (searches keep the old
+        // index until the new one is published).
+        let sources = old.ntfs_auto_include != s.ntfs_auto_include
             || old.ntfs_exclude_volumes != s.ntfs_exclude_volumes
             || old.folders != s.folders
             || old.file_lists != s.file_lists
             || old.index_date_accessed != s.index_date_accessed
-            || old.db_save_interval != s.db_save_interval;
-        if restart {
+            || old.db_save_interval != s.db_save_interval
+            || old.exclude_hidden != s.exclude_hidden
+            || old.exclude_system != s.exclude_system
+            || old.exclude_folders != s.exclude_folders
+            || old.exclude_files != s.exclude_files
+            || old.exclude_gitignore_roots != s.exclude_gitignore_roots
+            || old.folder_watch != s.folder_watch
+            || old.folder_rescan_interval != s.folder_rescan_interval;
+        if sources && self.reindex.is_some() {
+            self.rebuild_index();
+        } else if sources || old.language != s.language {
             self.say(t("msg-restart-required"));
         }
         self.semantic_apply(&old);

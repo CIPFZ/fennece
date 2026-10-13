@@ -609,3 +609,5 @@ sidebar-no-bookmarks = Noch keine Lesezeichen (Lesezeichen → Zu Lesezeichen hi
 cmd-theme-high-contrast = Hoher Kontrast
 col-relevance = Relevanz
 col-custom = Benutzerdefiniert { $n }
+cmd-rebuild-index = Index neu aufbauen
+msg-rebuilding-index = Der Index wird neu aufgebaut; bis dahin wird der aktuelle durchsucht

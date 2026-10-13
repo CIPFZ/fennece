@@ -49,6 +49,7 @@ pub(super) fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedInde
         index_rx,
         instance: None,
         indexer,
+        reindex: None,
         stores,
         settings,
         settings_path: dir.join("settings.toml"),

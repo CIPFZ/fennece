@@ -247,6 +247,7 @@ impl FennecApp {
                 self.item(ui, K::IndexJournal, &mut out);
                 self.item(ui, K::SemanticSetup, &mut out);
                 self.item(ui, K::SaveDatabase, &mut out);
+                self.item(ui, K::RebuildIndex, &mut out);
                 ui.separator();
                 self.item(ui, K::InstallService, &mut out);
                 self.item(ui, K::UninstallService, &mut out);

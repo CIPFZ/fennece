@@ -624,3 +624,5 @@ sidebar-no-bookmarks = Aucun signet pour l'instant (Signets → Ajouter aux sign
 cmd-theme-high-contrast = Contraste élevé
 col-relevance = Pertinence
 col-custom = Personnalisée { $n }
+cmd-rebuild-index = Reconstruire l’index
+msg-rebuilding-index = Reconstruction de l’index ; l’index actuel reste utilisé jusqu’à la fin

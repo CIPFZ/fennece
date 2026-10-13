@@ -230,6 +230,8 @@ commands! {
     UninstallService = "uninstall-service",
     /// Save the database now.
     SaveDatabase = "save-database",
+    /// Rebuild the index from scratch (`-reindex` while running).
+    RebuildIndex = "rebuild-index",
     /// Pause/resume applying index updates.
     PauseUpdates = "pause-updates",
     /// Show the index journal (recent changes).

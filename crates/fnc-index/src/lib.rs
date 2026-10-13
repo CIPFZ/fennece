@@ -25,7 +25,7 @@ pub mod volume;
 pub use change::{ApplyStats, Change, ChangeBatch, EntryRef, Meta, PathChange, RelPath};
 pub use error::{IndexError, Result};
 pub use order::NameOrder;
-pub use shared::{IndexSnapshot, SharedIndex};
+pub use shared::{EpochIndex, IndexSnapshot, SharedIndex};
 pub use store::{
     BulkLoader, BulkStats, IndexOptions, IndexStats, IndexStore, RunInfo, SIZE_UNKNOWN, path_frn, path_frn_probe,
 };

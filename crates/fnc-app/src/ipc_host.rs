@@ -27,6 +27,8 @@ pub enum HostEvent {
     Refresh,
     /// An Everything command line (`COMMAND_LINE_UTF8`), split into arguments.
     CommandLine(Vec<String>),
+    /// Rebuild the index (`REBUILD_DB`, `Op::Rebuild`).
+    Rebuild,
 }
 
 /// State mirrored from the UI.
@@ -229,9 +231,11 @@ impl Host for AppHost {
     fn command(&self, cmd: AdminCommand) -> Result<(), HostError> {
         tracing::info!(?cmd, "IPC command");
         match cmd {
-            // SPEC-GAP: the indexer cannot restart while running (sources are fixed at
-            // start-up, like `-reindex`); rebuilding needs a restart with `-reindex`.
-            AdminCommand::Rebuild => Err(HostError::Unsupported),
+            // The UI thread owns the indexer and restarts it (Indexer::restart).
+            AdminCommand::Rebuild => {
+                self.send(HostEvent::Rebuild);
+                Ok(())
+            }
             AdminCommand::Update => {
                 let c = self.control.as_ref().ok_or(HostError::Unsupported)?;
                 c.rescan_folders();
@@ -353,7 +357,8 @@ mod tests {
             rx.recv_timeout(Duration::from_secs(1)).unwrap(),
             HostEvent::CommandLine(vec!["-s".into(), "abc".into()])
         );
-        assert!(backend.handle(&Op::Rebuild, &Peer::LOCAL).is_err());
+        assert!(backend.handle(&Op::Rebuild, &Peer::LOCAL).is_ok());
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), HostEvent::Rebuild);
     }
 
     #[test]

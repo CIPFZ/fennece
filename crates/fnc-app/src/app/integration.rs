@@ -104,6 +104,7 @@ impl FennecApp {
         for e in events {
             match e {
                 HostEvent::Exit => self.quit(ctx),
+                HostEvent::Rebuild => self.rebuild_index(),
                 HostEvent::Refresh => {
                     self.v.engine.refresh();
                     for w in &self.windows {

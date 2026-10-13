@@ -13,7 +13,9 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Sender;
 use fnc_core::fold::fold_utf16_into;
 use fnc_core::{EntryId, VolumeId};
-use fnc_index::{BulkLoader, Change, ChangeBatch, EntryRef, IndexOptions, IndexStore, Meta, SharedIndex, VolumeKind};
+use fnc_index::{
+    BulkLoader, Change, ChangeBatch, EntryRef, EpochIndex, IndexOptions, IndexStore, Meta, SharedIndex, VolumeKind,
+};
 use fnc_platform::walk::FolderSource;
 use fnc_platform::{ChangeSink, EntrySink, MetaSink, RawEntry, SourceError, StopFlag, VolumeSource};
 use xxhash_rust::xxh3::xxh3_64;
@@ -157,8 +159,9 @@ impl Indexer {
         });
         let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let rescan_epoch = cfg.rescan_epoch.clone();
+        // This indexer may only write while its epoch is current (see `Indexer::restart`).
         let ctx = RunCtx {
-            shared,
+            shared: EpochIndex::new(&shared),
             refresh,
             events,
             notify,
@@ -171,6 +174,27 @@ impl Indexer {
             tracing::error!(error = %e, "cannot start indexer");
         }
         Self { stop, saver, paused, rescan_epoch }
+    }
+
+    /// Rebuilds the index from scratch while running (Tools → Rebuild, IPC `REBUILD_DB`):
+    /// the running indexer is retired — its threads may still be finishing, but none of
+    /// their writes reach `shared` any more — and a new one builds a fresh index with
+    /// `cfg` (sources re-read from the settings), published when complete. Searches keep
+    /// using the old index until then.
+    pub fn restart(
+        &mut self,
+        mut cfg: IndexerConfig,
+        shared: SharedIndex,
+        refresh: Callback,
+        events: Sender<IndexEvent>,
+        notify: Callback,
+    ) {
+        self.stop.stop();
+        // After this, writes of the old indexer's epoch are refused.
+        shared.new_epoch();
+        cfg.reindex = true;
+        cfg.rescan_epoch = self.rescan_epoch.clone();
+        *self = Self::spawn(cfg, shared, refresh, events, notify);
     }
 
     /// Rescans every folder index now (`-update`).
@@ -513,7 +537,11 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
         h.attach(&store);
         tracing::info!(elapsed = ?t.elapsed(), "property and content stores attached");
     }
-    shared.replace(store);
+    match shared.write() {
+        Some(mut w) => *w = store,
+        // Retired while building (a newer indexer took over).
+        None => return,
+    }
     refresh();
     let seconds = t0.elapsed().as_secs_f64();
     tracing::info!(entries, seconds, loaded, "index published");
@@ -543,20 +571,24 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
     let meta_finished = {
         let (shared, emit, done_meta, hooks) = (shared.clone(), emit.clone(), done_meta.clone(), cfg.hooks.clone());
         Arc::new(move |vol: VolumeId, complete: bool| {
-            if complete && let Some(v) = shared.write().volume_mut(vol) {
+            if complete
+                && let Some(mut w) = shared.write()
+                && let Some(v) = w.volume_mut(vol)
+            {
                 v.metadata_complete = true;
             }
             let finished = done_meta.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             if finished == total_meta {
                 // Rows added by the back-fill (hard-link names) grew the columns
                 // geometrically; give the slack back once (one-time, tens of ms).
+                let Some(mut s) = shared.write() else { return };
                 let (entries, heap) = {
-                    let mut s = shared.write();
                     s.shrink_to_fit();
                     // Fold the alias rows out of the children overlay into the CSR.
                     s.rebuild_children();
                     (s.live_count(), s.heap_bytes())
                 };
+                drop(s);
                 tracing::info!(entries, heap_mib = heap / (1 << 20), "index ready");
                 emit.status(IndexStatus::Ready { entries, seconds: t0.elapsed().as_secs_f64() });
                 if let Some(h) = &hooks {
@@ -602,7 +634,7 @@ type MetaDone = Arc<dyn Fn(VolumeId, bool) + Send + Sync>;
 
 /// Starts and tracks the per-volume threads (journal watch, metadata back-fill).
 struct Workers {
-    shared: SharedIndex,
+    shared: EpochIndex,
     stop: StopFlag,
     emit: Arc<Emitter>,
     refresher: Refresher,
@@ -673,7 +705,9 @@ impl Workers {
                     // stick re-inserted, share reconnected): rescan, then keep watching.
                     Err(SourceError::Offline(_)) if src.info().kind == VolumeKind::Folder => {
                         tracing::info!(volume = %name, "folder index offline");
-                        me.shared.write().set_volume_online(vol, false);
+                        if let Some(mut g) = me.shared.write() {
+                            g.set_volume_online(vol, false);
+                        }
                         sink.refresher.poke();
                         while !me.stop.is_stopped() && !src.reconnect() {
                             std::thread::sleep(Duration::from_secs(3));
@@ -682,7 +716,9 @@ impl Workers {
                             break Err(SourceError::Stopped);
                         }
                         tracing::info!(volume = %name, "folder index back online");
-                        me.shared.write().set_volume_online(vol, true);
+                        if let Some(mut g) = me.shared.write() {
+                            g.set_volume_online(vol, true);
+                        }
                         sink.refresher.poke();
                     }
                     other => break other,
@@ -692,13 +728,17 @@ impl Workers {
                 Ok(()) | Err(SourceError::Stopped | SourceError::Unsupported(_)) => {}
                 Err(SourceError::Offline(_)) => {
                     tracing::info!(volume = %name, "volume went offline");
-                    me.shared.write().set_volume_online(vol, false);
+                    if let Some(mut g) = me.shared.write() {
+                        g.set_volume_online(vol, false);
+                    }
                     sink.refresher.poke();
                 }
                 Err(SourceError::JournalReset(_)) => {
                     // The monitor sees the volume as inactive and rebuilds it.
                     tracing::info!(volume = %name, "journal reset while watching");
-                    me.shared.write().set_volume_online(vol, false);
+                    if let Some(mut g) = me.shared.write() {
+                        g.set_volume_online(vol, false);
+                    }
                     sink.refresher.poke();
                 }
                 Err(e) => me.emit.message(crate::i18n::t_args(
@@ -763,12 +803,16 @@ fn monitor_volumes(cfg: &IndexerConfig, w: &Arc<Workers>) {
             if let Some((vol, jid, usn, meta_ok)) = existing {
                 if src.resume(jid, usn).is_ok() {
                     tracing::info!(volume = %info.display_name, "volume back online; resuming its journal");
-                    w.shared.write().set_volume_online(vol, true);
+                    if let Some(mut g) = w.shared.write() {
+                        g.set_volume_online(vol, true);
+                    }
                     w.refresher.poke();
                     w.start(vol, Box::new(src), !meta_ok, Arc::new(|_, _| {}));
                     continue;
                 }
-                w.shared.write().drop_volume(vol);
+                if let Some(mut g) = w.shared.write() {
+                    g.drop_volume(vol);
+                }
             }
             let t = Instant::now();
             let mut private = IndexStore::new(IndexOptions { date_accessed: cfg.date_accessed });
@@ -777,7 +821,7 @@ fn monitor_volumes(cfg: &IndexerConfig, w: &Arc<Workers>) {
                 return;
             }
             let vol = {
-                let mut s = w.shared.write();
+                let Some(mut s) = w.shared.write() else { return };
                 match s.absorb(private) {
                     Ok(ids) => {
                         let order = s.name_order();
@@ -801,7 +845,10 @@ fn monitor_volumes(cfg: &IndexerConfig, w: &Arc<Workers>) {
                 Box::new(src),
                 true,
                 Arc::new(move |v, complete| {
-                    if complete && let Some(vi) = shared.write().volume_mut(v) {
+                    if complete
+                        && let Some(mut g) = shared.write()
+                        && let Some(vi) = g.volume_mut(v)
+                    {
                         vi.metadata_complete = true;
                     }
                     if let Some(h) = &hooks {
@@ -814,7 +861,7 @@ fn monitor_volumes(cfg: &IndexerConfig, w: &Arc<Workers>) {
 }
 
 struct RunCtx {
-    shared: SharedIndex,
+    shared: EpochIndex,
     refresh: Callback,
     events: Sender<IndexEvent>,
     notify: Callback,
@@ -912,7 +959,7 @@ fn wants_compaction(s: &IndexStore) -> bool {
 
 /// Compacts `shared` without holding the write lock for the work: compact a copy, then
 /// swap it in if nothing changed meanwhile (else retry later). Returns the remap.
-fn compact_live(shared: &SharedIndex) -> Option<(u64, Vec<u32>, u64)> {
+fn compact_live(shared: &EpochIndex) -> Option<(u64, Vec<u32>, u64)> {
     let (mut copy, generation, old) = {
         let snap = shared.snapshot();
         if !wants_compaction(&snap) {
@@ -923,7 +970,7 @@ fn compact_live(shared: &SharedIndex) -> Option<(u64, Vec<u32>, u64)> {
     let remap = copy.compact();
     copy.rebuild_name_order();
     copy.shrink_to_fit();
-    let mut w = shared.write();
+    let mut w = shared.write()?;
     if w.generation() != generation || w.instance() != old {
         // Changes arrived while compacting: the copy is outdated.
         return None;
@@ -936,7 +983,7 @@ fn compact_live(shared: &SharedIndex) -> Option<(u64, Vec<u32>, u64)> {
 /// Watches the share of deleted rows and compacts the live index (SPEC ch.1: tombstones
 /// are reclaimed without restarting). Stores and views follow the remap.
 fn spawn_compactor(
-    shared: SharedIndex,
+    shared: EpochIndex,
     hooks: Option<Arc<dyn IndexHooks>>,
     tx: Sender<IndexEvent>,
     notify: Callback,
@@ -989,7 +1036,7 @@ impl Refresher {
 }
 
 struct WatchSink {
-    shared: SharedIndex,
+    shared: EpochIndex,
     refresher: Refresher,
     vol: VolumeId,
     paused: Arc<std::sync::atomic::AtomicBool>,
@@ -1080,7 +1127,8 @@ impl ChangeSink for WatchSink {
         while !batch.is_empty() {
             let rest = if batch.len() > MAX_BATCH { batch.split_off(MAX_BATCH) } else { Vec::new() };
             let t = Instant::now();
-            let mut w = self.shared.write();
+            // Retired (the index is being rebuilt): stop reading this journal.
+            let Some(mut w) = self.shared.write() else { return false };
             let pending = self.journal.as_ref().map(|_| crate::journal::Journal::prepare(&w, &batch));
             let after = hooks.map(|_| touched.before(&w, &batch));
             let stats = w.apply(batch);
@@ -1107,7 +1155,9 @@ impl ChangeSink for WatchSink {
     }
 
     fn checkpoint(&mut self, journal_id: u64, next_usn: i64) {
-        self.shared.write().set_journal_position(self.vol, journal_id, next_usn);
+        if let Some(mut g) = self.shared.write() {
+            g.set_journal_position(self.vol, journal_id, next_usn);
+        }
     }
 }
 
@@ -1143,7 +1193,7 @@ type FetchFn<'a> = &'a dyn Fn(&[(EntryId, String)], &mut dyn MetaSink, &StopFlag
 fn fill_metadata(
     fetch: FetchFn<'_>,
     vol: VolumeId,
-    shared: &SharedIndex,
+    shared: &EpochIndex,
     stop: &StopFlag,
     emit: &Emitter,
     refresher: &Refresher,
@@ -1185,7 +1235,9 @@ fn fill_metadata(
         let mut batch = std::mem::take(&mut collector.out);
         while !batch.is_empty() {
             let rest = if batch.len() > MAX_BATCH { batch.split_off(MAX_BATCH) } else { Vec::new() };
-            shared.write().apply_initial(batch);
+            if let Some(mut g) = shared.write() {
+                g.apply_initial(batch);
+            }
             batch = rest;
         }
         refresher.poke();
@@ -1685,7 +1737,7 @@ mod tests {
         let handle = engine.handle();
         let refresher = Refresher::spawn(Arc::new(move || handle.refresh()));
         let mut sink = WatchSink {
-            shared: shared.clone(),
+            shared: EpochIndex::new(&shared),
             refresher,
             vol,
             paused: Arc::default(),
@@ -1761,7 +1813,7 @@ mod compact_tests {
             .collect();
         fnc_index::efu::load_efu(&mut s, csv.as_bytes(), "t.efu").unwrap();
         let shared = SharedIndex::new(s);
-        assert!(compact_live(&shared).is_none(), "nothing to reclaim");
+        assert!(compact_live(&EpochIndex::new(&shared)).is_none(), "nothing to reclaim");
         let doomed: Vec<Change> = {
             let snap = shared.snapshot();
             (0..snap.len() as u32)
@@ -1777,7 +1829,7 @@ mod compact_tests {
             (0..snap.len() as u32).map(EntryId).find(|&id| snap.name_string(id) == "f29999.txt").unwrap()
         };
         let before = shared.snapshot().live_count();
-        let (old, remap, new) = compact_live(&shared).unwrap();
+        let (old, remap, new) = compact_live(&EpochIndex::new(&shared)).unwrap();
         let snap = shared.snapshot();
         assert_eq!(snap.instance(), new);
         assert_ne!(old, new);
@@ -1786,5 +1838,64 @@ mod compact_tests {
         assert_eq!(snap.name_string(moved), "f29999.txt");
         assert!(snap.find_path("C:\\d\\f29999.txt") == Some(moved));
         assert_eq!(snap.live_count(), before);
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    fn wait_ready(rx: &crossbeam_channel::Receiver<IndexEvent>) {
+        let t = Instant::now();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(30)) {
+                Ok(IndexEvent::Status(IndexStatus::Ready { .. })) => return,
+                Ok(_) => {}
+                Err(e) => panic!("not ready after {:?}: {e}", t.elapsed()),
+            }
+        }
+    }
+
+    fn has(shared: &SharedIndex, name: &str) -> bool {
+        let s = shared.snapshot();
+        (0..s.len() as u32).map(EntryId).any(|i| s.is_live(i) && s.name_string(i) == name)
+    }
+
+    #[test]
+    fn restart_rebuilds_with_new_sources_and_retires_old_writers() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        std::fs::write(a.path().join("in-a.txt"), "a").unwrap();
+        std::fs::write(b.path().join("in-b.txt"), "b").unwrap();
+        let shared = SharedIndex::default();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let cfg = |dir: &std::path::Path| IndexerConfig {
+            folders: vec![dir.to_path_buf()],
+            folder_watch: true,
+            ..Default::default()
+        };
+        let mut ix = Indexer::spawn(cfg(a.path()), shared.clone(), Arc::new(|| {}), tx.clone(), Arc::new(|| {}));
+        wait_ready(&rx);
+        assert!(has(&shared, "in-a.txt") && !has(&shared, "in-b.txt"));
+        std::fs::write(a.path().join("before-restart.txt"), "z").unwrap();
+        let t = Instant::now();
+        while !has(&shared, "before-restart.txt") {
+            assert!(t.elapsed() < Duration::from_secs(10), "watcher works before restart");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        ix.restart(cfg(b.path()), shared.clone(), Arc::new(|| {}), tx.clone(), Arc::new(|| {}));
+        wait_ready(&rx);
+        assert!(has(&shared, "in-b.txt") && !has(&shared, "in-a.txt"), "rebuilt from the new folder");
+        // The old folder's watcher is retired: its changes never reach the index.
+        std::fs::write(a.path().join("late-a.txt"), "x").unwrap();
+        std::fs::write(b.path().join("late-b.txt"), "y").unwrap();
+        let t = Instant::now();
+        while !has(&shared, "late-b.txt") {
+            assert!(t.elapsed() < Duration::from_secs(10), "new watcher works");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!has(&shared, "late-a.txt"), "old watcher retired");
+        ix.stop();
     }
 }

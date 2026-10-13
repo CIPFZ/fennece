@@ -555,3 +555,5 @@ sidebar-no-bookmarks = Henüz yer işareti yok (Yer işaretleri → Yer işaretl
 cmd-theme-high-contrast = Yüksek karşıtlık
 col-relevance = İlgi düzeyi
 col-custom = Özel { $n }
+cmd-rebuild-index = Dizini yeniden oluştur
+msg-rebuilding-index = Dizin yeniden oluşturuluyor; tamamlanana kadar geçerli dizin kullanılıyor

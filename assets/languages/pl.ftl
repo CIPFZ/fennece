@@ -642,3 +642,5 @@ sidebar-no-bookmarks = Brak zakładek (Zakładki → Dodaj do zakładek).
 cmd-theme-high-contrast = Duży kontrast
 col-relevance = Trafność
 col-custom = Niestandardowa { $n }
+cmd-rebuild-index = Odbuduj indeks
+msg-rebuilding-index = Odbudowywanie indeksu; do zakończenia używany jest bieżący indeks

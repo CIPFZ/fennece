@@ -170,16 +170,6 @@ fn run() -> anyhow::Result<()> {
         })
     };
 
-    let mut file_lists: Vec<std::path::PathBuf> = settings.file_lists.iter().map(Into::into).collect();
-    file_lists.extend(cli.file_lists.iter().map(Into::into));
-    let mut folders: Vec<std::path::PathBuf> = settings.folders.iter().map(Into::into).collect();
-    folders.extend(cli.folders.iter().map(Into::into));
-    if !cfg!(windows) && folders.is_empty() && file_lists.is_empty() {
-        // Non-Windows default: index the home folder (SPEC ch.1 §12, MAY).
-        if let Some(home) = std::env::var_os("HOME") {
-            folders.push(home.into());
-        }
-    }
     let db_path = if cli.no_db { None } else { Some(cli.db.as_ref().map_or_else(|| paths.index_file(), Into::into)) };
     // Property, content and hash stores: created once, shared by every search (M3).
     let stores = {
@@ -187,38 +177,36 @@ fn run() -> anyhow::Result<()> {
         let dir = db_path.as_ref().and_then(|p| p.parent()).map(std::path::Path::to_path_buf);
         stores::Stores::start(shared.clone(), &settings, dir, Arc::new(move || handle.refresh()))
     };
-    let cfg = indexer::IndexerConfig {
-        file_lists,
-        folders,
-        ntfs: cfg!(windows) && settings.ntfs_auto_include,
-        ntfs_exclude: settings.ntfs_exclude_volumes.clone(),
-        usn_create: settings.usn_create_journal,
-        usn_max_size: u64::from(settings.usn_max_size_mb) << 20,
-        usn_delta: u64::from(settings.usn_allocation_delta_mb) << 20,
-        usn_poll: Duration::from_millis(u64::from(settings.usn_poll_interval.max(100))),
-        date_accessed: settings.index_date_accessed,
-        db_path,
-        reindex: cli.reindex,
-        instance: cli.instance.clone(),
-        exclusions: exclude::Exclusions::from_settings(&settings),
-        folder_rescan: Duration::from_secs(u64::from(settings.folder_rescan_interval) * 60),
-        folder_watch: settings.folder_watch,
-        rescan_epoch: Arc::default(),
-        journal: settings.index_journal_enabled.then(|| {
-            (paths.root.join("journal.tsv"), settings.index_journal_days, settings.index_journal_max as usize)
-        }),
-        save_interval: Duration::from_secs(u64::from(settings.db_save_interval) * 60),
-        hooks: Some(stores.clone()),
+    let index_cfg = {
+        let (cli, paths, db_path, stores) = (cli.clone(), paths.clone(), db_path.clone(), stores.clone());
+        move |settings: &Settings| indexer_config(settings, &cli, &paths, db_path.clone(), stores.clone())
     };
+    let cfg = index_cfg(&settings);
     let (index_tx, index_rx) = crossbeam_channel::unbounded();
     let handle = engine.handle();
     let indexer = indexer::Indexer::spawn(
         cfg,
         shared.clone(),
         Arc::new(move || handle.refresh()),
-        index_tx,
+        index_tx.clone(),
         Arc::new(wake.clone()),
     );
+    let reindex: app::Reindex = {
+        let (shared, handle, wake) = (shared.clone(), engine.handle(), wake.clone());
+        Arc::new(move |indexer: &mut indexer::Indexer, settings: &Settings| {
+            let mut cfg = index_cfg(settings);
+            // `-reindex` aside, a rebuild never reads the database it replaces.
+            cfg.reindex = true;
+            let handle = handle.clone();
+            indexer.restart(
+                cfg,
+                shared.clone(),
+                Arc::new(move || handle.refresh()),
+                index_tx.clone(),
+                Arc::new(wake.clone()),
+            );
+        })
+    };
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(i18n::t("app-title"))
@@ -245,6 +233,7 @@ fn run() -> anyhow::Result<()> {
         index_rx,
         instance: primary,
         indexer,
+        reindex: Some(reindex),
         stores,
         settings,
         settings_path,
@@ -262,6 +251,49 @@ fn run() -> anyhow::Result<()> {
         }),
     )
     .map_err(|e| anyhow::anyhow!("window: {e}"))
+}
+
+/// What to index, from the settings and the command line (start-up and Rebuild Index).
+fn indexer_config(
+    settings: &Settings,
+    cli: &cli::Cli,
+    paths: &fnc_core::paths::DataPaths,
+    db_path: Option<std::path::PathBuf>,
+    stores: Arc<stores::Stores>,
+) -> indexer::IndexerConfig {
+    let mut file_lists: Vec<std::path::PathBuf> = settings.file_lists.iter().map(Into::into).collect();
+    file_lists.extend(cli.file_lists.iter().map(Into::into));
+    let mut folders: Vec<std::path::PathBuf> = settings.folders.iter().map(Into::into).collect();
+    folders.extend(cli.folders.iter().map(Into::into));
+    if !cfg!(windows) && folders.is_empty() && file_lists.is_empty() {
+        // Non-Windows default: index the home folder (SPEC ch.1 §12, MAY).
+        if let Some(home) = std::env::var_os("HOME") {
+            folders.push(home.into());
+        }
+    }
+    indexer::IndexerConfig {
+        file_lists,
+        folders,
+        ntfs: cfg!(windows) && settings.ntfs_auto_include,
+        ntfs_exclude: settings.ntfs_exclude_volumes.clone(),
+        usn_create: settings.usn_create_journal,
+        usn_max_size: u64::from(settings.usn_max_size_mb) << 20,
+        usn_delta: u64::from(settings.usn_allocation_delta_mb) << 20,
+        usn_poll: Duration::from_millis(u64::from(settings.usn_poll_interval.max(100))),
+        date_accessed: settings.index_date_accessed,
+        db_path,
+        reindex: cli.reindex,
+        instance: cli.instance.clone(),
+        exclusions: exclude::Exclusions::from_settings(settings),
+        folder_rescan: Duration::from_secs(u64::from(settings.folder_rescan_interval) * 60),
+        folder_watch: settings.folder_watch,
+        rescan_epoch: Arc::default(),
+        journal: settings.index_journal_enabled.then(|| {
+            (paths.root.join("journal.tsv"), settings.index_journal_days, settings.index_journal_max as usize)
+        }),
+        save_interval: Duration::from_secs(u64::from(settings.db_save_interval) * 60),
+        hooks: Some(stores),
+    }
 }
 
 /// `-install-service` / `-uninstall-service`: runs `fennec-service.exe` (next to this

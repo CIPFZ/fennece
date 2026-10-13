@@ -64,6 +64,8 @@ pub struct FolderSource {
     opts: FolderOptions,
     /// Rescan at the start of the next `watch` (after being offline).
     stale: bool,
+    /// `enumerate` ran and the watch has not caught up with it yet.
+    walked: bool,
     /// Last rescan request seen (see [`FolderOptions::rescan_epoch`]).
     seen_epoch: u64,
 }
@@ -85,7 +87,7 @@ impl FolderSource {
             opts.threads = opts.threads.min(4);
         }
         let seen_epoch = opts.rescan_epoch.as_ref().map_or(0, |e| e.load(Ordering::Acquire));
-        Self { root, info, opts, stale: false, seen_epoch }
+        Self { root, info, opts, stale: false, walked: false, seen_epoch }
     }
 
     fn excluded(&self, path: &Path, name: &std::ffi::OsStr, md: &std::fs::Metadata) -> bool {
@@ -388,6 +390,7 @@ impl VolumeSource for FolderSource {
         if stop.is_stopped() {
             return Err(SourceError::Stopped);
         }
+        self.walked = true;
         result
     }
 
@@ -425,7 +428,10 @@ impl VolumeSource for FolderSource {
         };
         let mut pending_from: HashMap<usize, PathBuf> = HashMap::new();
         let mut dirty: Vec<PathBuf> = Vec::new();
-        let mut rescan_all = std::mem::take(&mut self.stale);
+        // Changes between the walk and the watch registration were not seen: one
+        // catch-up pass (SyncDir diff; unchanged folders cost a listing, nothing else).
+        let mut rescan_all = std::mem::take(&mut self.stale) || (watcher.is_some() && self.walked);
+        self.walked = false;
         while !stop.is_stopped() {
             match rx.recv_timeout(Duration::from_millis(250)) {
                 Ok(ev) => {
