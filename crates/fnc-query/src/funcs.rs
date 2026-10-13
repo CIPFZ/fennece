@@ -170,6 +170,9 @@ funcs! {
     Unique: Text = ["unique"],
     DupeCount: Number = ["dupecount"],
     DupeMax: Number = ["dupemax"],
+    // `count:<max>` limits the sorted results; only with a plain number as value
+    // (otherwise `count:` is the comparison modifier, see the parser).
+    Count: Number = ["count"],
     FileListFn: Text = ["filelist"],
     FileListFilename: Text = ["filelistfilename"],
     FileExists: Text = ["fileexists"],
@@ -458,6 +461,10 @@ mod tests {
             assert_eq!(lookup_function(&n), Some(FuncId::Prop(p)), "property name {n} shadowed");
         }
         for (n, _, _) in MODIFIER_TABLE {
+            // `count:` is both: the result limit with a number, else the modifier.
+            if *n == "count" {
+                continue;
+            }
             assert!(seen.insert(*n), "modifier {n} collides with a function or modifier");
         }
         for (n, _) in MACRO_TABLE {

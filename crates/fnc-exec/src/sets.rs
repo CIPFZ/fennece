@@ -250,6 +250,10 @@ pub fn apply_sets(
     let mut warnings = Vec::new();
     let hashes: &HashCache = ext.hashes.map_or(&**fallback_hashes, |h| &**h);
     for op in ops {
+        if let SetKind::Limit(n) = op.kind {
+            cur.truncate(usize::try_from(n).unwrap_or(usize::MAX));
+            continue;
+        }
         let keys = op.keys.clone().unwrap_or_else(|| vec![DupeKey::Name]);
         let mut cls: Vec<Vec<u64>> = Vec::with_capacity(keys.len());
         for &k in &keys {
@@ -284,6 +288,7 @@ pub fn apply_sets(
                 SetKind::Unique => n == 1,
                 SetKind::DupeCount(p) => p.matches(i64::from(n)),
                 SetKind::DupeMax(m) => rank < *m,
+                SetKind::Limit(_) => true,
             };
             if op.negate {
                 ok = !ok;
@@ -367,6 +372,10 @@ mod tests {
         assert_eq!(run(&s, "dupe-count:2").0.len(), 0);
         assert_eq!(run(&s, "dupe-count:1").0.len(), 3);
         assert_eq!(run(&s, "dupe:size dupe-max:1").0, ["C:\\a\\x.txt", "C:\\c\\x.txt", "C:\\a\\x.doc"]);
+        assert_eq!(run(&s, "count:2").0, ["C:\\a\\x.txt", "C:\\b\\x.txt"]);
+        assert_eq!(run(&s, "count:2 dupe:").0, ["C:\\a\\x.txt", "C:\\b\\x.txt"], "limit after the set");
+        assert_eq!(run(&s, "count:0").0.len(), 0);
+        assert_eq!(run(&s, "count:99").0.len(), 6);
         let (names, groups) = run(&s, "sizedupe:");
         assert_eq!(names.len(), 6);
         let mut g: Vec<u32> = groups.values().copied().collect();

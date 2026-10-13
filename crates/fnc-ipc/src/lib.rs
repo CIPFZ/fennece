@@ -83,7 +83,8 @@
 //! ```
 //!
 //! Searches from every front end may contain the Everything 1.5 `count:<max>` limit (es 1.1.0.38
-//! sends `-n` that way); [`backend::extract_count_limit`] applies it after sorting.
+//! sends `-n` that way); fnc-query plans it as a set function that the backend applies after
+//! sorting, like the UI.
 //!
 //! Modules: [`proto`] (wire types, frames), [`backend`] (execution, [`Host`]), [`server`],
 //! [`client`], [`compat`] (Everything 1.4), [`export`] and [`mod@format`] (es formats), [`rows`].

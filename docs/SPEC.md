@@ -939,7 +939,7 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | PDF | IFilter / Windows 属性 | 自带最小解析器：`/Info`、页数、文本（FlateDecode、ToUnicode、对象流）；不支持加密、OCR、无 ToUnicode 的自定义编码字体 | ADR-014 |
 | Windows 属性系统兜底 | 任意 `System.*` | 由应用通过 `PropertyProvider` 注入；未注入时仅内置提取器 | fnc-props 禁止 unsafe/COM |
 | 属性列排序 | 列排序 | `SortSpec::props`（每个排序键可指定属性列），未知值排在最前 | 与应用并行开发，暂不扩展 `SortColumn` 枚举（ADR-015）|
-| `count:<max>`（结果数上限）| 搜索函数，限制结果数 | IPC/HTTP/fes/兼容层的查询后端在排序后截断（es 1.1.0.38 的 `-n` 以 `< count:N >` 发送）；UI 引擎尚未支持 | `count:` 在 fnc-query 中是比较修饰符；待 fnc-query 接管（SPEC-GAP）|
+| `count:<max>`（结果数上限）| 搜索函数，限制结果数 | `count:` 后紧跟纯数字时为结果上限（`FuncId::Count` → `SetKind::Limit`），作为最后一个集合函数在排序后截断，UI 与 IPC/HTTP/fes/兼容层一致（es 1.1.0.38 的 `-n` 以 `< count:N >` 发送）；只能在顶层；其余情况（`count:tags:>2`）仍是比较修饰符 | 同名的修饰符与函数按值区分 |
 | Everything IPC 报告版本 | Everything 自身版本 | `1.4.1.<Fennec 版本>`（0.1.0 → `1.4.1.100`），`Host::everything_version` 可改 | 客户端按 ≥ 1.4.1 启用 QUERY2/IS_DB_LOADED（ADR-031）|
 | IPC `A` 变体字符串 | ANSI 代码页 | UTF-8（失败回退 Latin-1）| 无 Win32 代码页转换（SPEC-GAP）|
 | Everything 1.5 IPC3 管道 | `\\.\pipe\Everything IPC` | 不实现；es 回退 IPC2 | 原生协议另见 ADR-030 |

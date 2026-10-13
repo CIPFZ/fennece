@@ -411,6 +411,15 @@ fn engine_wires_stores_sort_and_sets() {
     let rs = wait(&rx, 6);
     assert_eq!(names_of(&rs), ["copy1.bin", "copy2.bin"]);
     assert_eq!(rs.dupe_group(rs.ids[0]), Some(1));
+    // `count:<max>` keeps the first results of the sorted list, also after a re-sort.
+    eng.search(req(7, "ext:bin count:2", by_name));
+    assert_eq!(names_of(&wait(&rx, 7)), ["copy1.bin", "copy2.bin"]);
+    eng.search(req(8, "ext:bin count:2", desc));
+    let rs = wait(&rx, 8);
+    assert!(rs.stats.reused);
+    assert_eq!(names_of(&rs), ["diff.bin", "copy2.bin"]);
+    eng.search(req(9, "< count:1 > < ext:bin >", desc));
+    assert_eq!(names_of(&wait(&rx, 9)), ["diff.bin"]);
     drop(eng);
 }
 

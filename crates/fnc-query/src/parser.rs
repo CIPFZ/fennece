@@ -672,6 +672,12 @@ impl Parser<'_> {
             normalize_name(&ident, &mut norm);
             let span = chars[save].pos..char_end(chars, p + 1, range_end);
             p += 1; // colon
+            // `count:<digits>` is the Everything 1.5 result limit; `count:` before
+            // anything else (`count:tags:>2`) is the comparison modifier.
+            if !star && norm == "count" && p < n && chars[p..].iter().all(|ch| !ch.lit && ch.c.is_ascii_digit()) {
+                self.spans.push(Span { range: span, kind: SpanKind::Function });
+                return Prefix { mods, global, head: Head::Func(FuncId::Count), value_start: p, literal_value: false };
+            }
             if !star && let Some((m, on)) = lookup_modifier(&norm) {
                 if is_global {
                     global.set(m, on);

@@ -908,7 +908,8 @@ impl Cx<'_> {
             | F::Distinct
             | F::Unique
             | F::DupeCount
-            | F::DupeMax => self.set(f, t),
+            | F::DupeMax
+            | F::Count => self.set(f, t),
             other => {
                 self.diags.push(PlanDiag::Unsupported(other));
                 leaf(Pred::Unsupported(other))

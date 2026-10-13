@@ -36,6 +36,6 @@ Verified on Windows Server 2022 with `examples/compat_window.rs`: official es.ex
 (IPC2 and `-ipc1`; version, search, `-n`/`-o`, sorts, columns, CSV/EFU/JSON, result count,
 total size, regex/case, `/ad`, run counts, `-timeout`, `-no-result-error`) and the official
 Everything SDK `Everything64.dll` (v1 and v2 queries, request flags, highlighted names, totals,
-run counts, `IsFastSort`) work unmodified. es 1.1.0.38 sends `-n N` as a `count:N` filter, which
-the backend applies (SPEC ch.2 §9). The app must not register the default class while real
+run counts, `IsFastSort`) work unmodified. es 1.1.0.38 sends `-n N` as a `count:N` filter: fnc-query plans
+it as the last set function (applied after sorting, in the UI too; SPEC ch.2 §9). The app must not register the default class while real
 Everything is running (SPEC §3.2 conflict rule).

@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 
 use fnc_core::EntryId;
 use fnc_core::settings::FoldersFirst;
-use fnc_exec::{Caches, CancelToken, ExecCtx, Highlighter, SearchOptions, SortSpec, execute, sort_ids};
+use fnc_exec::{
+    Caches, CancelToken, ExecCtx, ExtCtx, Highlighter, SearchOptions, SortSpec, apply_post, execute_filter, sort_ids,
+};
 use fnc_index::{IndexStore, SharedIndex};
 use fnc_query::{Expr, ModSet, Modifier, ParseEnv, PlanEnv, PlannedQuery, Term, Value, parse, plan};
 use parking_lot::Mutex;
@@ -329,77 +331,6 @@ pub fn search_ast(search: &str, mods: &Mods, options: &SearchOptions) -> Expr {
     parse(search, &env).ast
 }
 
-/// Removes Everything 1.5 `count:<max>` terms (result limit; es 1.1.0.38 sends `-n` as
-/// `< count:N > < search >`) and returns the smallest limit. A `count:` followed by
-/// anything but digits is left alone (the `count:` comparison modifier).
-///
-/// SPEC-GAP: the limit belongs in fnc-query/fnc-exec; until it lands there the backend
-/// applies it after sorting, for every non-UI front end.
-pub fn extract_count_limit(search: &str) -> (String, Option<u64>) {
-    let mut out = String::with_capacity(search.len());
-    let mut limit: Option<u64> = None;
-    let mut in_quotes = false;
-    let mut i = 0;
-    let b = search.as_bytes();
-    while i < b.len() {
-        let c = b[i];
-        if c == b'"' {
-            in_quotes = !in_quotes;
-        }
-        let at_start = i == 0 || matches!(b[i - 1], b' ' | b'\t' | b'<');
-        if !in_quotes && at_start && search[i..].len() >= 6 && search[i..i + 6].eq_ignore_ascii_case("count:") {
-            let digits = b[i + 6..].iter().take_while(|d| d.is_ascii_digit()).count();
-            let end = i + 6 + digits;
-            if digits > 0 && (end == b.len() || matches!(b[end], b' ' | b'\t' | b'>')) {
-                if let Ok(n) = search[i + 6..end].parse::<u64>() {
-                    limit = Some(limit.map_or(n, |l| l.min(n)));
-                }
-                i = end;
-                continue;
-            }
-        }
-        let ch = search[i..].chars().next().unwrap_or(' ');
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    if limit.is_none() {
-        return (search.to_string(), None);
-    }
-    // Drop groups left empty (`< > < abc >` → `< abc >`).
-    let mut cleaned = out;
-    loop {
-        let compact: String = cleaned.clone();
-        let next = remove_empty_groups(&compact);
-        if next == compact {
-            break;
-        }
-        cleaned = next;
-    }
-    (cleaned.trim().to_string(), limit)
-}
-
-fn remove_empty_groups(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'<' {
-            let mut j = i + 1;
-            while j < b.len() && (b[j] == b' ' || b[j] == b'\t') {
-                j += 1;
-            }
-            if j < b.len() && b[j] == b'>' {
-                i = j + 1;
-                continue;
-            }
-        }
-        let ch = s[i..].chars().next().unwrap_or(' ');
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
-}
-
 /// Default modifiers of a request: the request's flags override the host defaults.
 pub fn request_mods(mods: &Mods, host_defaults: ModSet) -> ModSet {
     let mut d = host_defaults;
@@ -563,9 +494,7 @@ impl IndexBackend {
         let _dog = Watchdog::start(cancel.clone(), timeout);
         let options = self.host.search_options();
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (text, limit) =
-                if key.mods.regex { (key.search.clone(), None) } else { extract_count_limit(&key.search) };
-            let ast = search_ast(&text, &key.mods, &options);
+            let ast = search_ast(&key.search, &key.mods, &options);
             let env = PlanEnv {
                 defaults: request_mods(&key.mods, options.defaults),
                 star_all: options.star_all,
@@ -578,11 +507,11 @@ impl IndexBackend {
             let planned = plan(&ast, &env, None);
             let snap = self.shared.snapshot();
             let ctx = ExecCtx { cancel: &cancel, prev: None, caches: &self.caches };
-            let mut rs = execute(&planned, &snap, &ctx)?;
+            // Set functions (`dupe:`, the `count:` result limit) apply after sorting.
+            let ext = ExtCtx::default();
+            let mut rs = execute_filter(&planned, &snap, &ctx, &ext)?;
             sort_ids(&mut rs.ids, &key.sort, &snap, &self.caches, &cancel)?;
-            if let Some(n) = limit {
-                rs.ids.truncate(usize::try_from(n).unwrap_or(usize::MAX));
-            }
+            apply_post(&planned, &mut rs, &snap, &self.caches, &ext, &cancel)?;
             Ok::<_, fnc_exec::Cancelled>((rs, planned, snap.instance(), snap.generation()))
         }));
         let (rs, planned, instance, generation) = match run {
@@ -927,13 +856,6 @@ pub(crate) mod tests {
 
     #[test]
     fn count_limit() {
-        assert_eq!(extract_count_limit("< count:10 > < test >"), ("< test >".to_string(), Some(10)));
-        assert_eq!(extract_count_limit("abc count:5"), ("abc".to_string(), Some(5)));
-        assert_eq!(extract_count_limit("count:3 count:2 x"), ("x".to_string(), Some(2)));
-        assert_eq!(extract_count_limit("abc"), ("abc".to_string(), None));
-        assert_eq!(extract_count_limit("\"count:5\""), ("\"count:5\"".to_string(), None));
-        assert_eq!(extract_count_limit("count:>5"), ("count:>5".to_string(), None));
-        assert_eq!(extract_count_limit("xcount:5"), ("xcount:5".to_string(), None));
         let b = backend();
         // es 1.1.0.38 sends `-n 2 iso` as `< count:2 > < iso >`.
         let q = Query { search: "< count:2 > < iso >".into(), columns: vec![Column::Name], ..Query::default() };
@@ -942,6 +864,9 @@ pub(crate) mod tests {
         assert_eq!(names(&r), ["isos", "big.iso"], "limit applies after sorting");
         let q = Query { search: "count:1 *.iso".into(), sort: vec![(Column::Size, true)], ..q };
         assert_eq!(names(&b.query(&q).unwrap()), ["small.iso"]);
+        let n = |search: &str| b.result_count(&SearchSpec { search: search.into(), mods: Mods::default() }).unwrap();
+        assert_eq!(n("\"count:5\""), 0, "quoted: literal text");
+        assert_eq!(n("abc count:1"), 1);
     }
 
     #[test]
