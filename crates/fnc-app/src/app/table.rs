@@ -61,7 +61,7 @@ impl FennecApp {
 
     /// Two columns can share a sort key (type/extension); only the first shows it.
     fn column_owns_sort(&self, col: ColumnId) -> bool {
-        self.columns.iter().find(|c| c.id.sort() == col.sort()).is_some_and(|c| c.id == col)
+        self.display_columns().iter().find(|c| c.id.sort() == col.sort()).is_some_and(|c| c.id == col)
     }
 
     /// Columns drawn for the current results: the configured ones, plus the duplicate
