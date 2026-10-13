@@ -948,6 +948,9 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | M3U 编码 / 空 JSON 导出 | ANSI 代码页 / 不输出 | UTF-8 / `[]` | 无代码页依赖；合法 JSON |
 | HTTP JSON 未知值 | 未说明 | 未知大小（文件夹）/日期不输出该字段 | 避免空字符串数值（ADR-032）|
 | HTTP 文件夹链接 | 浏览文件夹 | 链接为该文件夹路径的搜索，不做目录列举 | SPEC 第 4 章 §4 防护要求 |
+| IPC 重建数据库（`REBUILD_DB` / `Op::Rebuild`）| 重建索引 | 运行中的应用拒绝（返回失败）；需以 `-reindex` 重启 | 索引源在启动时固定，索引器不能原地重启（ADR-034，SPEC-GAP）|
+| IPC 管理命令鉴权 | — | 原生管道客户端须与 Fennec 同会话且完整性 ≥ Medium（Linux：同 uid）；Everything 兼容窗口的客户端不额外校验（窗口消息不跨会话，受 UIPI 约束，`EVERYTHING_WM_IPC` 不带发送者）；HTTP 不执行管理命令 | SPEC 第 4 章 §3.1（ADR-034）|
+| `-instance` 与服务 | — | 每个实例连接自己的服务管道 `Fennec.<instance>.svc`；安装包只为默认实例安装服务，其他实例以非管理员运行时退回文件夹索引 | SPEC 第 4 章 §8：服务管道按实例命名 |
 
 ---
 

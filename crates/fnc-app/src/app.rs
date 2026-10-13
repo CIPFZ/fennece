@@ -1503,9 +1503,11 @@ impl FennecApp {
             match s.set(key.trim(), value.trim()) {
                 Ok(()) => {
                     self.apply_settings(ctx, s);
+                    // Never echo passwords (`http_password`).
+                    let shown = if key.trim().ends_with("password") { "••••" } else { value.trim() };
                     self.say(t_args(
                         "msg-setting-changed",
-                        &[("key", key.trim().to_string().into()), ("value", value.trim().to_string().into())],
+                        &[("key", key.trim().to_string().into()), ("value", shown.to_string().into())],
                     ));
                 }
                 Err(e) => self.say(e.to_string()),
@@ -1518,6 +1520,7 @@ impl FennecApp {
         } else if let Some(cmd) = Command::from_id(body) {
             self.run(ctx, cmd);
         } else if let Some(v) = self.settings.get(body) {
+            let v = if body.ends_with("password") { "••••".to_string() } else { v };
             self.say(format!("{body} = {v}"));
         } else {
             self.say(t_args("msg-unknown-command", &[("command", body.to_string().into())]));

@@ -88,6 +88,17 @@ pub fn http_config(s: &Settings) -> Result<HttpConfig, String> {
     })
 }
 
+/// Localised start failure.
+fn http_error(e: &fnc_http::HttpError) -> String {
+    match e {
+        fnc_http::HttpError::NoPassword => t("msg-http-no-password"),
+        fnc_http::HttpError::Bind { addr, source } => {
+            t_args("msg-http-bind-failed", &[("addr", addr.to_string().into()), ("error", source.to_string().into())])
+        }
+        other => other.to_string(),
+    }
+}
+
 /// HTTP server state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum HttpStatus {
@@ -280,7 +291,7 @@ fn worker(
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "cannot start the HTTP server");
-                        HttpStatus::Failed(e.to_string())
+                        HttpStatus::Failed(http_error(&e))
                     }
                 },
             };
