@@ -32,3 +32,11 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 - [M1][fnc-index] `Change::Touch`, hard-link alias table, `apply_initial` (back-fill is not an index-journal change), shrink after back-fill.
 - [M1][fnc-platform] Windows UI language detection; [fnc-app] keep search focus after sorting; `ntfs_end_to_end` real-volume test.
 - [M1][bench] `bench/results-windows.md`; report `docs/reports/M1-windows.md`.
+
+## M2
+- [M2][fnc-query] date values: `this/last/next/past[N]<unit>` constants (year … second, quarter), `sept`/`tues`/`thurs`, Excel serial days, wildcard dates (`*-02`, `*-*-*T9:00..*-*-*T17:00`) as `DateWild`; `duration` module (`hh:mm:ss`, `mm:ss`, `90s`, `5min`, `1.5hours`, granularity).
+- [M2][fnc-query] `<folder:>`: `<`/`>` are comparison operators only after numeric functions or `len:`/`count:`/`atoi:`/`atof:` (round-trip proptest regression); `len:>20` plans numerically.
+- [M2][fnc-query][fnc-exec] `descendant:` `descendant[file|folder]count:` `sibling:` `parent-sibling:` `ancestor-sibling:` `siblingcount:` `foldersize:`/`fs:` `hardlinkcount:` `nameparts:` `type:` (injectable type-name provider, fallback "EXT File") `filelist:` `fileexists:`/`folderexists:` (`$name:` `$stem:` `$ext:` `$path:` `$parent:` `$fullpath:`, resolved in the index) `omit:` (`OmitSet`) `weight:` (ignored); per-generation caches (tree aggregates, link counts, name lookup, type descriptions).
+- [M2][fnc-exec] `pinyin:`/`py:` `pinyinquan:` `pinyinjian:` (allocation-free NFA, heteronyms, `ü`=`v`/`u`), `ascii:`, `fuzzy:` (edit distance ≤ 1, Wu–Manber); `SearchOptions::{pinyin_default, omit, type_names}`, `PlanEnv::{pinyin_default, omit}`.
+- [M2][fnc-query][fnc-exec] filters: `Filter`/`FilterSet`/`combine_filter`; `SearchRequest::filter: Option<FilterSet>` with per-filter case/ww/path/diacritics/regex and `and-filter:`/`or-filter:`; `Filter::user_macro` for macro-named filters.
+- [M2][fnc-query] parser suite 422 table-driven cases (+62 planner cases); built-in macro lists checked against SPEC ch.2 §6; SPEC ch.2 §9 differences updated.

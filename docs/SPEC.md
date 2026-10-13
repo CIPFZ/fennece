@@ -897,6 +897,26 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | NTFS 硬链接 | 每个文件名一个条目 | 每个名称一个条目：MFT 枚举得到一个名称，其余名称由大小/日期补齐阶段的目录列举（带文件 ID）补全；删除多链接文件的单个名称暂不检测（该别名保留到文件删除/重建）| `FSCTL_ENUM_USN_DATA` 每个文件只返回一个名称（ADR-010）|
 | ReFS 128 位文件 ID | 原样 | 折叠为 64 位（零扩展保持原值，否则 xxh3）| 索引 FRN 列为 u64 |
 | 命令行 `-filelist` / `-folder`，`fes -filelist` | 无 | 新增：挂载 EFU / 文件夹索引；`fes` 离线查询 | 便于脚本与测试 |
+| `type:` 类型描述 | 注册表 `HKCR\.ext` → ProgID 描述 | 前端注入的类型名提供者（Windows 注册表，`SearchOptions::type_names`），无提供者或无结果时回退 Explorer 风格 "`EXT` File"；文件夹 "File folder"、无扩展名 "File" | fnc-exec 禁止 unsafe，注册表访问在 fnc-platform（SPEC-GAP）|
+| `fileexists:` / `folderexists:` | 访问文件系统 | 只在**索引**中解析路径（相对路径以条目所在文件夹为基准，支持 `.`/`..`）；未索引的文件视为不存在 | 零 I/O、可预测；索引即真相 |
+| `filelist:` | 显式路径列表 | 项含 `\`/`/` 时按完整路径在索引中解析，否则按整个文件名匹配；`;` 与 `\|` 均可分隔；大小写与变音不敏感 | 与 Everything 列表语义一致的最小实现 |
+| `omit:` | UI "Omit result" 临时集合 | `SearchOptions::omit`（`OmitSet`，按索引实例）：默认从结果中排除；查询含 `omit:` 时恰好匹配被忽略项；无忽略集合时 `omit:` 为空操作 | 保持查询可组合 |
+| `weight:` | 调整搜索权重（相关度排序）| 解析后忽略（匹配全部）| 未实现相关度排序（SPEC-GAP）|
+| `foldersize:` / `descendantcount:` | 文件夹大小需索引"文件夹大小" | 每个索引代次首次使用时自底向上聚合一次并缓存；未知大小按 0 计；文件取自身大小 | 无需额外索引项 |
+| `descendant:` / `sibling:` / `parent-sibling:` / `ancestor-sibling:` | — | `descendant:` 任意深度子项名匹配；`sibling:` 同目录**其他**条目名匹配；`parent-sibling:` 父文件夹有匹配的兄弟；`ancestor-sibling:` 某祖先有匹配的兄弟 | Everything 文档未给精确定义，按名称直译（SPEC-GAP）|
+| `nameparts:` | — | 名称（文件去扩展名）中字母/数字连续段的个数 | Everything 文档未定义分词（SPEC-GAP）|
+| `hardlinkcount:` | 文件系统硬链接数 | 索引中同一文件（卷+FRN）的名称数；文件夹为 1 | 只用索引数据 |
+| `pinyin:` `pinyinquan:` `pinyinjian:` | 中文版拼音匹配 | 每个汉字可写为全拼、声母（含 zh/ch/sh）或全拼前缀（`py:`），`pinyinquan:` 仅全拼、`pinyinjian:` 仅声母；多音字任一读音；`ü` 可写 `v`/`u`；非汉字按字面；仅作用于子串匹配（通配/正则/整词等不变）；设置 `pinyin_default` 使所有普通项启用，`nopinyin:` 单项关闭 | `pinyin` crate 数据；读音无上下文 |
+| `ascii:` | 仅 ASCII 比较 | 仅 ASCII 字母不区分大小写，其余字符须原样相等（不做 Unicode 大小写折叠、去变音、兼容分解）| 与"忽略非 ASCII 等价"一致的确定性定义 |
+| `fuzzy:` | 无 | 子串匹配允许 1 次编辑（插入/删除/替换，换位算 2 次）；模式 < 3 或 > 64 字符时精确匹配；仅作用于子串匹配 | 本项目扩展，默认关 |
+| 通配日期 `*-02`、`*-*-*T9:00..*-*-*T17:00` | 支持 | 只比较写出的字段（年→秒字典序），粒度为最后写出的字段（`T17:00` 覆盖 17:00:00–17:00:59），范围两端含 | 文档未给比较细节（SPEC-GAP）|
+| 日期常量 `last2weeks` `next3months` `thisquarter` `pastweek` … | 支持 | `this`/`current`=当前日历单位；`last`/`prev`[N]=之前 N 个完整单位；`next`/`coming`[N]=之后 N 个；`past`[N]/`N<unit>`=滚动"过去 N"（上不封顶）| 与 Everything 文档一致的解释 |
+| Excel 序列日 | 支持 | 仅识别 5 位整数部分（`46000`、`46000.5`），避免与年份/`yymmdd`/`yyyymmdd` 冲突 | 消歧 |
+| 时长裸数字 | 未说明 | `length:90` = 90 秒 | 文档未定义单位（SPEC-GAP）|
+| `<folder:>` 中的 `>` | — | 仅数值类函数（数字/大小/日期/时长）或比较修饰符（`len:` `count:` `atoi:` `atof:`）后的 `<`/`>` 视为比较运算符，其余闭合分组 | 修复 `<folder:>` 被读成比较值 |
+| 多个筛选器 | `and-filter:` / `or-filter:` | `FilterSet` 默认 OR 组合（任一为"Everything"即全部），查询中的 `and-filter:`/`or-filter:` 优先于 `FilterSet::and`；每个筛选器的 case/ww/path/diacritics 仅作为其自身项的默认值，`regex` 使整个筛选器搜索为一个正则 | 与 Everything 筛选器选项一致 |
+| `target:` `fsi:` `recycled:` `filelistfilename:` | 访问文件系统 | M2 仍为 `Unsupported`（匹配空并提示）| 需文件系统访问（fs 类），计划随属性/内容索引在 M3 实现 |
+| `parent+N:` | 第 N 级父 | 未注册（`parent+2:x` 作为字面文本）| 官方文档未给出精确语法与语义（SPEC-GAP），待核对 |
 
 ---
 
