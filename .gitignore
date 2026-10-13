@@ -6,3 +6,7 @@
 *.fnx.bak
 /logs
 /data
+
+# Local test-machine credentials (never commit)
+/tools/env
+/tools/agrt_token.py
