@@ -68,6 +68,12 @@ commands! {
     DeletePermanently = "delete-permanently",
     /// Rename in place.
     Rename = "rename",
+    /// Rename many items with a template, find/replace, case (SPEC ch.3 §9).
+    AdvancedRename = "advanced-rename",
+    /// Undo the last file operation.
+    Undo = "undo",
+    /// Redo the last undone file operation.
+    Redo = "redo",
     /// New folder in the selected folder (or the selection's folder).
     NewFolder = "new-folder",
     /// Search the selected folder (`Explore in Fennec`).
@@ -424,6 +430,9 @@ fn defaults() -> Vec<(KeyCtx, Chord, Command)> {
         (R, Chord::new(N, N, N, Key::Delete), K::Delete),
         (R, Chord::new(N, C, N, Key::Delete), K::DeletePermanently),
         (R, Chord::new(N, N, N, Key::F2), K::Rename),
+        (R, Chord::new(C, N, N, Key::Z), K::Undo),
+        (R, Chord::new(C, N, N, Key::Y), K::Redo),
+        (R, Chord::new(C, C, N, Key::Z), K::Redo),
         (R, Chord::new(N, C, N, Key::F10), K::ContextMenu),
         (R, Chord::new(C, C, N, Key::N), K::NewFolder),
     ]);

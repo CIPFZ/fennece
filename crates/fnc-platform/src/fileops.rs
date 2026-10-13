@@ -830,7 +830,7 @@ mod imp {
             if r.original.exists() {
                 return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{} exists", r.original.display())));
             }
-            std::fs::rename(&r.bin_item, &r.original)?;
+            move_any(&r.bin_item, &r.original)?;
             // `Trash/files/x` ↔ `Trash/info/x.trashinfo`.
             if let (Some(files), Some(name)) = (r.bin_item.parent(), r.bin_item.file_name())
                 && let Some(base) = files.parent()
@@ -863,8 +863,19 @@ mod imp {
         let info_file =
             info.join(format!("{}.trashinfo", target.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
         std::fs::write(info_file, format!("[Trash Info]\nPath={}\nDeletionDate={stamp}\n", abs.display()))?;
-        std::fs::rename(p, &target)?;
+        move_any(p, &target)?;
         Ok(target)
+    }
+
+    /// `rename`, or copy + remove when source and target are on different file systems.
+    fn move_any(from: &Path, to: &Path) -> io::Result<()> {
+        match std::fs::rename(from, to) {
+            Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
+                copy_tree(from, to)?;
+                if from.is_dir() { std::fs::remove_dir_all(from) } else { std::fs::remove_file(from) }
+            }
+            r => r,
+        }
     }
 
     fn chrono_like_now() -> String {

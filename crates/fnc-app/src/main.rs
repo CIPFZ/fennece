@@ -19,8 +19,6 @@ mod import;
 mod indexer;
 mod ipc_host;
 mod journal;
-// The advanced rename dialog uses it (M6 UI).
-#[cfg_attr(not(test), allow(dead_code))]
 mod rename;
 #[cfg(feature = "semantic")]
 mod semantic;
@@ -28,6 +26,7 @@ mod servers;
 mod thumbs;
 #[cfg(windows)]
 mod tray;
+mod undo;
 
 use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};

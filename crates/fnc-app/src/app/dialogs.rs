@@ -325,10 +325,7 @@ impl FennecApp {
                 let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let (ok, cancel) = buttons(ui, "dialog-create");
                 if (ok || enter) && !name.trim().is_empty() {
-                    let (owner, parent, name) = (self.owner(), parent.clone(), name.trim().to_string());
-                    self.spawn_op(t_args("msg-created", &[("name", name.clone().into())]), move || {
-                        fnc_platform::fileops::new_folder(owner, &parent, &name)
-                    });
+                    self.new_folder_recorded(parent.clone(), name.trim().to_string());
                     return Act::Close;
                 }
                 if cancel { Act::Close } else { Act::Keep }

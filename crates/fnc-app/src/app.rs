@@ -9,6 +9,7 @@
 
 mod complete;
 mod dialogs;
+mod edit_ui;
 mod grid;
 mod integration;
 mod menus;
@@ -138,6 +139,8 @@ struct RenameState {
 enum WorkerMsg {
     Done(String),
     Failed(String),
+    /// Finished with something for the undo stack.
+    Recorded(String, edit_ui::Recorded),
 }
 
 /// Everything one search view owns: its search, results, selection and engine.
@@ -246,6 +249,8 @@ pub struct FennecApp {
     new_engine: Arc<dyn Fn() -> (SearchEngine, Receiver<EngineEvent>) + Send + Sync>,
     /// Semantic search (SPEC ch.5).
     sem: semantic_ui::SemanticUi,
+    /// Undo stack and advanced rename.
+    edit: edit_ui::EditUi,
     /// IPC, Everything-compatible and HTTP servers.
     servers: Option<integration::AppServers>,
 }
@@ -368,6 +373,7 @@ impl FennecApp {
             new_engine,
             ctx: ctx.clone(),
             sem: Default::default(),
+            edit: Default::default(),
             servers: None,
         };
         app.semantic_init();
@@ -503,6 +509,10 @@ impl FennecApp {
         while let Ok(m) = self.worker_rx.try_recv() {
             let text = match m {
                 WorkerMsg::Done(s) | WorkerMsg::Failed(s) => s,
+                WorkerMsg::Recorded(s, r) => {
+                    self.on_recorded(r);
+                    s
+                }
             };
             self.message = Some((text, Instant::now()));
         }
@@ -856,7 +866,12 @@ impl FennecApp {
                     self.dialog = Some(dialogs::Dialog::ConfirmDelete { paths });
                 }
             }
+            // F2 on several items opens advanced rename (SPEC ch.3 §3).
+            K::Rename if self.v.sel.count(self.v.results.len()) > 1 => self.open_advanced_rename(),
             K::Rename => self.start_rename(),
+            K::AdvancedRename => self.open_advanced_rename(),
+            K::Undo => self.undo_last(),
+            K::Redo => self.redo_last(),
             K::NewFolder => {
                 if let Some(parent) = self.paste_target() {
                     self.dialog = Some(dialogs::Dialog::NewFolder { parent, name: t("new-folder-name") });
@@ -1048,6 +1063,10 @@ impl FennecApp {
         if paths.is_empty() {
             return;
         }
+        if !permanent {
+            self.recycle_paths(paths);
+            return;
+        }
         let owner = self.owner();
         let n = paths.len();
         self.spawn_op(t_args("msg-deleted", &[("count", n.into())]), move || {
@@ -1209,11 +1228,7 @@ impl FennecApp {
         if new.is_empty() || new == old {
             return;
         }
-        let owner = self.owner();
-        let path = r.path;
-        self.spawn_op(t_args("msg-renamed", &[("name", new.clone().into())]), move || {
-            fnc_platform::fileops::rename(owner, &path, &new)
-        });
+        self.rename_recorded(r.path, new);
     }
 
     fn context_menu(&mut self, ctx: &egui::Context) {
@@ -2002,6 +2017,7 @@ impl eframe::App for FennecApp {
         self.dialogs(&ctx);
         self.options_viewport(&ctx);
         self.semantic_setup_window(&ctx);
+        self.advanced_rename_window(&ctx);
         for cmd in std::mem::take(&mut self.pending) {
             self.run(&ctx, cmd);
         }
@@ -2058,5 +2074,7 @@ fn native_handle(frame: &eframe::Frame) -> isize {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_edit;
 #[cfg(all(test, feature = "semantic"))]
 mod tests_semantic;
