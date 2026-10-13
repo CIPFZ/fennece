@@ -541,3 +541,15 @@ fn path_changes_for_folder_indexes() {
     assert_eq!(st.created, 2);
     assert_eq!(all_paths(&s).len(), s.live_count());
 }
+
+#[test]
+fn find_path_walks_from_the_volume_root() {
+    let (s, _) = sample();
+    assert_eq!(s.find_path(r"C:\Windows\System32\cmd.exe"), Some(find(&s, "cmd.exe")));
+    assert_eq!(s.find_path(r"c:\windows\system32\CMD.EXE"), Some(find(&s, "cmd.exe")));
+    assert_eq!(s.find_path("C:/Users/a.txt"), Some(find(&s, "a.txt")));
+    assert_eq!(s.find_path(r"C:\Users\"), Some(find(&s, "Users")));
+    assert_eq!(s.find_path(r"C:\Users\b.txt"), None);
+    assert_eq!(s.find_path(r"D:\Users"), None);
+    assert_eq!(s.find_path(r"C:\Usersx"), None);
+}

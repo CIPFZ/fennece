@@ -508,6 +508,59 @@ pub struct Settings {
     #[setting(key = "index_journal_max", default = 1_000_000, page = "index_journal")]
     pub index_journal_max: u32,
 
+    // ---- semantic (SPEC ch.5) ----
+    /// Enable semantic search (`sem:`) and the background semantic indexer.
+    #[setting(key = "semantic_enabled", default = false, page = "semantic")]
+    pub semantic_enabled: bool,
+    /// Embedding model id (`embeddinggemma-2`, or one from `models.toml`).
+    #[setting(key = "semantic_model", default = "embeddinggemma-2", page = "semantic")]
+    pub semantic_model: String,
+    /// Model file (empty = the model's file in the `models` folder).
+    #[setting(key = "semantic_model_path", default = "", page = "semantic")]
+    pub semantic_model_path: String,
+    /// Stored vector dimension: 128, 256, 512 or 768 (Matryoshka truncation).
+    #[setting(key = "semantic_dim", default = 256, page = "semantic")]
+    pub semantic_dim: u32,
+    /// Folders whose files are embedded (`;`-separated). Empty = Documents and Desktop.
+    #[setting(key = "semantic_folders", default = Vec::new(), page = "semantic")]
+    pub semantic_folders: Vec<String>,
+    /// Embed file names (with their two parent folders).
+    #[setting(key = "semantic_names", default = true, page = "semantic")]
+    pub semantic_names: bool,
+    /// Embed document text.
+    #[setting(key = "semantic_content", default = true, page = "semantic")]
+    pub semantic_content: bool,
+    /// Embed source code.
+    #[setting(key = "semantic_code", default = true, page = "semantic")]
+    pub semantic_code: bool,
+    /// Largest file whose content is embedded (MiB).
+    #[setting(key = "semantic_max_file_mb", default = 16, page = "semantic")]
+    pub semantic_max_file_mb: u32,
+    /// Most chunks per file.
+    #[setting(key = "semantic_max_chunks", default = 32, page = "semantic")]
+    pub semantic_max_chunks: u32,
+    /// CPU limit for semantic indexing in percent of the cores.
+    #[setting(key = "semantic_cpu_limit", default = 25, page = "semantic")]
+    pub semantic_cpu_limit: u32,
+    /// Unload the model after this many idle minutes.
+    #[setting(key = "semantic_idle_unload_min", default = 10, page = "semantic")]
+    pub semantic_idle_unload_min: u32,
+    /// Similarity threshold in percent (`sem:` results below are dropped).
+    #[setting(key = "semantic_min_score", default = 45, page = "semantic")]
+    pub semantic_min_score: u32,
+    /// Semantic candidates per query.
+    #[setting(key = "semantic_top", default = 200, page = "semantic")]
+    pub semantic_top: u32,
+    /// Seconds a changed file waits before it is embedded again.
+    #[setting(key = "semantic_debounce", default = 10, page = "semantic")]
+    pub semantic_debounce: u32,
+    /// Pause semantic indexing.
+    #[setting(key = "semantic_paused", default = false, page = "semantic")]
+    pub semantic_paused: bool,
+    /// Smart mode: send plain searches to the semantic channel too and fuse (`?sem:`).
+    #[setting(key = "semantic_smart", default = false, page = "semantic")]
+    pub semantic_smart: bool,
+
     // ---- advanced ----
     /// Log level: error, warn, info, debug or trace.
     #[setting(key = "log_level", default = "info", page = "advanced")]

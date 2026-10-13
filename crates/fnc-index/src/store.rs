@@ -662,6 +662,45 @@ impl IndexStore {
         }
     }
 
+    /// The live entry at the full path `path` (`\\` or `/` separators, case-insensitive),
+    /// if it is indexed.
+    pub fn find_path(&self, path: &str) -> Option<EntryId> {
+        let path = path.trim_end_matches(['\\', '/']);
+        let mut root_path = String::new();
+        let mut fold = Vec::new();
+        let mut units = Vec::new();
+        for v in &self.volumes {
+            for &root in &v.roots {
+                if !self.is_live(root) {
+                    continue;
+                }
+                self.full_path(root, &mut root_path);
+                let r = root_path.trim_end_matches(['\\', '/']);
+                let Some(head) = path.get(..r.len()) else { continue };
+                if head.to_lowercase() != r.to_lowercase() {
+                    continue;
+                }
+                let rest = &path[r.len()..];
+                if !rest.is_empty() && !rest.starts_with(['\\', '/']) {
+                    continue;
+                }
+                let mut cur = Some(root);
+                for comp in rest.split(['\\', '/']).filter(|c| !c.is_empty()) {
+                    units.clear();
+                    units.extend(comp.encode_utf16());
+                    fold.clear();
+                    fnc_core::fold::fold_utf16_into(&units, &mut fold);
+                    cur = cur
+                        .and_then(|d| self.children(d).find(|&c| self.is_live(c) && self.fold(c) == fold.as_slice()));
+                }
+                if cur.is_some() {
+                    return cur;
+                }
+            }
+        }
+        None
+    }
+
     /// Looks up a direct child of `dir` by folded name.
     pub fn find_child(&self, dir: EntryId, fold: &[u8]) -> Option<EntryId> {
         self.children(dir).find(|&c| self.fold(c) == fold)
