@@ -336,6 +336,7 @@ msg-transfer-done = Tamamlandı: { $path }
 msg-ini-imported = Everything.ini dosyasından { $count } ayar içe aktarıldı
 index-extracting = Özellikler/içerik: { $done } / { $total }
 warn-not-indexed = { $name }: dizinlenmemiş (Seçenekler'de dizini etkinleştirin veya notindexed:{ $name }: kullanın)
+warn-no-file-access = { $name }: dosyaların okunması gerekiyor, bu aramada bu mümkün değil
 warn-slow-limit = Yavaş arama { $count } dosya okunduktan sonra durduruldu; daraltmak için filtre ekleyin.
 warn-semantic = Anlamsal arama: { $reason }
 value-yes = Evet

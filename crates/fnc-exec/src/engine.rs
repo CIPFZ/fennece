@@ -24,7 +24,7 @@ use crate::cache::{Caches, CancelToken, Cancelled};
 use crate::exec::{ExecCtx, ResultSet, apply_post, base_ids_mut, execute_filter};
 use crate::ext::{ExtCtx, Shared, SlowPolicy};
 use crate::semantic::SemanticSource;
-use crate::sort::{SortColumn, SortSpec, sort_ids_ext};
+use crate::sort::{SortColumn, SortExt, SortSpec, sort_ids_with};
 use crate::types::TypeNames;
 
 /// Search-wide options (from settings).
@@ -67,6 +67,10 @@ pub struct SearchOptions {
     /// Smart mode: also send plain searches to the semantic channel and fuse the
     /// rankings (as if every search started with `?sem:`).
     pub semantic_fuse: bool,
+    /// Formulas of the custom columns (`custom_columns` setting), by column index, for
+    /// [`crate::SortKey::Custom`] sorts (`None` = the column's formula did not parse).
+    /// Compared by identity: keep reusing the same `Arc`s while the setting is unchanged.
+    pub formulas: Vec<Option<Shared<fnc_query::formula::Formula>>>,
 }
 
 impl Default for SearchOptions {
@@ -88,6 +92,7 @@ impl Default for SearchOptions {
             slow: SlowPolicy::default(),
             semantic: None,
             semantic_fuse: false,
+            formulas: Vec::new(),
         }
     }
 }
@@ -423,9 +428,10 @@ fn run(
     if results.sort != Some(req.sort) || fresh_post {
         let ts = Instant::now();
         // With set functions, the pre-set results are sorted and the sets re-applied.
+        let sx = SortExt { props: ext.props, formulas: &req.options.formulas };
         match base_ids_mut(&mut results) {
-            Some(base) => sort_ids_ext(base, &req.sort, &snap, caches, cancel, ext.props)?,
-            None => sort_ids_ext(&mut results.ids, &req.sort, &snap, caches, cancel, ext.props)?,
+            Some(base) => sort_ids_with(base, &req.sort, &snap, caches, cancel, sx)?,
+            None => sort_ids_with(&mut results.ids, &req.sort, &snap, caches, cancel, sx)?,
         }
         if req.sort.column == SortColumn::Relevance && results.has_relevance() {
             relevance_order(&mut results, !req.sort.ascending);
@@ -466,7 +472,8 @@ fn run(
                     // Semantic-only hits join the results in the requested order.
                     let known: std::collections::HashSet<u32> = results.ids.iter().map(|id| id.0).collect();
                     results.ids.extend(hits.iter().map(|h| h.id).filter(|id| !known.contains(&id.0)));
-                    sort_ids_ext(&mut results.ids, &req.sort, &snap, caches, cancel, ext.props)?;
+                    let sx = SortExt { props: ext.props, formulas: &req.options.formulas };
+                    sort_ids_with(&mut results.ids, &req.sort, &snap, caches, cancel, sx)?;
                 }
             }
             Err(w) => {

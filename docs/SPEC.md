@@ -898,7 +898,8 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | ReFS 128 位文件 ID | 原样 | 折叠为 64 位（零扩展保持原值，否则 xxh3）| 索引 FRN 列为 u64 |
 | `.fnx` 加载 | — | 整文件读入后解码（不 mmap），全部列本就可变需拷贝 | ADR-012 |
 | 服务每连接鉴权 | 会话 ID 校验 | 管道 DACL 仅允许 SYSTEM/管理员/交互用户；另在接受连接时按客户端 PID 校验：必须处于交互会话（会话 ≠ 0，排除其他服务）且完整性 ≥ Medium（排除低完整性沙箱进程），否则立即断开 | 服务在会话 0，无法要求"同会话"（ADR-011）|
-| "类型"列排序 | 按类型描述 | 按扩展名排序（同类型相邻）| 类型描述来自 Shell，不在引擎内 |
+| "类型"列排序 | 按类型描述 | 按类型描述排序（`SortColumn::Type`）：描述来自 `SearchOptions::type_names` 提供者（每个扩展名查一次并缓存），无提供者或无结果时 "`EXT` File"，文件夹 "File folder"、无扩展名 "File"；描述折叠后按自然序，同描述按名称；文件夹分组规则不变（`FoldersFirst::Never` 时 "File folder" 与其他描述一起排序）| — |
+| 自定义列排序 | 可排序 | 列头单击按公式值排序（`SortKey::Custom` / `SortSpec::custom`，公式来自 `SearchOptions::formulas`，与 `custom_columns` 设置一致）：每个结果并行求值，数值按数值、日期按时间、文本按自然序（折叠），类型混合时 数值 < 日期 < 文本；错误与空值（含空文本）在升序与降序中都排在最后（错误在空值之前）；排序设置/会话写 `custom1-descending`；公式无法解析的列按空值排序（即按名称）| 文档未定义混合类型与错误值的顺序（SPEC-GAP）|
 | 永久删除确认 | Shell 确认框 | Fennec 自己的确认框（关闭 Shell 的重复确认）| 避免两次确认 |
 | 命令行 `-filelist` / `-folder`，`fes -filelist` | 无 | 新增：挂载 EFU / 文件夹索引；`fes` 离线查询 | 便于脚本与测试 |
 | `type:` 类型描述 | 注册表 `HKCR\.ext` → ProgID 描述 | 前端注入的类型名提供者（Windows 注册表，`SearchOptions::type_names`），无提供者或无结果时回退 Explorer 风格 "`EXT` File"；文件夹 "File folder"、无扩展名 "File" | fnc-exec 禁止 unsafe，注册表访问在 fnc-platform（SPEC-GAP）|
@@ -919,8 +920,12 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | 时长裸数字 | 未说明 | `length:90` = 90 秒 | 文档未定义单位（SPEC-GAP）|
 | `<folder:>` 中的 `>` | — | 仅数值类函数（数字/大小/日期/时长）或比较修饰符（`len:` `count:` `atoi:` `atof:`）后的 `<`/`>` 视为比较运算符，其余闭合分组 | 修复 `<folder:>` 被读成比较值 |
 | 多个筛选器 | `and-filter:` / `or-filter:` | `FilterSet` 默认 OR 组合（任一为"Everything"即全部），查询中的 `and-filter:`/`or-filter:` 优先于 `FilterSet::and`；每个筛选器的 case/ww/path/diacritics 仅作为其自身项的默认值，`regex` 使整个筛选器搜索为一个正则 | 与 Everything 筛选器选项一致 |
-| `target:` `fsi:` `recycled:` `filelistfilename:` | 访问文件系统 | M2 仍为 `Unsupported`（匹配空并提示）| 需文件系统访问（fs 类），计划随属性/内容索引在 M3 实现 |
-| `parent+N:` | 第 N 级父 | 未注册（`parent+2:x` 作为字面文本）| 官方文档未给出精确语法与语义（SPEC-GAP），待核对 |
+| `parent+N:` | 第 N 级父（文档未给语法）| `parent+N:路径`，`+N` 写在函数名中（N = 0–255，`Parent+2:` 大小写不敏感）：条目直接父文件夹之上第 N 级的祖先为该文件夹，即条目恰好位于其下 N+1 级；`parent+0:` ≡ `parent:`；N > 255 或缺少数字时整个项为字面文本；路径规则同 `parent:`（整路径、末尾 `\` 可省、可用通配符、`;` 列表）；按索引计算（文件夹集合 + 向上走 N+1 步）| 官方文档未给出精确语法与语义（SPEC-GAP），按此定义实现 |
+| `filelistfilename:` | 来自文件列表的条目 | 只匹配已挂载文件列表（卷类型 `filelist`）中的条目：值不含 `\` 时匹配列表文件名，含 `\` 时匹配列表完整路径（子串、不区分大小写；通配符匹配整串）；空值 = 任意文件列表；编译为每卷一位，零 I/O | 文档未定义匹配对象（SPEC-GAP）|
+| `target:` `linktarget:` `shortcuttarget:` | 链接/快捷方式目标 | 符号链接与 junction（重解析点条目）：`read_link` 的目标，去掉 `\??\`/`\\?\` 前缀（`\\?\UNC\` → `\\`），相对目标按链接所在文件夹解析；`.lnk`：自带 MS-SHLLINK 解析器（`fnc_props::link`），LinkInfo LocalBasePath+CommonPathSuffix，其次 NetName+CommonPathSuffix，再次 StringData RELATIVE_PATH（按 `.lnk` 所在文件夹解析），不解析 IDList/环境变量块，非 Unicode 字符串按 `ansi_code_page` 解码；`.url`：`[InternetShortcut]` 节的 `URL=`；子串/正则匹配整个目标，含 `\`/`/` 的通配符匹配整个目标，不含分隔符的通配符只匹配目标最后一段（`target:*.exe`）；空值 = 能读出目标的任意链接；其他条目从不匹配且不读盘；慢路径（每次搜索文件预算、可取消、`ExecWarning::SlowLimit`、按 卷+FRN/路径+大小+修改时间 跨查询缓存）| 文档未定义匹配细节（SPEC-GAP）；云文件、去重等其他重解析点没有可读目标 |
+| `fsi:` `filesignature:` | 文件签名（魔数）| 读取文件前 4 KiB 判定类型，名称表见 `fnc_props::signature::NAMES`（jpg png gif bmp tif webp ico psd heic avif pdf zip docx xlsx pptx odt ods odp epub jar apk 7z rar gz bz2 xz zst tar cab iso exe dll elf mp3 aac flac wav ogg mp4 m4a mov 3gp mkv webm avi mpg ts sqlite rtf ole class wasm ttf ttc otf woff woff2 lnk，另收 `jpeg` `tiff` `heif` 等别名）；值为名称或 `;` 列表，未知名称无效并提示；`fsi:` 空值 = 签名未知的文件；文件夹从不匹配；ZIP 按前 4 KiB 内的本地文件头细分（`[Content_Types].xml` 或 `word/` `xl/` `ppt/` → OOXML，`mimetype` → epub/ODF，`AndroidManifest.xml`/`classes.dex` → apk，`META-INF/MANIFEST.MF`/`.class` → jar）；doc/xls/msg 等 OLE2 复合文档统一为 `ole`；ISO 仅当前 4 KiB 全为零时再读 32 KiB 处的 5 字节；扩展名与内容不符可写 `fsi:zip !ext:zip`；慢路径同 `target:` | Everything 文档未给出类型名表（SPEC-GAP）；关键信息在 4 KiB 之外的容器可能只识别为外层格式（如 v1 签名的 apk 识别为 jar）|
+| `recycled:` `recyclebinoriginalpath:` | 回收站项 | 无值：卷根 `\$Recycle.Bin\<SID>\` 下名称以 `$R` 开头的条目及其下全部条目（只用索引，不读盘）；有值：与原始路径文本匹配（同 `path:` 规则：`/` 视为 `\`，通配符匹配整个路径），原始路径来自同目录的 `$I…` 记录（v1：版本+大小+FILETIME+520 字节 UTF-16 路径；v2：+4 字节字符数+路径，`fnc_props::recycle`），被回收文件夹之下的条目 = 该文件夹原始路径 + 相对后缀；没有 `$I` 记录时原始路径未知（不匹配）；慢路径同 `target:` | 仅 Vista 及以后的格式（XP 的 `RECYCLER\INFO2` 不支持）|
+| `target:` / `fsi:` / `recycled:<值>` 经 IPC、HTTP、`fes` | — | IPC 后端执行时没有按需数据源（`ExtCtx::default()`），这些函数在 es/fes/HTTP 查询中匹配空并提示"需要读取文件"（`ExecWarning::NoFileAccess`）；`recycled:` 无值形式与 GUI 一致 | 与属性/内容函数在 IPC 下的现状一致（待决）|
 | 属性名表（附录 B）| 约 300 个属性 | M3 注册约 95 个（SPEC 第 2 章 §5.5–5.9 全部 + 派生 `dimensions`/`aspect-ratio`），其余待补；未注册名称为字面文本 | 分阶段覆盖（SPEC-GAP）|
 | 未索引属性 | 从磁盘读取（慢）| 未提取的条目视为 `unknown`（仅匹配 `prop:unknown`）；有按需数据源时按需读取（`SlowPolicy::props` 默认开），每次搜索最多读 10,000 个文件，超出部分保持 unknown 并在状态栏提示；`notindexed:` 总是读取 | 防止无过滤的慢查询失控（第 2 章 §8.6）|
 | 已提取但无该属性 | — | 视为"已知为空"，与未提取一样匹配 `prop:unknown` | 语义统一 |
@@ -963,7 +968,6 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | 语义索引吞吐 | — | CPU（Q8_0，2 线程）实测约 2 块/秒（≈500 token/s），低于第 5 章 §4 的 ≥20 块/秒 | 270M 模型在 CPU 上受算力限制；`vulkan` 特性 + `semantic_gpu_layers` 可用 GPU 加速 |
 | 模型/维度变更 | — | 立即改用新的空向量库并后台重建，期间语义结果来自已重建部分 | 新旧模型向量不可比较，同时驻留两模型内存翻倍（ADR-021）|
 | `eval:` 公式 | Excel 风格公式 | 约 70 个函数（IF/IFS/SWITCH/AND/OR/LEN/LEFT/MID/SUBSTITUTE/SEARCH/ROUND/MOD/DATE/YEAR/… 以及 STARTSWITH/ENDSWITH/CONTAINS 扩展）；变量 `$name:` `$stem:` `$ext:` `$path:` `$parent:` `$fullpath:` `$size:` `$dm:` `$dc:` `$da:` `$dr:` `$rc:` `$attrib:` `$depth:` `$runcount:` `$isfolder:` 及全部属性名；数字可带大小单位（`1.5mb`）；未加引号时 `<` `>` 在 `eval:` 值内视为运算符 | 官方未给出完整函数表（SPEC-GAP）|
-| 自定义列 | 可排序 | `custom_columns`（`标题=公式`，最多 9 列）只显示不排序 | 值逐行计算，未进入排序引擎（SPEC-GAP）|
 | 撤销 | — | 记录 Fennec 发起的删除（回收站）、重命名、新建文件夹、高级重命名、粘贴（复制 → 撤销时把副本移入回收站；剪切 → 撤销时移回原处）；拖放到其他程序（由目标程序自己记录撤销）与永久删除不记录 | 永久删除不可逆 |
 | 查找栏 | Ctrl+F（查找栏模式）| 默认 Ctrl+F 仍聚焦搜索框（Everything 默认）；`findbar_ctrl_f` 打开后在结果列表中 Ctrl+F 打开查找栏；F3/Shift+F3 在查找栏打开时查找下一个/上一个 | 与 Everything 默认行为一致 |
 | ETP/FTP 服务器 | 支持 | 未实现 | SPEC `[MAY]` |

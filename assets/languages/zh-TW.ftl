@@ -333,6 +333,7 @@ msg-transfer-done = 完成：{ $path }
 msg-ini-imported = 已從 Everything.ini 匯入 { $count } 項設定
 index-extracting = 屬性/內容：{ $done } / { $total }
 warn-not-indexed = { $name }：尚未建立索引（請在「選項」中啟用此索引，或使用 notindexed:{ $name }:）
+warn-no-file-access = { $name }：需要讀取檔案，此搜尋無法讀取
 warn-slow-limit = 慢速搜尋已讀取 { $count } 個檔案後停止；請加上篩選條件以縮小範圍。
 warn-semantic = 語意搜尋：{ $reason }
 value-yes = 是

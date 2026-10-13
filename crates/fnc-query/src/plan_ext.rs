@@ -768,13 +768,21 @@ pub fn collect_content(n: &Node, out: &mut Vec<ContentPred>) {
 }
 
 /// `true` if `n` contains a predicate whose matches can change without an index change
-/// (properties, content, hashes) — such plans are not narrowed from previous results
-/// across store updates (the executor checks store generations).
+/// (properties, content, hashes, file reads: link targets, signatures, recycle bin
+/// records) — the executor gives such plans the slow-path state (file budget, caches).
 pub fn uses_stores(n: &Node) -> bool {
     match n {
         Node::And(v) | Node::Or(v) => v.iter().any(uses_stores),
         Node::Not(c) => uses_stores(c),
-        Node::Leaf(Pred::Prop(_) | Pred::Content(_) | Pred::ContentHits(..) | Pred::Hash(_)) => true,
+        Node::Leaf(
+            Pred::Prop(_)
+            | Pred::Content(_)
+            | Pred::ContentHits(..)
+            | Pred::Hash(_)
+            | Pred::LinkTarget(_)
+            | Pred::Signature(_)
+            | Pred::Recycled(Some(_)),
+        ) => true,
         _ => false,
     }
 }

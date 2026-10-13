@@ -333,6 +333,7 @@ msg-transfer-done = 完了：{ $path }
 msg-ini-imported = Everything.ini から { $count } 個の設定をインポートしました
 index-extracting = プロパティ/コンテンツ：{ $done } / { $total }
 warn-not-indexed = { $name }：インデックスされていません（オプションでインデックスを有効にするか、notindexed:{ $name }: を使用してください）
+warn-no-file-access = { $name }：ファイルの読み取りが必要ですが、この検索では読み取れません
 warn-slow-limit = { $count } 個のファイルを読み込んだ時点で低速検索を停止しました。フィルターを追加して絞り込んでください。
 warn-semantic = セマンティック検索：{ $reason }
 value-yes = はい

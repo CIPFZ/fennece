@@ -6,7 +6,7 @@ use std::sync::Arc;
 use fnc_core::fold::{FoldOptions, fold_str_into};
 use fnc_core::{EntryFlags, EntryId, FileTime};
 use fnc_index::ext::{NO_EXT, OVERFLOW_EXT, ext_of, stem_of};
-use fnc_index::{IndexStore, SIZE_UNKNOWN};
+use fnc_index::{IndexStore, SIZE_UNKNOWN, VolumeKind};
 use fnc_props::PropertyId;
 use fnc_props::hash::HashAlgo;
 use fnc_query::date::DateWild;
@@ -227,7 +227,7 @@ fn needs_paths(n: &Node) -> bool {
         Node::And(v) | Node::Or(v) => v.iter().any(needs_paths),
         Node::Not(c) => needs_paths(c),
         Node::Leaf(Pred::Text(t)) => matches!(t.target, Target::FullPath | Target::PathPart),
-        Node::Leaf(Pred::Parent(_) | Pred::Ancestor(_)) => true,
+        Node::Leaf(Pred::Parent(_) | Pred::Ancestor(_) | Pred::ParentUp(..)) => true,
         Node::Leaf(Pred::Child(t) | Pred::Descendant(t) | Pred::Sibling(_, t)) => {
             matches!(t.target, Target::FullPath | Target::PathPart)
         }
@@ -291,16 +291,23 @@ impl Compiled {
         self.slow.as_ref().map(|s| s.content_hits.lock().clone()).unwrap_or_default()
     }
 
-    pub(crate) fn text_leaf(&mut self, t: &TextPred, s: &IndexStore) -> Option<TextLeaf> {
-        let pattern = match compile_pattern(t) {
-            Ok(p) => p,
+    /// Text leaf for values matched with [`Compiled::match_str`] (link targets, list
+    /// files, original paths): no folder fast path, which only helps index subjects.
+    pub(crate) fn value_leaf(&mut self, t: &TextPred) -> Option<TextLeaf> {
+        match compile_pattern(t) {
+            Ok(pattern) => {
+                Some(TextLeaf { pattern, pred: t.clone(), mode: subject_mode(t), dir_hit: None, needle_len: 0 })
+            }
             Err(e) => {
                 self.errors.push(e.to_string());
-                return None;
+                None
             }
-        };
-        let mode = subject_mode(t);
-        let mut leaf = TextLeaf { pattern, pred: t.clone(), mode, dir_hit: None, needle_len: 0 };
+        }
+    }
+
+    pub(crate) fn text_leaf(&mut self, t: &TextPred, s: &IndexStore) -> Option<TextLeaf> {
+        let mut leaf = self.value_leaf(t)?;
+        let mode = leaf.mode;
         if t.target == Target::FullPath
             && mode == SubjectMode::StoredFold
             && t.kind == PatternKind::Substring
@@ -410,6 +417,35 @@ impl Compiled {
         Leaf::TypeIn { ids, folder, no_ext, overflow: Box::new(leaf) }
     }
 
+    /// `filelistfilename:` — a per-volume set: mounted file lists whose list file name
+    /// (or full path, for patterns with a separator) matches.
+    fn file_list_name(&mut self, t: Option<&TextPred>, s: &IndexStore) -> Leaf {
+        let leaf = match t {
+            Some(t) => match self.value_leaf(t) {
+                Some(l) => Some(l),
+                None => return Leaf::Nothing,
+            },
+            None => None,
+        };
+        let mut sc = Scratch::default();
+        Leaf::VolumeIn(
+            s.volumes()
+                .iter()
+                .map(|v| {
+                    v.info.kind == VolumeKind::FileList
+                        && leaf.as_ref().is_none_or(|l| {
+                            let path = v.info.root_path.replace('/', "\\");
+                            let subject = match l.pred.target {
+                                Target::Name => path.trim_end_matches('\\').rsplit('\\').next().unwrap_or(""),
+                                _ => path.as_str(),
+                            };
+                            Self::match_str(l, subject, &mut sc)
+                        })
+                })
+                .collect(),
+        )
+    }
+
     /// Matches `l` against arbitrary text (folded like an entry name).
     pub(crate) fn match_str(l: &TextLeaf, text: &str, sc: &mut Scratch) -> bool {
         sc.u.clear();
@@ -509,6 +545,55 @@ impl Compiled {
             Pred::Root => Leaf::Root,
             Pred::Empty => Leaf::Empty(caches.child_counts(s)),
             Pred::Parent(t) => Leaf::ParentIn(self.folder_set(t, s)),
+            Pred::ParentUp(up, t) => Leaf::Extension(Box::new(ExtLeaf::ParentUp(crate::files::ParentUpLeaf {
+                set: self.folder_set(t, s),
+                up: *up,
+            }))),
+            Pred::FileListName(t) => self.file_list_name(t.as_ref(), s),
+            Pred::LinkTarget(t) => {
+                let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
+                let text = match t {
+                    Some(t) => match self.value_leaf(t) {
+                        Some(l) => Some(Box::new(l)),
+                        None => return Ok(Leaf::Nothing),
+                    },
+                    None => None,
+                };
+                if slow.on_demand.is_none() {
+                    slow.warn(ExtWarning::NoFileAccess("target"));
+                }
+                let d = s.ext_dict();
+                Leaf::Extension(Box::new(ExtLeaf::Target(crate::files::TargetLeaf {
+                    text,
+                    name_only: t.as_ref().is_some_and(|t| t.target == Target::Name),
+                    lnk: d.lookup(b"lnk"),
+                    url: d.lookup(b"url"),
+                    slow,
+                })))
+            }
+            Pred::Signature(names) => {
+                let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
+                if slow.on_demand.is_none() {
+                    slow.warn(ExtWarning::NoFileAccess("fsi"));
+                }
+                Leaf::Extension(Box::new(ExtLeaf::Signature(crate::files::SignatureLeaf {
+                    names: names.clone(),
+                    slow,
+                })))
+            }
+            Pred::Recycled(None) => Leaf::In(crate::files::recycle_sets(s).all),
+            Pred::Recycled(Some(t)) => {
+                let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
+                let Some(text) = self.value_leaf(t) else { return Ok(Leaf::Nothing) };
+                if slow.on_demand.is_none() {
+                    slow.warn(ExtWarning::NoFileAccess("recycled"));
+                }
+                Leaf::Extension(Box::new(ExtLeaf::Recycled(crate::files::RecycledLeaf {
+                    sets: Arc::new(crate::files::recycle_sets(s)),
+                    text: Box::new(text),
+                    slow,
+                })))
+            }
             Pred::Ancestor(t) => Leaf::AncestorIn(self.folder_set(t, s)),
             Pred::Child(t) => {
                 let Some(hits) = self.hits(t, s, cancel)? else { return Ok(Leaf::Nothing) };

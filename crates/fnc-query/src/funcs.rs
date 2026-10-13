@@ -40,6 +40,9 @@ macro_rules! funcs {
             $($id,)+
             /// A property from the property table (`width:`, `artist:`, `file-version:`).
             Prop(PropertyId),
+            /// `parent+N:` — the folder N levels above the direct parent (`parent+0:` is
+            /// `parent:`). Written with the `+N` in the name; N is 0–255.
+            ParentN(u8),
         }
 
         impl FuncId {
@@ -48,6 +51,7 @@ macro_rules! funcs {
                 match self {
                     $(FuncId::$id => ValueKind::$kind,)+
                     FuncId::Prop(p) => prop_kind(p),
+                    FuncId::ParentN(_) => ValueKind::Text,
                 }
             }
             /// Canonical name (first alias; the canonical property name for properties).
@@ -55,6 +59,7 @@ macro_rules! funcs {
                 match self {
                     $(FuncId::$id => funcs!(@first $($name),+),)+
                     FuncId::Prop(p) => p.name(),
+                    FuncId::ParentN(n) => parent_n_name(n),
                 }
             }
             /// All aliases (for properties: the aliases besides the canonical name).
@@ -62,6 +67,7 @@ macro_rules! funcs {
                 match self {
                     $(FuncId::$id => &[$($name),+],)+
                     FuncId::Prop(p) => p.def().map_or(&[], |d| d.aliases),
+                    FuncId::ParentN(_) => &[],
                 }
             }
         }
@@ -72,6 +78,16 @@ macro_rules! funcs {
         ];
     };
     (@first $first:literal $(, $rest:literal)*) => { $first };
+}
+
+/// `parent+0` … `parent+255` (the canonical names of [`FuncId::ParentN`]).
+static PARENT_N_NAMES: LazyLock<Vec<&'static str>> =
+    // One-time table: 256 short names that live as long as the program, like the
+    // property names below.
+    LazyLock::new(|| (0..=255u16).map(|n| &*String::leak(format!("parent+{n}"))).collect());
+
+fn parent_n_name(n: u8) -> &'static str {
+    PARENT_N_NAMES.get(usize::from(n)).copied().unwrap_or("parent")
 }
 
 /// Value kind of a property function.
@@ -486,5 +502,8 @@ mod tests {
         assert_eq!(lookup_entity("nope"), None);
         assert_eq!(FuncId::Ext.kind(), ValueKind::TextList);
         assert_eq!(FuncId::Size.name(), "size");
+        assert_eq!(FuncId::ParentN(3).name(), "parent+3");
+        assert_eq!(FuncId::ParentN(255).name(), "parent+255");
+        assert_eq!(FuncId::ParentN(1).kind(), ValueKind::Text);
     }
 }

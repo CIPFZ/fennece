@@ -102,6 +102,9 @@ pub enum ExecWarning {
     SlowLimit(usize),
     /// Semantic terms could not be evaluated (model missing, semantic search off).
     Semantic(String),
+    /// The function reads files (`target:`, `fsi:`, `recycled:<text>`) but the search has
+    /// no on-demand source: nothing matches.
+    NoFileAccess(&'static str),
 }
 
 impl fmt::Display for ExecWarning {
@@ -114,6 +117,7 @@ impl fmt::Display for ExecWarning {
                 write!(f, "slow search stopped after reading {n} files; add filters to narrow it")
             }
             ExecWarning::Semantic(why) => write!(f, "semantic search: {why}"),
+            ExecWarning::NoFileAccess(name) => write!(f, "{name}: needs file access, not available for this search"),
         }
     }
 }
@@ -154,7 +158,7 @@ pub(crate) struct SlowState {
     budget: usize,
     used: AtomicUsize,
     exceeded: AtomicBool,
-    on_demand: Option<Arc<dyn OnDemand>>,
+    pub(crate) on_demand: Option<Arc<dyn OnDemand>>,
     pub(crate) hashes: Arc<HashCache>,
     /// Properties wanted by the query's property leaves (one extraction per entry).
     wanted: Vec<PropertyId>,
@@ -164,7 +168,76 @@ pub(crate) struct SlowState {
     pub(crate) content_hits: Mutex<HashMap<u32, (u32, u32)>>,
     /// Long-lived cache of on-demand properties (across queries).
     cross: Arc<OnDemandCache>,
+    /// Long-lived cache of link targets, file signatures and recycle bin records.
+    texts: Arc<FileTextCache>,
+    /// Original paths of recycle bin items read by this query (top `$R` entry → path).
+    pub(crate) recycled: Mutex<HashMap<u32, Option<Arc<str>>>>,
     pub(crate) warnings: Mutex<Vec<ExecWarning>>,
+}
+
+/// What a [`FileTextCache`] entry holds.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum FileText {
+    /// Link target (`target:`).
+    LinkTarget,
+    /// File signature name, `""` = unknown (`fsi:`).
+    Signature,
+    /// Original path from the `$I` record of a recycle bin item (`recycled:`).
+    RecycleOrigin,
+}
+
+/// A cached file value: `None` = unreadable.
+type FileValue = Option<Arc<str>>;
+
+/// Cross-query cache of small values read from files (link targets, signatures, recycle
+/// bin records), keyed by file identity like [`OnDemandCache`]; `None` = unreadable.
+#[derive(Default)]
+pub struct FileTextCache {
+    map: Mutex<HashMap<(HashKey, FileText), FileValue>>,
+}
+
+impl FileTextCache {
+    const MAX: usize = 200_000;
+
+    fn get(&self, k: &(HashKey, FileText)) -> Option<Option<Arc<str>>> {
+        self.map.lock().get(k).cloned()
+    }
+
+    fn insert(&self, k: (HashKey, FileText), v: Option<Arc<str>>) {
+        let mut m = self.map.lock();
+        if m.len() >= Self::MAX {
+            m.clear();
+        }
+        m.insert(k, v);
+    }
+
+    /// Number of cached values.
+    pub fn len(&self) -> usize {
+        self.map.lock().len()
+    }
+
+    /// `true` if empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// File identity of any entry (folders included, unlike [`HashKey::of`]).
+fn file_key(s: &IndexStore, id: EntryId, buf: &mut Vec<u8>) -> Option<HashKey> {
+    if !s.is_dir(id)
+        && let Some(k) = HashKey::of_with(s, id, buf)
+    {
+        return Some(k);
+    }
+    let vol = s.volume_info(s.volume_of(id))?;
+    buf.clear();
+    s.full_path_fold(id, buf);
+    Some(HashKey {
+        volume: xxhash_rust::xxh3::xxh3_64(vol.info.root_path.as_bytes()),
+        file: xxhash_rust::xxh3::xxh3_64(buf),
+        size: s.size(id).unwrap_or(u64::MAX),
+        dm: s.date_modified(id).0,
+    })
 }
 
 impl SlowState {
@@ -180,6 +253,8 @@ impl SlowState {
             extracted: Mutex::new(HashMap::new()),
             content_hits: Mutex::new(HashMap::new()),
             cross: caches.on_demand_props(),
+            texts: caches.file_texts(),
+            recycled: Mutex::new(HashMap::new()),
             warnings: Mutex::new(Vec::new()),
         }
     }
@@ -191,8 +266,37 @@ impl SlowState {
         }
     }
 
+    /// A small value read from the file of `id` with `read` (cached across queries by
+    /// file identity; the read counts against the file budget). `None` if unreadable,
+    /// over budget, cancelled or without an on-demand source.
+    pub(crate) fn file_text(
+        &self,
+        s: &IndexStore,
+        id: EntryId,
+        what: FileText,
+        sc: &mut Scratch,
+        read: impl FnOnce(&dyn OnDemand, &Path) -> Option<String>,
+    ) -> Option<Arc<str>> {
+        let key = file_key(s, id, &mut sc.a);
+        if let Some(k) = key
+            && let Some(v) = self.texts.get(&(k, what))
+        {
+            return v;
+        }
+        let src = self.on_demand.as_ref()?;
+        if !self.take_file() {
+            return None;
+        }
+        s.full_path(id, &mut sc.t);
+        let v: Option<Arc<str>> = read(src.as_ref(), Path::new(&sc.t)).map(Into::into);
+        if let Some(k) = key {
+            self.texts.insert((k, what), v.clone());
+        }
+        v
+    }
+
     /// Reserves one file read; `false` when cancelled or over budget.
-    fn take_file(&self) -> bool {
+    pub(crate) fn take_file(&self) -> bool {
         if self.cancel.is_cancelled() {
             return false;
         }
@@ -839,6 +943,14 @@ pub enum ExtLeaf {
     Hash(HashLeaf),
     /// Formula (`eval:`).
     Eval(crate::formula::EvalLeaf),
+    /// Link target (`target:`).
+    Target(crate::files::TargetLeaf),
+    /// File signature (`fsi:`).
+    Signature(crate::files::SignatureLeaf),
+    /// Recycle bin original path (`recycled:<text>`).
+    Recycled(crate::files::RecycledLeaf),
+    /// `parent+N:` (index only; boxed here to keep the literal evaluator unchanged).
+    ParentUp(crate::files::ParentUpLeaf),
 }
 
 impl ExtLeaf {
@@ -851,6 +963,10 @@ impl ExtLeaf {
             ExtLeaf::ContentHits(c) => c.eval(s, id, sc),
             ExtLeaf::Hash(h) => h.eval(s, id, sc),
             ExtLeaf::Eval(f) => f.eval(s, id, sc),
+            ExtLeaf::Target(t) => t.eval(s, id, sc),
+            ExtLeaf::Signature(f) => f.eval(s, id, sc),
+            ExtLeaf::Recycled(r) => r.eval(s, id, sc),
+            ExtLeaf::ParentUp(p) => p.eval(s, id),
         }
     }
 }

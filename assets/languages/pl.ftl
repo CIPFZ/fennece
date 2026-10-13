@@ -378,6 +378,7 @@ msg-transfer-done = Gotowe: { $path }
 msg-ini-imported = Zaimportowano ustawienia z Everything.ini: { $count }
 index-extracting = Właściwości/zawartość: { $done } / { $total }
 warn-not-indexed = { $name }: nieindeksowane (włącz indeks w opcjach lub użyj notindexed:{ $name }:)
+warn-no-file-access = { $name }: wymaga odczytu plików, co nie jest możliwe w tym wyszukiwaniu
 warn-slow-limit = Wolne wyszukiwanie zatrzymane, odczytane pliki: { $count }; dodaj filtry, aby je zawęzić.
 warn-semantic = Wyszukiwanie semantyczne: { $reason }
 value-yes = Tak

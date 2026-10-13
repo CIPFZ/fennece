@@ -747,6 +747,7 @@ pub fn column_of(c: fnc_exec::SortColumn) -> Column {
         S::FullPath => Column::FullPath,
         S::Size => Column::Size,
         S::Extension => Column::Extension,
+        S::Type => Column::Type,
         S::DateModified => Column::DateModified,
         S::DateCreated => Column::DateCreated,
         S::DateAccessed => Column::DateAccessed,

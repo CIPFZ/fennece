@@ -372,6 +372,7 @@ msg-ini-imported = { $count ->
 }
 index-extracting = Eigenschaften/Inhalte: { $done } / { $total }
 warn-not-indexed = { $name }: nicht indiziert (Index in den Optionen aktivieren oder notindexed:{ $name }: verwenden)
+warn-no-file-access = { $name }: muss Dateien lesen, was bei dieser Suche nicht möglich ist
 warn-slow-limit = Langsame Suche nach dem Lesen von { $count } Dateien beendet; fügen Sie Filter hinzu, um sie einzugrenzen.
 warn-semantic = Semantische Suche: { $reason }
 value-yes = Ja

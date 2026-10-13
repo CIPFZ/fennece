@@ -101,3 +101,5 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 - [M6][fnc-app] UI languages: en, zh-CN, zh-TW, ja, de, fr, ru, pl, tr; high-contrast theme.
 - [M6][packaging] portable zip and WiX MSI (service, Explorer menu, autostart features); settings/Everything.ini import, filters/bookmarks/history CSV export.
 - [M6] Linux backend: folder index + inotify, freedesktop trash; the app runs under X11 (verified on Xvfb).
+- [fnc-query][fnc-exec][fnc-props] `filelistfilename:`, `parent+N:`, `target:`/`linktarget:`/`shortcuttarget:` (symlinks, junctions, pure-Rust `.lnk` MS-SHLLINK reader, `.url`), `fsi:`/`filesignature:` (magic-number table, OOXML/epub/jar/apk via ZIP headers) and `recycled:`/`recyclebinoriginalpath:` (`$I` records v1/v2); file-reading functions use the on-demand slow path (budget, cancellation, cross-query cache).
+- [fnc-exec][fnc-app] custom formula columns sort (`SortKey::Custom`, `SearchOptions::formulas`, `custom1-descending`); the Type column sorts by type description (`SortColumn::Type`).
