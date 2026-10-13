@@ -101,7 +101,22 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 - [M6][fnc-app] UI languages: en, zh-CN, zh-TW, ja, de, fr, ru, pl, tr; high-contrast theme.
 - [M6][packaging] portable zip and WiX MSI (service, Explorer menu, autostart features); settings/Everything.ini import, filters/bookmarks/history CSV export.
 - [M6] Linux backend: folder index + inotify, freedesktop trash; the app runs under X11 (verified on Xvfb).
+
+## After M6 — closing the SPEC ch.2 §9 gaps (2026-10-13)
+- [fnc-exec] plain name substrings scan with one `memmem` finder per term (Windows: `abc` −30 %, `a b c` −40 %).
+- [fnc-app][fnc-index] live compaction (≥ 10 k and ≥ 20 % dead entries, every 30 s): clone, compact, swap; selection, omissions and open renames follow the id remap; writer epochs retire stale indexer threads.
+- [fnc-index][fnc-platform] folder-index ids derived from parent id + folded name: properties/content of folder indexes survive restarts; changes between the walk and the watch are caught up.
+- [fnc-app][fnc-ipc] rebuild the index while running (`Rebuild index` command, IPC `AdminCommand::Rebuild`, index-source settings changes).
+- [fnc-service][fnc-platform] per-connection check of the client process: interactive session and at least medium integrity.
+- [fnc-core][fnc-http] HTTP/ETP passwords stored as PBKDF2-HMAC-SHA256 (legacy plain values still accepted and rehashed on save).
+- [fnc-platform][fnc-app] undo/redo of clipboard and drag-and-drop copies and moves (`IFileOperationProgressSink` results).
+- [fnc-core][fnc-app] pinyin name order for Chinese interfaces (`name_collation`: auto/codepoint/pinyin; persisted ranks keyed by collation).
+- [fnc-platform][fnc-query][fnc-app] date field order and first day of the week from the OS locale (`GetLocaleInfoEx`; `date_input_order`, `week_start`).
 - [fnc-query][fnc-exec][fnc-props] `filelistfilename:`, `parent+N:`, `target:`/`linktarget:`/`shortcuttarget:` (symlinks, junctions, pure-Rust `.lnk` MS-SHLLINK reader, `.url`), `fsi:`/`filesignature:` (magic-number table, OOXML/epub/jar/apk via ZIP headers) and `recycled:`/`recyclebinoriginalpath:` (`$I` records v1/v2); file-reading functions use the on-demand slow path (budget, cancellation, cross-query cache).
 - [fnc-exec][fnc-app] custom formula columns sort (`SortKey::Custom`, `SearchOptions::formulas`, `custom1-descending`); the Type column sorts by type description (`SortColumn::Type`).
-- [M3+][fnc-props] property table completed to 305 entries (SPEC ch.2 appendix B): Windows shell properties with `System.*` names, types and units checked against the Windows Server 2022 schema, aliases, named values, titles in all nine languages; more EXIF/ID3/OOXML fields from the built-in parsers; column chooser filter box.
-- [M3+][fnc-platform][fnc-app] IFilter content extraction in a host process (`fennec.exe -ifilter-host`, ADR-035): per-file timeout with kill/respawn, job object, low priority; fallback of `content:` and the content index for formats without a built-in parser (setting `content_ifilter`).
+- [fnc-props] property table completed to 305 entries (SPEC ch.2 appendix B): Windows shell properties with `System.*` names, types and units checked against the Windows Server 2022 schema, aliases, named values, titles in all nine languages; more EXIF/ID3/OOXML fields from the built-in parsers; column chooser filter box.
+- [fnc-platform][fnc-app] IFilter content extraction in a host process (`fennec.exe -ifilter-host`, ADR-035): per-file timeout with kill/respawn, job object, low priority; fallback of `content:` and the content index for formats without a built-in parser (setting `content_ifilter`).
+- [fnc-ipc][fnc-fes] es.exe / fes / HTTP searches use the window's property, content and hash stores and file access; `fes -offline` / `-filelist` load the saved stores.
+- [fnc-exec] reparse points with cloud-placeholder or dedup attributes are not treated as links (`symlink:`, `junction:`, `target:`).
+- [fnc-app] property columns read unindexed values for the visible rows in the background (`LazyCells`); link target, file signature and recycle bin original location columns.
+- [fnc-app] folders on indexed NTFS/ReFS volumes or inside another indexed folder are not walked twice.
