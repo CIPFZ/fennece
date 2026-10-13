@@ -137,8 +137,8 @@ mod imp {
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::Shell::{
         BHID_DataObject, BHID_SFUIObject, CMF_CANRENAME, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO,
-        CMINVOKECOMMANDINFOEX, DefSubclassProc, FOF_ALLOWUNDO, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION,
-        FOF_WANTNUKEWARNING, FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FileOperation, GCS_VERBW, IContextMenu,
+        CMINVOKECOMMANDINFOEX, DefSubclassProc, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOCONFIRMMKDIR,
+        FOF_RENAMEONCOLLISION, FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FileOperation, GCS_VERBW, IContextMenu,
         IContextMenu2, IContextMenu3, IFileOperation, ILFree, IShellItem, IShellItemArray, OAIF_EXEC,
         OAIF_HIDE_REGISTRATION, OPENASINFO, RemoveWindowSubclass, SHCreateItemFromParsingName,
         SHCreateShellItemArrayFromIDLists, SHOP_FILEPATH, SHObjectProperties, SHOpenWithDialog, SHParseDisplayName,
