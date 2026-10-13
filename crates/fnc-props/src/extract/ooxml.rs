@@ -66,6 +66,9 @@ pub fn props_from_zip<R: Read + Seek>(z: &mut ZipArchive<R>, limit: u64, out: &m
                 "lastModifiedBy" => push_text(out, P::LAST_AUTHOR, &v),
                 "revision" => push_text(out, P::REVISION_NUMBER, &v),
                 "category" => push_text(out, P::CATEGORY, &v),
+                "contentStatus" => push_text(out, P::CONTENT_STATUS, &v),
+                "version" => push_text(out, P::DOCUMENT_VERSION, &v),
+                "language" => push_text(out, P::LANGUAGE, &v),
                 "created" => {
                     if let Some(d) = w3c_date(&v) {
                         out.push((P::CONTENT_CREATED, Value::Date(d)));
@@ -96,6 +99,17 @@ pub fn props_from_zip<R: Read + Seek>(z: &mut ZipArchive<R>, limit: u64, out: &m
                 "Paragraphs" => P::PARAGRAPH_COUNT,
                 "Slides" => P::SLIDE_COUNT,
                 "DocSecurity" => P::SECURITY,
+                "HiddenSlides" => P::HIDDEN_SLIDE_COUNT,
+                "Notes" => P::NOTE_COUNT,
+                "MMClips" => P::MULTIMEDIA_CLIP_COUNT,
+                "Application" => {
+                    push_text(out, P::PROGRAM_NAME, &v);
+                    continue;
+                }
+                "PresentationFormat" => {
+                    push_text(out, P::PRESENTATION_FORMAT, &v);
+                    continue;
+                }
                 "TotalTime" => {
                     // Minutes.
                     if let Some(m) = int(&v) {
@@ -222,12 +236,13 @@ pub(crate) mod tests {
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 <dc:title>Quarterly Plan</dc:title><dc:subject>Planning</dc:subject><dc:creator>Alice; Bob</dc:creator>
 <cp:keywords>plan, q3</cp:keywords><dc:description>Draft &amp; notes</dc:description><cp:lastModifiedBy>Carol</cp:lastModifiedBy>
-<cp:revision>7</cp:revision><cp:category>Reports</cp:category>
+<cp:revision>7</cp:revision><cp:category>Reports</cp:category><cp:contentStatus>Draft</cp:contentStatus><cp:version>1.2</cp:version>
 <dcterms:created xsi:type="dcterms:W3CDTF">2026-01-15T09:30:00Z</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">2026-02-01T10:00:00Z</dcterms:modified>
 </cp:coreProperties>"#;
     const APP: &str = r#"<?xml version="1.0"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties">
 <Template>Normal.dotm</Template><TotalTime>42</TotalTime><Pages>3</Pages><Words>1234</Words><Characters>7000</Characters>
-<Company>Fennec Corp</Company><Lines>80</Lines><Paragraphs>20</Paragraphs><DocSecurity>0</DocSecurity><Manager>Dana</Manager></Properties>"#;
+<Company>Fennec Corp</Company><Lines>80</Lines><Paragraphs>20</Paragraphs><DocSecurity>0</DocSecurity><Manager>Dana</Manager><Application>Microsoft Office Word</Application>
+<HiddenSlides>2</HiddenSlides><Notes>4</Notes><MMClips>1</MMClips><PresentationFormat>Widescreen</PresentationFormat></Properties>"#;
 
     pub(crate) fn docx(body: &str) -> Vec<u8> {
         let doc = format!(
@@ -290,6 +305,13 @@ pub(crate) mod tests {
         assert_eq!(get(&out, P::COMPANY), Some(&Value::Text("Fennec Corp".into())));
         assert_eq!(get(&out, P::MANAGER), Some(&Value::Text("Dana".into())));
         assert_eq!(get(&out, P::TEMPLATE), Some(&Value::Text("Normal.dotm".into())));
+        assert_eq!(get(&out, P::CONTENT_STATUS), Some(&Value::Text("Draft".into())));
+        assert_eq!(get(&out, P::DOCUMENT_VERSION), Some(&Value::Text("1.2".into())));
+        assert_eq!(get(&out, P::PROGRAM_NAME), Some(&Value::Text("Microsoft Office Word".into())));
+        assert_eq!(get(&out, P::HIDDEN_SLIDE_COUNT), Some(&Value::Int(2)));
+        assert_eq!(get(&out, P::NOTE_COUNT), Some(&Value::Int(4)));
+        assert_eq!(get(&out, P::MULTIMEDIA_CLIP_COUNT), Some(&Value::Int(1)));
+        assert_eq!(get(&out, P::PRESENTATION_FORMAT), Some(&Value::Text("Widescreen".into())));
     }
 
     #[test]

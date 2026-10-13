@@ -195,7 +195,8 @@ impl PropertyStore {
 
     /// `true` if extraction covers `p`.
     pub fn is_indexed(&self, p: PropertyId) -> bool {
-        self.indexed.contains(&p)
+        // `indexed` is kept sorted (`set_indexed`, `from_bytes`).
+        self.indexed.binary_search(&p).is_ok()
     }
 
     /// Sets the covered properties. Adding a property invalidates every row (the entries
@@ -208,9 +209,9 @@ impl PropertyStore {
         if props == self.indexed {
             return false;
         }
-        let added = props.iter().any(|p| !self.indexed.contains(p));
+        let added = props.iter().any(|p| !self.is_indexed(*p));
         for (i, c) in self.cols.iter_mut().enumerate() {
-            if !props.contains(&PropertyId(i as u16)) {
+            if props.binary_search(&PropertyId(i as u16)).is_err() {
                 *c = Column::Empty;
             }
         }

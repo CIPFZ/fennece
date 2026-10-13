@@ -101,3 +101,6 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 - [M6][fnc-app] UI languages: en, zh-CN, zh-TW, ja, de, fr, ru, pl, tr; high-contrast theme.
 - [M6][packaging] portable zip and WiX MSI (service, Explorer menu, autostart features); settings/Everything.ini import, filters/bookmarks/history CSV export.
 - [M6] Linux backend: folder index + inotify, freedesktop trash; the app runs under X11 (verified on Xvfb).
+
+## M3+
+- [M3+][fnc-props] property table completed to 305 entries (SPEC ch.2 appendix B): Windows shell properties with `System.*` names, types and units checked against the Windows Server 2022 schema, aliases, named values, titles in all nine languages; more EXIF/ID3/OOXML fields from the built-in parsers; column chooser filter box.

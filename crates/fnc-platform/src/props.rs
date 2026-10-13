@@ -20,8 +20,17 @@ pub fn provider() -> Option<Arc<dyn PropertyProvider>> {
 /// Converts a raw Windows property value to Fennec's unit for `p` (pure; tested on
 /// every platform).
 pub fn convert(p: PropertyId, v: Value) -> Option<Value> {
+    use fnc_props::PropType;
     // 100-ns units → milliseconds.
     let ticks_to_ms = |v: &Value| v.as_i64().map(|t| Value::Int(t / 10_000));
+    // Some numeric properties are strings in the Windows schema (`System.Music.BeatsPerMinute`).
+    let v = match (p.ty(), v) {
+        (PropType::Int | PropType::Float, Value::Text(t)) => {
+            let n: f64 = t.trim().parse().ok().filter(|n: &f64| n.is_finite())?;
+            if p.ty() == PropType::Int { Value::Int(n.round() as i64) } else { Value::Float(n) }
+        }
+        (_, v) => v,
+    };
     Some(match p {
         PropertyId::LENGTH | PropertyId::TOTAL_EDITING_TIME => ticks_to_ms(&v)?,
         // Bits per second → kbps.
@@ -39,6 +48,19 @@ pub fn convert(p: PropertyId, v: Value) -> Option<Value> {
             63..=87 => 4,
             _ => 5,
         }),
+        // `System.Video.FourCC` is a `MAKEFOURCC` integer: `avc1`.
+        PropertyId::FOUR_CC => match v {
+            Value::Int(x) => {
+                let b = (x as u32).to_le_bytes();
+                let s: String = b.iter().map(|&c| char::from(c)).collect();
+                if b.iter().all(|c| c.is_ascii_graphic() || *c == b' ') {
+                    Value::text(s)?
+                } else {
+                    Value::Text(format!("{:#010x}", x as u32).into())
+                }
+            }
+            v => v,
+        },
         // EXIF flash bits: bit 0 = fired.
         PropertyId::FLASH => Value::Int(v.as_i64()? & 1),
         _ => v,
@@ -209,6 +231,36 @@ mod imp {
         }
     }
 
+    /// `true` if this system's property schema knows `name` (`System.Photo.LensModel`).
+    #[cfg(test)]
+    pub(super) fn known_name(name: &str) -> bool {
+        COM.with(|()| {});
+        let w = wide(std::ffi::OsStr::new(name));
+        let mut key = PROPERTYKEY::default();
+        // SAFETY: `w` is NUL-terminated; `key` is an owned out-structure.
+        unsafe { PSGetPropertyKeyFromName(PCWSTR(w.as_ptr()), &mut key) }.is_ok()
+    }
+
+    /// The schema's `VARTYPE` of `name` (`None` if unknown).
+    #[cfg(test)]
+    pub(super) fn schema_type(name: &str) -> Option<u16> {
+        use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyDescription, PSGetPropertyDescriptionByName};
+        use windows_core::Interface;
+        COM.with(|()| {});
+        let w = wide(std::ffi::OsStr::new(name));
+        let mut raw: *mut std::ffi::c_void = std::ptr::null_mut();
+        // SAFETY: `w` is NUL-terminated; on success `raw` is an AddRef'd
+        // IPropertyDescription that `from_raw` takes ownership of (released on drop).
+        unsafe { PSGetPropertyDescriptionByName(PCWSTR(w.as_ptr()), &IPropertyDescription::IID, &mut raw) }.ok()?;
+        if raw.is_null() {
+            return None;
+        }
+        // SAFETY: see above; `raw` is a valid interface pointer of the requested IID.
+        let desc = unsafe { IPropertyDescription::from_raw(raw) };
+        // SAFETY: valid interface.
+        unsafe { desc.GetPropertyType() }.ok()
+    }
+
     impl WindowsProperties {
         fn key(&self, name: &'static str) -> Option<PROPERTYKEY> {
             let mut keys = self.keys.lock();
@@ -250,11 +302,15 @@ mod imp {
                 }
                 let raw = match p {
                     // Signed degrees from the D/M/S vector and the hemisphere.
-                    PropertyId::LATITUDE | PropertyId::LONGITUDE => {
-                        let refname = if p == PropertyId::LATITUDE {
-                            "System.GPS.LatitudeRef"
-                        } else {
-                            "System.GPS.LongitudeRef"
+                    PropertyId::LATITUDE
+                    | PropertyId::LONGITUDE
+                    | PropertyId::GPS_DEST_LATITUDE
+                    | PropertyId::GPS_DEST_LONGITUDE => {
+                        let refname = match p {
+                            PropertyId::LATITUDE => "System.GPS.LatitudeRef",
+                            PropertyId::LONGITUDE => "System.GPS.LongitudeRef",
+                            PropertyId::GPS_DEST_LATITUDE => "System.GPS.DestLatitudeRef",
+                            _ => "System.GPS.DestLongitudeRef",
                         };
                         let r = self.read(&store, refname, PropType::Text);
                         let r = r.as_ref().and_then(Value::as_str).unwrap_or("").to_string();
@@ -263,6 +319,15 @@ mod imp {
                             .and_then(|d| dms_to_degrees(&[d], &r))
                             .map(Value::Float)
                     }
+                    // Below sea level when `AltitudeRef` is 1 (EXIF).
+                    PropertyId::ALTITUDE => self.read(&store, def.system, PropType::Float).map(|v| {
+                        let below = self.read(&store, "System.GPS.AltitudeRef", PropType::Int).and_then(|r| r.as_i64())
+                            == Some(1);
+                        match v {
+                            Value::Float(f) if below => Value::Float(-f.abs()),
+                            v => v,
+                        }
+                    }),
                     _ => self.read(&store, def.system, p.ty()),
                 };
                 if let Some(v) = raw.and_then(|v| convert(p, v)) {
@@ -299,9 +364,63 @@ mod tests {
         assert_eq!(convert(PropertyId::FLASH, Value::Int(0x19)), Some(Value::Int(1)));
         assert_eq!(convert(PropertyId::WIDTH, Value::Int(5000)), Some(Value::Int(5000)));
         assert_eq!(convert(PropertyId::LENGTH, Value::Text("x".into())), None);
+        // String-typed numbers in the Windows schema.
+        assert_eq!(convert(PropertyId::BPM, Value::Text(" 128 ".into())), Some(Value::Int(128)));
+        assert_eq!(convert(PropertyId::EXPOSURE_BIAS, Value::Text("-0.7".into())), Some(Value::Float(-0.7)));
+        assert_eq!(convert(PropertyId::BPM, Value::Text("fast".into())), None);
+        assert_eq!(convert(PropertyId::TITLE, Value::Text("12".into())), Some(Value::Text("12".into())));
+        let avc1 = i64::from(u32::from_le_bytes(*b"avc1"));
+        assert_eq!(convert(PropertyId::FOUR_CC, Value::Int(avc1)), Some(Value::Text("avc1".into())));
+        assert_eq!(convert(PropertyId::FOUR_CC, Value::Int(1)), Some(Value::Text("0x00000001".into())));
         let lat = dms_to_degrees(&[47.0, 30.0, 0.0], "S").unwrap();
         assert!((lat + 47.5).abs() < 1e-9);
         assert_eq!(dms_to_degrees(&[], "N"), None);
+    }
+
+    /// Every `System.*` name of the property table is known to the Windows property
+    /// schema (catches typos in the table; run on the Windows VM).
+    #[cfg(windows)]
+    #[test]
+    fn every_system_name_resolves() {
+        let unknown: Vec<&str> =
+            fnc_props::PROPERTIES.iter().map(|d| d.system).filter(|n| !n.is_empty() && !imp::known_name(n)).collect();
+        assert!(unknown.is_empty(), "unknown Windows property names: {unknown:?}");
+        for n in ["System.GPS.LatitudeRef", "System.GPS.DestLongitudeRef", "System.GPS.AltitudeRef"] {
+            assert!(imp::known_name(n), "{n}");
+        }
+    }
+
+    /// The table's value types fit the Windows schema types (after [`convert`]).
+    #[cfg(windows)]
+    #[test]
+    fn value_types_match_the_windows_schema() {
+        use fnc_props::PropType;
+        const VECTOR: u16 = 0x1000;
+        let (lpwstr, filetime, boolean, r4, r8) = (31u16, 64u16, 11u16, 4u16, 5u16);
+        let int = |vt: u16| matches!(vt, 2 | 3 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23);
+        let mut bad = Vec::new();
+        for d in fnc_props::PROPERTIES.iter().filter(|d| !d.system.is_empty()) {
+            let Some(vt) = imp::schema_type(d.system) else {
+                bad.push(format!("{}: no description", d.system));
+                continue;
+            };
+            let elem = vt & !VECTOR;
+            let ok = match d.ty {
+                // `convert` turns the FourCC integer into text.
+                PropType::Text => elem == lpwstr || (d.id == PropertyId::FOUR_CC && int(vt)),
+                PropType::MultiText => elem == lpwstr,
+                PropType::Date => vt == filetime,
+                PropType::Duration => int(vt),
+                // Numbers: integers, reals, numeric vectors (GPS), strings parsed by `convert`.
+                PropType::Int => int(vt) || vt == lpwstr || vt == r8 || vt == boolean,
+                PropType::Float => int(elem) || elem == r8 || elem == r4 || vt == lpwstr,
+                PropType::Bool => vt == boolean || int(vt),
+            };
+            if !ok {
+                bad.push(format!("{} ({:?}): VARTYPE {vt:#x}", d.system, d.ty));
+            }
+        }
+        assert!(bad.is_empty(), "type mismatches: {bad:#?}");
     }
 
     /// The provider reads image dimensions through the Windows Property System

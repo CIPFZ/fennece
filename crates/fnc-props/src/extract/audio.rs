@@ -90,10 +90,38 @@ pub fn tags(t: &Tag, out: &mut Props) {
         (ItemKey::Director, P::DIRECTOR),
         (ItemKey::Producer, P::PRODUCER),
         (ItemKey::Writer, P::WRITER),
+        (ItemKey::CopyrightMessage, P::COPYRIGHT),
+        (ItemKey::TrackSubtitle, P::SUBTITLE),
+        (ItemKey::ContentGroup, P::CONTENT_GROUP),
+        (ItemKey::EncoderSettings, P::ENCODING_SETTINGS),
+        (ItemKey::TrackArtistSortOrder, P::ARTIST_SORT),
+        (ItemKey::AlbumArtistSortOrder, P::ALBUM_ARTIST_SORT),
+        (ItemKey::ComposerSortOrder, P::COMPOSER_SORT),
     ] {
         if let Some(s) = t.get_string(key) {
             push_text(out, p, s);
         }
+    }
+    // `TDOR`/`TORY` (ID3), `ORIGINALDATE`/`ORIGINALYEAR` (Vorbis): the year part.
+    if let Some(y) = t
+        .get_string(ItemKey::OriginalReleaseDate)
+        .and_then(|s| s.trim().get(..4))
+        .and_then(|s| s.parse::<i64>().ok())
+        .filter(|y| *y > 0)
+    {
+        out.push((P::ORIGINAL_RELEASE_YEAR, Value::Int(y)));
+    }
+    // "Part of set" as Explorer shows it: `1/2` (disc of discs), `1` without a total.
+    if let Some(d) = t.disk().filter(|n| *n > 0) {
+        let set = match t.disk_total().filter(|n| *n > 0) {
+            Some(total) => format!("{d}/{total}"),
+            None => d.to_string(),
+        };
+        push_text(out, P::PART_OF_SET, &set);
+    }
+    if let Some(f) = t.get_string(ItemKey::FlagCompilation) {
+        let on = matches!(f.trim(), "1" | "true" | "True" | "TRUE");
+        out.push((P::IS_COMPILATION, Value::Int(i64::from(on))));
     }
     let bpm = t.get_string(ItemKey::IntegerBpm).or_else(|| t.get_string(ItemKey::Bpm));
     if let Some(b) = bpm.and_then(|s| s.trim().parse::<f64>().ok()).filter(|b| *b > 0.0 && b.is_finite()) {
@@ -177,6 +205,11 @@ pub(crate) mod tests {
         tag.insert_text(ItemKey::AlbumArtist, "The Band".into());
         tag.insert_text(ItemKey::Composer, "J. Doe".into());
         tag.insert_text(ItemKey::IntegerBpm, "120".into());
+        tag.insert_text(ItemKey::DiscTotal, "2".into());
+        tag.insert_text(ItemKey::OriginalReleaseDate, "1969-09-26".into());
+        tag.insert_text(ItemKey::ContentGroup, "Live".into());
+        tag.insert_text(ItemKey::FlagCompilation, "1".into());
+        tag.insert_text(ItemKey::TrackArtistSortOrder, "Doe, John".into());
         tag.set_date(lofty::tag::items::Timestamp { year: 2021, ..Default::default() });
         tag.save_to_path(&path, WriteOptions::default()).unwrap();
         let mut out = Props::new();
@@ -191,6 +224,11 @@ pub(crate) mod tests {
         assert_eq!(get(&out, P::COMPOSER), Some(&Value::Text("J. Doe".into())));
         assert_eq!(get(&out, P::BPM), Some(&Value::Int(120)));
         assert_eq!(get(&out, P::YEAR), Some(&Value::Int(2021)));
+        assert_eq!(get(&out, P::PART_OF_SET), Some(&Value::Text("1/2".into())));
+        assert_eq!(get(&out, P::ORIGINAL_RELEASE_YEAR), Some(&Value::Int(1969)));
+        assert_eq!(get(&out, P::CONTENT_GROUP), Some(&Value::Text("Live".into())));
+        assert_eq!(get(&out, P::IS_COMPILATION), Some(&Value::Int(1)));
+        assert_eq!(get(&out, P::ARTIST_SORT), Some(&Value::Text("Doe, John".into())));
         assert_eq!(get(&out, P::SAMPLE_RATE), Some(&Value::Int(44100)));
         assert_eq!(get(&out, P::CHANNELS), Some(&Value::Int(2)));
         assert_eq!(get(&out, P::BIT_RATE), Some(&Value::Int(128)));

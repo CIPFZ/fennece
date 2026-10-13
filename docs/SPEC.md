@@ -921,7 +921,7 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | 多个筛选器 | `and-filter:` / `or-filter:` | `FilterSet` 默认 OR 组合（任一为"Everything"即全部），查询中的 `and-filter:`/`or-filter:` 优先于 `FilterSet::and`；每个筛选器的 case/ww/path/diacritics 仅作为其自身项的默认值，`regex` 使整个筛选器搜索为一个正则 | 与 Everything 筛选器选项一致 |
 | `target:` `fsi:` `recycled:` `filelistfilename:` | 访问文件系统 | M2 仍为 `Unsupported`（匹配空并提示）| 需文件系统访问（fs 类），计划随属性/内容索引在 M3 实现 |
 | `parent+N:` | 第 N 级父 | 未注册（`parent+2:x` 作为字面文本）| 官方文档未给出精确语法与语义（SPEC-GAP），待核对 |
-| 属性名表（附录 B）| 约 300 个属性 | M3 注册约 95 个（SPEC 第 2 章 §5.5–5.9 全部 + 派生 `dimensions`/`aspect-ratio`），其余待补；未注册名称为字面文本 | 分阶段覆盖（SPEC-GAP）|
+| 属性名表（附录 B）| 约 300 个属性 | 注册 305 个：第 2 章 §5.5–5.9 全部、派生 `dimensions`/`aspect-ratio`，以及常用 Windows 外壳属性（核心、联系人、邮件、日历/任务、媒体、音乐、照片/EXIF、GPS、图像、视频、音频、文档、快捷方式）；规范名为资源管理器英文列名的短横线小写形式（`lens-maker`），别名含 `System.*` 短名与前缀形式（`lens-manufacturer`、`contact-first-name`、`message-date-received`）；与内置函数同名者不注册为属性（`kind:` → 用 `kind-text:`，`link-target:`/`offline:` 为内置函数）；仅 Windows 提供者可读的属性均有 `System.*` 名（Windows Server 2022 上逐一校验名称与类型），内置解析器另覆盖更多 EXIF/ID3/OOXML 字段；未注册名称为字面文本 | Everything 1.5 自身的属性名表未公开（SPEC-GAP）|
 | 未索引属性 | 从磁盘读取（慢）| 未提取的条目视为 `unknown`（仅匹配 `prop:unknown`）；有按需数据源时按需读取（`SlowPolicy::props` 默认开），每次搜索最多读 10,000 个文件，超出部分保持 unknown 并在状态栏提示；`notindexed:` 总是读取 | 防止无过滤的慢查询失控（第 2 章 §8.6）|
 | 已提取但无该属性 | — | 视为"已知为空"，与未提取一样匹配 `prop:unknown` | 语义统一 |
 | `bit-rate:` / `sample-rate:` / `rating:` | Windows 属性原值 | `bit-rate:` 以 kbps 存储与比较（可写 `320kbps`、`1.4mbps`）；`sample-rate:` 以 Hz（可写 `44.1khz`）；`rating:` 为 0–5 星 | 与界面显示一致（SPEC-GAP）|
@@ -943,7 +943,7 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | IFilter / `content_ifilter_separate_process` | Windows IFilter 提取 Office/PDF 等文本 | 不实现：内容只用内置解析器（纯文本+编码检测、HTML、OOXML、PDF）；其余格式无文本 | IFilter 需 COM 与隔离进程（安全、稳定性），M3 范围外 |
 | 属性“快速排序” | 维护排序索引 | `property_fast_sort` 设置被接受但不建额外结构：属性列排序本就是对结果的并行排序（100 万条按宽度 58 ms，预算 300 ms）| 无需额外内存 |
 | 文件夹索引条目的属性/内容 | 跨重启保留 | 文件夹索引每次启动重新遍历、FRN 为并行分配的合成值，`props.fnx`/`content.fnx` 中这些行无法重新挂接，重启后在后台重新提取（NTFS 卷不受影响）| 文件夹索引无稳定文件 ID |
-| 属性列标题与值 | 本地化 | 约 95 个属性的列标题、是/否、像素、星级随界面语言；其他单位用国际缩写（kbps、Hz、mm、f/2.8、fps）| — |
+| 属性列标题与值 | 本地化 | 全部 305 个属性的列标题（按资源管理器各语言列名翻译）、是/否、像素、星级随界面语言；其他单位用国际缩写（kbps、Hz、mm、f/2.8、fps）；列选择器的属性子菜单顶部有筛选框（按标题或搜索名）| — |
 | `count:<max>`（结果数上限）| 搜索函数，限制结果数 | `count:` 后紧跟纯数字时为结果上限（`FuncId::Count` → `SetKind::Limit`），作为最后一个集合函数在排序后截断，UI 与 IPC/HTTP/fes/兼容层一致（es 1.1.0.38 的 `-n` 以 `< count:N >` 发送）；只能在顶层；其余情况（`count:tags:>2`）仍是比较修饰符 | 同名的修饰符与函数按值区分 |
 | Everything IPC 报告版本 | Everything 自身版本 | `1.4.1.<Fennec 版本>`（0.1.0 → `1.4.1.100`），`Host::everything_version` 可改 | 客户端按 ≥ 1.4.1 启用 QUERY2/IS_DB_LOADED（ADR-031）|
 | IPC `A` 变体字符串 | ANSI 代码页 | UTF-8（失败回退 Latin-1）| 无 Win32 代码页转换（SPEC-GAP）|

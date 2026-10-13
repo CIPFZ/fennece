@@ -300,6 +300,29 @@ pub struct ColumnState {
     pub width: f32,
 }
 
+/// Property columns whose localised title or any search name contains `filter`
+/// (case-insensitive; dashes, underscores and spaces ignored in names); all for an empty filter.
+pub fn filter_properties(cols: Vec<ColumnId>, filter: &str) -> Vec<ColumnId> {
+    let needle = filter.trim().to_lowercase();
+    if needle.is_empty() {
+        return cols;
+    }
+    let compact = fnc_props::schema::normalize(&needle.replace(' ', ""));
+    cols.into_iter()
+        .filter(|c| match c {
+            ColumnId::Property(p) => {
+                c.title().to_lowercase().contains(&needle)
+                    || p.def().is_some_and(|d| {
+                        std::iter::once(&d.canonical)
+                            .chain(d.aliases)
+                            .any(|n| !compact.is_empty() && fnc_props::schema::normalize(n).contains(&compact))
+                    })
+            }
+            _ => false,
+        })
+        .collect()
+}
+
 /// Parses the `columns` setting; unknown entries are skipped, `name` is always kept.
 pub fn parse_columns(spec: &[String]) -> Vec<ColumnState> {
     let mut out: Vec<ColumnState> = Vec::new();
@@ -568,6 +591,17 @@ mod tests {
         assert_eq!(cols[1], ColumnState { id: ColumnId::Property(PropertyId::WIDTH), width: 77.0 });
         assert_eq!(cols[2].id, ColumnId::Property(PropertyId::CAMERA_MAKER), "aliases resolve");
         assert_eq!(columns_setting(&cols)[2], "camera-maker:160");
+        // The column chooser's filter box: titles and search names, ~300 entries.
+        let all = ColumnId::properties();
+        assert!(all.len() >= 290);
+        assert_eq!(filter_properties(all.clone(), "").len(), all.len());
+        let lens = filter_properties(all.clone(), "Lens");
+        assert!(lens.contains(&ColumnId::Property(PropertyId::LENS_MAKER)), "{lens:?}");
+        assert!(lens.contains(&ColumnId::Property(PropertyId::LENS_MODEL)));
+        assert!(!lens.contains(&ColumnId::Property(PropertyId::WIDTH)));
+        let by_name = filter_properties(all.clone(), "message-date");
+        assert_eq!(by_name, [ColumnId::Property(PropertyId::DATE_RECEIVED), ColumnId::Property(PropertyId::DATE_SENT)]);
+        assert!(filter_properties(all, "zzzz-nothing").is_empty());
         assert_eq!(ColumnId::Property(PropertyId::WIDTH).sort(), Some(SortKey::Property(PropertyId::WIDTH)));
         assert_eq!(ColumnId::DupeGroup.sort(), None);
         assert!(

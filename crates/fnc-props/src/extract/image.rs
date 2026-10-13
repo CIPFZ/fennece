@@ -152,6 +152,7 @@ pub fn exif_props<R: BufRead + Seek>(r: &mut R, out: &mut Props) {
         }
         out.push((P::ALTITUDE, Value::Float(v)));
     }
+    exif_more(&get, out);
     if let Some(s) = get(Tag::Copyright).and_then(ascii) {
         push_text(out, P::COPYRIGHT, &s);
     }
@@ -188,6 +189,114 @@ pub fn exif_props<R: BufRead + Seek>(r: &mut R, out: &mut Props) {
     {
         out.push((P::WIDTH, Value::Int(i64::from(w))));
         out.push((P::HEIGHT, Value::Int(i64::from(h))));
+    }
+}
+
+/// The further EXIF/GPS tags of appendix B (lens, exposure program, metering, GPS
+/// direction/speed/destination, …), in the units of the Windows Property System.
+fn exif_more<'a>(get: &dyn Fn(Tag) -> Option<&'a exif::Field>, out: &mut Props) {
+    let uint = |t: Tag| get(t).and_then(|f| f.value.get_uint(0));
+    let real = |t: Tag| get(t).and_then(|f| rational(f, 0));
+    for (tag, p) in [
+        (Tag::LensMake, P::LENS_MAKER),
+        (Tag::LensModel, P::LENS_MODEL),
+        (Tag::BodySerialNumber, P::CAMERA_SERIAL_NUMBER),
+        (Tag::Software, P::SOFTWARE_USED),
+        (Tag::ImageUniqueID, P::IMAGE_ID),
+        (Tag::RelatedSoundFile, P::RELATED_SOUND_FILE),
+        (Tag::GPSImgDirectionRef, P::GPS_IMG_DIRECTION_REF),
+        (Tag::GPSSpeedRef, P::GPS_SPEED_REF),
+        (Tag::GPSTrackRef, P::GPS_TRACK_REF),
+        (Tag::GPSSatellites, P::GPS_SATELLITES),
+        (Tag::GPSStatus, P::GPS_STATUS),
+        (Tag::GPSMeasureMode, P::GPS_MEASURE_MODE),
+        (Tag::GPSMapDatum, P::GPS_MAP_DATUM),
+    ] {
+        if let Some(s) = get(tag).and_then(ascii) {
+            push_text(out, p, &s);
+        }
+    }
+    if let Some(f) = get(Tag::ExifVersion)
+        && let exif::Value::Undefined(b, _) = &f.value
+        && b.len() == 4
+        && b.iter().all(u8::is_ascii_digit)
+    {
+        // "0231" → "2.31" (Explorer's form).
+        let s = String::from_utf8_lossy(b);
+        let (major, minor) = s.split_at(2);
+        push_text(out, P::EXIF_VERSION, &format!("{}.{minor}", major.trim_start_matches('0')));
+    }
+    for (tag, p) in [
+        (Tag::ApertureValue, P::APERTURE),
+        (Tag::MaxApertureValue, P::MAX_APERTURE),
+        (Tag::ShutterSpeedValue, P::SHUTTER_SPEED),
+        (Tag::BrightnessValue, P::BRIGHTNESS),
+        (Tag::ExposureBiasValue, P::EXPOSURE_BIAS),
+        (Tag::ExposureIndex, P::EXPOSURE_INDEX),
+        (Tag::FlashEnergy, P::FLASH_ENERGY),
+        (Tag::SubjectDistance, P::SUBJECT_DISTANCE),
+        (Tag::FocalPlaneXResolution, P::FOCAL_PLANE_X_RESOLUTION),
+        (Tag::FocalPlaneYResolution, P::FOCAL_PLANE_Y_RESOLUTION),
+        (Tag::CompressedBitsPerPixel, P::COMPRESSED_BITS_PER_PIXEL),
+        (Tag::GPSImgDirection, P::GPS_IMG_DIRECTION),
+        (Tag::GPSSpeed, P::GPS_SPEED),
+        (Tag::GPSTrack, P::GPS_TRACK),
+        (Tag::GPSDOP, P::GPS_DOP),
+        (Tag::GPSDestBearing, P::GPS_DEST_BEARING),
+        (Tag::GPSDestDistance, P::GPS_DEST_DISTANCE),
+    ] {
+        if let Some(v) = real(tag) {
+            out.push((p, Value::Float(v)));
+        }
+    }
+    // A digital zoom ratio of 0 means "not used".
+    if let Some(v) = real(Tag::DigitalZoomRatio).filter(|v| *v > 0.0) {
+        out.push((P::DIGITAL_ZOOM, Value::Float(v)));
+    }
+    if let Some(v) = uint(Tag::FocalLengthIn35mmFilm).filter(|v| *v > 0) {
+        out.push((P::FOCAL_LENGTH_35MM, Value::Int(i64::from(v))));
+    }
+    for (tag, p) in [
+        (Tag::ExposureProgram, P::EXPOSURE_PROGRAM),
+        (Tag::MeteringMode, P::METERING_MODE),
+        (Tag::WhiteBalance, P::WHITE_BALANCE),
+        (Tag::Contrast, P::CONTRAST),
+        (Tag::Saturation, P::SATURATION),
+        (Tag::Sharpness, P::SHARPNESS),
+        (Tag::GainControl, P::GAIN_CONTROL),
+        (Tag::ColorSpace, P::COLOR_SPACE),
+        (Tag::Compression, P::IMAGE_COMPRESSION),
+        (Tag::ResolutionUnit, P::RESOLUTION_UNIT),
+        (Tag::GPSDifferential, P::GPS_DIFFERENTIAL),
+    ] {
+        if let Some(v) = uint(tag) {
+            out.push((p, Value::Int(i64::from(v))));
+        }
+    }
+    let coord = |val: Tag, reference: Tag, neg: u8| {
+        let f = get(val)?;
+        let (d, m, s) = (rational(f, 0)?, rational(f, 1).unwrap_or(0.0), rational(f, 2).unwrap_or(0.0));
+        let v = d + m / 60.0 + s / 3600.0;
+        let negative = get(reference).and_then(ascii).is_some_and(|r| r.as_bytes().first() == Some(&neg));
+        Some(if negative { -v } else { v })
+    };
+    if let Some(v) = coord(Tag::GPSDestLatitude, Tag::GPSDestLatitudeRef, b'S') {
+        out.push((P::GPS_DEST_LATITUDE, Value::Float(v)));
+    }
+    if let Some(v) = coord(Tag::GPSDestLongitude, Tag::GPSDestLongitudeRef, b'W') {
+        out.push((P::GPS_DEST_LONGITUDE, Value::Float(v)));
+    }
+    // GPSDateStamp `YYYY:MM:DD` + GPSTimeStamp (UTC h, m, s rationals).
+    if let Some(d) = get(Tag::GPSDateStamp).and_then(ascii)
+        && let Ok(date) = chrono::NaiveDate::parse_from_str(d.trim(), "%Y:%m:%d")
+    {
+        let t = get(Tag::GPSTimeStamp);
+        let part = |i| t.and_then(|f| rational(f, i)).unwrap_or(0.0);
+        let secs = (part(0) * 3600.0 + part(1) * 60.0 + part(2)).clamp(0.0, 86_399.0);
+        if let Some(dt) = date.and_hms_opt(0, 0, 0) {
+            let utc = dt.and_utc() + chrono::Duration::milliseconds((secs * 1000.0) as i64);
+            out.push((P::GPS_DATE, Value::Date(FileTime::from_utc(utc))));
+        }
     }
 }
 
@@ -254,6 +363,18 @@ pub(crate) mod tests {
             field(Tag(Context::Tiff, 0x9c9b), xp("Harbour")),
             field(Tag(Context::Tiff, 0x9c9e), xp("sea;sun")),
             field(Tag(Context::Tiff, 0x4746), exif::Value::Short(vec![4])),
+            field(Tag::LensModel, exif::Value::Ascii(vec![b"RF24-105mm F4 L IS USM".to_vec()])),
+            field(Tag::ExposureBiasValue, exif::Value::SRational(vec![exif::SRational { num: -2, denom: 3 }])),
+            field(Tag::ExposureProgram, exif::Value::Short(vec![3])),
+            field(Tag::MeteringMode, exif::Value::Short(vec![5])),
+            field(Tag::WhiteBalance, exif::Value::Short(vec![1])),
+            field(Tag::FocalLengthIn35mmFilm, exif::Value::Short(vec![75])),
+            field(Tag::ExifVersion, exif::Value::Undefined(b"0231".to_vec(), 0)),
+            field(Tag::Software, exif::Value::Ascii(vec![b"Fennec 1.0".to_vec()])),
+            field(Tag::GPSImgDirectionRef, exif::Value::Ascii(vec![b"T".to_vec()])),
+            field(Tag::GPSImgDirection, exif::Value::Rational(vec![r(2715, 10)])),
+            field(Tag::GPSDateStamp, exif::Value::Ascii(vec![b"2026:07:02".to_vec()])),
+            field(Tag::GPSTimeStamp, exif::Value::Rational(vec![r(8, 1), r(52, 1), r(0, 1)])),
         ];
         let mut w = Writer::new();
         for f in &fields {
@@ -317,6 +438,22 @@ pub(crate) mod tests {
         assert_eq!(get(&out, P::TITLE), Some(&Value::Text("Harbour".into())));
         assert_eq!(get(&out, P::TAGS), Value::multi(["sea", "sun"]).as_ref());
         assert_eq!(get(&out, P::RATING), Some(&Value::Int(4)));
+        // Appendix B tags.
+        assert_eq!(get(&out, P::LENS_MODEL), Some(&Value::Text("RF24-105mm F4 L IS USM".into())));
+        match get(&out, P::EXPOSURE_BIAS) {
+            Some(Value::Float(v)) => assert!((v + 2.0 / 3.0).abs() < 1e-9),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(get(&out, P::EXPOSURE_PROGRAM), Some(&Value::Int(3)));
+        assert_eq!(get(&out, P::METERING_MODE), Some(&Value::Int(5)));
+        assert_eq!(get(&out, P::WHITE_BALANCE), Some(&Value::Int(1)));
+        assert_eq!(get(&out, P::FOCAL_LENGTH_35MM), Some(&Value::Int(75)));
+        assert_eq!(get(&out, P::EXIF_VERSION), Some(&Value::Text("2.31".into())));
+        assert_eq!(get(&out, P::SOFTWARE_USED), Some(&Value::Text("Fennec 1.0".into())));
+        assert_eq!(get(&out, P::GPS_IMG_DIRECTION), Some(&Value::Float(271.5)));
+        assert_eq!(get(&out, P::GPS_IMG_DIRECTION_REF), Some(&Value::Text("T".into())));
+        assert_eq!(get(&out, P::GPS_DATE), Some(&Value::Date(FileTime::from_utc(utc))));
+        assert_eq!(get(&out, P::RESOLUTION_UNIT), Some(&Value::Int(2)));
     }
 
     #[test]
