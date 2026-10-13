@@ -77,7 +77,8 @@ impl TargetLeaf {
                 return Some(k);
             }
         }
-        s.flags(id).contains(EntryFlags::REPARSE).then_some(LinkKind::Reparse)
+        (s.flags(id).contains(EntryFlags::REPARSE) && fnc_core::flags::attr::is_link_reparse(s.attributes(id)))
+            .then_some(LinkKind::Reparse)
     }
 
     /// Evaluates entry `id`.

@@ -44,6 +44,18 @@ pub mod attr {
     pub const UNPINNED: u32 = 0x0010_0000;
     /// Recall on data access.
     pub const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+
+    /// Attributes of reparse points that are not links: cloud placeholders (OneDrive,
+    /// `IO_REPARSE_TAG_CLOUD_*`: recall/pinned/offline) and deduplicated or
+    /// single-instance files (sparse). Symbolic links and junctions never carry them.
+    pub const NON_LINK_REPARSE: u32 =
+        OFFLINE | SPARSE_FILE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS | PINNED | UNPINNED;
+
+    /// `true` if `a` describes a reparse point that is probably a symbolic link, junction
+    /// or mount point (the index has no reparse tags).
+    pub const fn is_link_reparse(a: u32) -> bool {
+        a & REPARSE_POINT != 0 && a & NON_LINK_REPARSE == 0
+    }
 }
 
 /// Compact per-entry flag set (`u16`), the hot subset of attributes plus index state.

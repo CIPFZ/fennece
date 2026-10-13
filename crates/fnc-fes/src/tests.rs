@@ -16,7 +16,7 @@ fn local() -> Conn {
     let mut store = IndexStore::default();
     fnc_index::efu::load_efu(&mut store, EFU.as_bytes(), "t.efu").unwrap();
     store.rebuild_name_order();
-    Conn::Local(Box::new(IndexBackend::new(SharedIndex::new(store), Arc::new(DefaultHost))))
+    Conn::Local(Box::new(IndexBackend::new(SharedIndex::new(store), Arc::new(fnc_ipc::backend::DefaultHost))))
 }
 
 fn env() -> Env {
@@ -173,4 +173,24 @@ fn highlight_output() {
     let tty = Env { stdout_is_terminal: true, ..env() };
     run_args(&a, &tty, &mut out, Some(&mut local())).unwrap();
     assert_eq!(String::from_utf8(out).unwrap(), "\x1b[92mReport\x1b[0m, \"final\".txt\r\n");
+}
+
+#[test]
+fn local_searches_read_files() {
+    // Functions that read files (`fsi:`) work in -filelist / -offline searches too.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("pic.dat"), b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR").unwrap();
+    std::fs::write(dir.path().join("text.dat"), b"hello").unwrap();
+    let root = dir.path().to_string_lossy().into_owned();
+    let sep = std::path::MAIN_SEPARATOR;
+    let efu = format!(
+        "Filename,Size,Attributes\n\"{root}\",,16\n\"{root}{sep}pic.dat\",16,32\n\"{root}{sep}text.dat\",5,32\n"
+    );
+    let l = dir.path().join("l.efu");
+    std::fs::write(&l, efu).unwrap();
+    let l = l.to_string_lossy().into_owned();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    assert_eq!(run(strings(&["-filelist", &l, "-name", "fsi:png"]), &env(), &mut out, &mut err), 0);
+    assert_eq!(String::from_utf8_lossy(&out).trim(), "pic.dat", "{}", String::from_utf8_lossy(&err));
 }

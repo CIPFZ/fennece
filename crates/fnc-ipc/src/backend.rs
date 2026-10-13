@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use fnc_core::EntryId;
 use fnc_core::settings::FoldersFirst;
 use fnc_exec::{
-    Caches, CancelToken, ExecCtx, ExtCtx, Highlighter, SearchOptions, SortSpec, apply_post, execute_filter, sort_ids,
+    Caches, CancelToken, ExecCtx, ExtCtx, Highlighter, SearchOptions, SortSpec, apply_post, execute_filter,
 };
 use fnc_index::{IndexStore, SharedIndex};
 use fnc_query::{Expr, ModSet, Modifier, ParseEnv, PlanEnv, PlannedQuery, Term, Value, parse, plan};
@@ -504,13 +504,28 @@ impl IndexBackend {
                 indexed_props: Vec::new(),
             };
             self.caches.set_type_names(options.type_names.clone());
-            let planned = plan(&ast, &env, None);
+            // The same stores and file access as the window's searches (property, content,
+            // hash, link/signature/recycle-bin and semantic functions). Lock order as in the
+            // engine: index first, then the stores.
             let snap = self.shared.snapshot();
+            let props = options.props.as_ref().map(fnc_props::store::PropertyIndex::snapshot);
+            let content = options.content.as_ref().map(fnc_props::content::ContentIndex::snapshot);
+            let ext = ExtCtx {
+                props: props.as_deref(),
+                content: content.as_deref(),
+                hashes: options.hashes.as_ref().map(|h| &h.0),
+                on_demand: options.on_demand.as_ref().map(|o| &o.0),
+                policy: options.slow,
+                semantic: options.semantic.as_ref().map(|v| &v.0),
+            };
+            let env =
+                PlanEnv { indexed_props: props.as_deref().map(|p| p.indexed().to_vec()).unwrap_or_default(), ..env };
+            let planned = plan(&ast, &env, None);
             let ctx = ExecCtx { cancel: &cancel, prev: None, caches: &self.caches };
             // Set functions (`dupe:`, the `count:` result limit) apply after sorting.
-            let ext = ExtCtx::default();
             let mut rs = execute_filter(&planned, &snap, &ctx, &ext)?;
-            sort_ids(&mut rs.ids, &key.sort, &snap, &self.caches, &cancel)?;
+            let sx = fnc_exec::SortExt { props: ext.props, formulas: &options.formulas };
+            fnc_exec::sort_ids_with(&mut rs.ids, &key.sort, &snap, &self.caches, &cancel, sx)?;
             apply_post(&planned, &mut rs, &snap, &self.caches, &ext, &cancel)?;
             Ok::<_, fnc_exec::Cancelled>((rs, planned, snap.instance(), snap.generation()))
         }));

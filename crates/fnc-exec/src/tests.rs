@@ -636,3 +636,22 @@ fn name_substring_fast_path_matches_the_tree_walk() {
         assert!(c.name_substrings().is_none(), "{q}");
     }
 }
+
+#[test]
+fn cloud_placeholders_are_not_links() {
+    // 0x400 reparse point; 0x400400 + recall on data access (OneDrive); 0x600 + sparse (dedup).
+    let efu = "Filename,Size,Date Modified,Date Created,Attributes\n\
+        \"C:\\L\\link.txt\",0,,,1056\n\
+        \"C:\\L\\onedrive.docx\",10,,,4195360\n\
+        \"C:\\L\\dedup.vhd\",10,,,1568\n\
+        \"C:\\L\\junction\",,,,1040\n\
+        \"C:\\L\\cloud folder\",,,,4195344\n";
+    let mut s = IndexStore::default();
+    efu::load_efu(&mut s, efu.as_bytes(), "t.efu").unwrap();
+    s.set_volume_online(fnc_core::VolumeId(0), true);
+    s.rebuild_name_order();
+    let names = |q: &str| run_on(&s, q, None).iter().map(|p| leaf_name(p)).collect::<BTreeSet<_>>();
+    assert_eq!(names("symlink:"), set(&["link.txt"]));
+    assert_eq!(names("junction:"), set(&["junction"]));
+    assert_eq!(names("attrib:L").len(), 5);
+}

@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use fnc_index::{IndexStore, SharedIndex};
-use fnc_ipc::backend::{DefaultHost, IndexBackend, Peer};
+use fnc_ipc::backend::{IndexBackend, Peer};
 use fnc_ipc::export::{Exporter, Format, Newline, resolve_columns};
 use fnc_ipc::format::{SizeFormat, format_number, format_size};
 use fnc_ipc::proto::{Column, Mods, Op, Payload, Query, Results, SearchSpec, Status};
@@ -169,6 +169,7 @@ fn save_settings(env: &Env, a: &Args) -> io::Result<()> {
 
 /// Opens the in-process backend for `-filelist` / `-offline`.
 pub fn open_local(a: &Args, env: &Env) -> Result<IndexBackend, Failure> {
+    let mut data_dir: Option<std::path::PathBuf> = None;
     let store = if !a.file_lists.is_empty() {
         let mut store = IndexStore::default();
         for f in &a.file_lists {
@@ -182,10 +183,42 @@ pub fn open_local(a: &Args, env: &Env) -> Result<IndexBackend, Failure> {
             (None, Some(root)) => root.join("index.fnx"),
             (None, None) => fnc_core::paths::DataPaths::resolve(&a.instance).index_file(),
         };
+        data_dir = path.parent().map(std::path::Path::to_path_buf);
         fnc_index::persist::load(&path)
             .map_err(|e| Failure::new(EXIT_NO_IPC, format!("cannot load {}: {e}", path.display())))?
     };
-    Ok(IndexBackend::new(SharedIndex::new(store), Arc::new(DefaultHost)))
+    let host = OfflineHost { options: offline_options(&store, data_dir.as_deref()) };
+    Ok(IndexBackend::new(SharedIndex::new(store), Arc::new(host)))
+}
+
+/// `-offline` / `-filelist` searches: the saved property and content indexes next to
+/// `index.fnx` and the built-in extractors for unindexed files (like the window).
+fn offline_options(store: &IndexStore, dir: Option<&std::path::Path>) -> fnc_exec::SearchOptions {
+    let mut o = fnc_exec::SearchOptions::default();
+    if let Some(dir) = dir {
+        if let Ok(p) = fnc_props::store::PropertyStore::load(&dir.join("props.fnx"), store) {
+            o.props = Some(fnc_props::store::PropertyIndex::new(p));
+        }
+        if let Ok(c) = fnc_props::content::ContentStore::load(&dir.join("content.fnx"), store) {
+            o.content = Some(fnc_props::content::ContentIndex::new(c));
+        }
+        if let Ok(h) = fnc_props::hash::HashCache::load(&dir.join("hashes.fnx")) {
+            o.hashes = Some(fnc_exec::Shared::new(Arc::new(h)));
+        }
+    }
+    let on_demand: Arc<dyn fnc_props::ondemand::OnDemand> = Arc::new(fnc_props::ondemand::DefaultOnDemand::default());
+    o.on_demand = Some(fnc_exec::Shared::new(on_demand));
+    o
+}
+
+struct OfflineHost {
+    options: fnc_exec::SearchOptions,
+}
+
+impl fnc_ipc::backend::Host for OfflineHost {
+    fn search_options(&self) -> fnc_exec::SearchOptions {
+        self.options.clone()
+    }
 }
 
 /// Connects to the running instance (honouring `-timeout`: waits for the instance and

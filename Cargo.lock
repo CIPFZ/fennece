@@ -1859,8 +1859,10 @@ name = "fnc-fes"
 version = "0.1.0"
 dependencies = [
  "fnc-core",
+ "fnc-exec",
  "fnc-index",
  "fnc-ipc",
+ "fnc-props",
  "tempfile",
  "thiserror 2.0.21",
 ]
@@ -1906,6 +1908,7 @@ dependencies = [
  "fnc-core",
  "fnc-exec",
  "fnc-index",
+ "fnc-props",
  "fnc-query",
  "interprocess",
  "parking_lot",

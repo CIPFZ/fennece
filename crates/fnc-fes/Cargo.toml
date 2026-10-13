@@ -18,6 +18,8 @@ path = "src/main.rs"
 fnc-core.workspace = true
 fnc-index.workspace = true
 fnc-ipc.workspace = true
+fnc-exec.workspace = true
+fnc-props.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

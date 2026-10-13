@@ -993,6 +993,7 @@ impl Compiled {
             Leaf::Reparse(k) => {
                 let f = s.flags(id);
                 f.contains(EntryFlags::REPARSE)
+                    && (*k == ReparseKind::Any || fnc_core::flags::attr::is_link_reparse(s.attributes(id)))
                     && match k {
                         ReparseKind::Any => true,
                         ReparseKind::Junction => f.contains(EntryFlags::IS_DIR),

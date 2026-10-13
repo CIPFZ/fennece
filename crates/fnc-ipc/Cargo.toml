@@ -11,6 +11,7 @@ fnc-core.workspace = true
 fnc-index.workspace = true
 fnc-query.workspace = true
 fnc-exec.workspace = true
+fnc-props = { path = "../fnc-props", default-features = false }
 interprocess.workspace = true
 serde.workspace = true
 rmp-serde.workspace = true
