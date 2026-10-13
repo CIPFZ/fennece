@@ -131,6 +131,29 @@ impl SortSpec {
     }
 }
 
+/// Parallel sort with folder grouping and direction applied around `key_cmp`.
+fn par_sort(
+    ids: &mut [EntryId],
+    spec: &SortSpec,
+    s: &IndexStore,
+    key_cmp: impl Fn(EntryId, EntryId) -> Ordering + Sync,
+) {
+    let group = match spec.folders_first {
+        FoldersFirst::Always | FoldersFirst::Ascending => true,
+        FoldersFirst::Never => false,
+    };
+    let dirs_first_always = spec.folders_first == FoldersFirst::Always;
+    ids.par_sort_unstable_by(|&a, &b| {
+        let g = if group { s.is_dir(b).cmp(&s.is_dir(a)) } else { Ordering::Equal };
+        if dirs_first_always {
+            g.then_with(|| if spec.ascending { key_cmp(a, b) } else { key_cmp(b, a) })
+        } else {
+            let o = g.then_with(|| key_cmp(a, b));
+            if spec.ascending { o } else { o.reverse() }
+        }
+    });
+}
+
 /// Sorts `ids` in place.
 pub fn sort_ids(
     ids: &mut [EntryId],
@@ -181,33 +204,45 @@ pub fn sort_ids(
             SortColumn::Frn => s.frn(a).cmp(&s.frn(b)),
         }
     };
-    // Primary key in the caller's direction (applied below); later keys carry their own.
-    let key_cmp = |a: EntryId, b: EntryId| -> Ordering {
-        let mut o = column_cmp(spec.column, a, b);
-        for &(col, asc) in spec.then.iter().flatten() {
-            if o != Ordering::Equal {
-                break;
+    // The common single-key sorts get their own monomorphised comparator (a runtime
+    // column switch per comparison costs ~35% on 1M entries).
+    if spec.then.iter().all(Option::is_none) {
+        match spec.column {
+            SortColumn::Name => par_sort(ids, spec, s, by_name),
+            SortColumn::Size => {
+                par_sort(ids, spec, s, |a, b| size_key(a).cmp(&size_key(b)).then_with(|| by_name(a, b)))
             }
-            let k = column_cmp(col, a, b);
-            o = if asc == spec.ascending { k } else { k.reverse() };
+            SortColumn::DateModified => {
+                par_sort(ids, spec, s, |a, b| s.date_modified(a).cmp(&s.date_modified(b)).then_with(|| by_name(a, b)))
+            }
+            SortColumn::DateCreated => {
+                par_sort(ids, spec, s, |a, b| s.date_created(a).cmp(&s.date_created(b)).then_with(|| by_name(a, b)))
+            }
+            SortColumn::Path | SortColumn::FullPath => {
+                let r = dir_rank.as_deref().map(|d| &d.rank[..]).unwrap_or(&[]);
+                let pr = |id: EntryId| {
+                    let p = s.parent(id);
+                    if p.is_some() { r.get(p.idx()).copied().unwrap_or(u32::MAX) } else { 0 }
+                };
+                par_sort(ids, spec, s, |a, b| pr(a).cmp(&pr(b)).then_with(|| by_name(a, b)))
+            }
+            col => par_sort(ids, spec, s, |a, b| column_cmp(col, a, b).then_with(|| by_name(a, b))),
         }
-        o.then_with(|| by_name(a, b))
-    };
-    let group = match spec.folders_first {
-        FoldersFirst::Always => true,
-        FoldersFirst::Ascending => true,
-        FoldersFirst::Never => false,
-    };
-    let dirs_first_always = spec.folders_first == FoldersFirst::Always;
-    ids.par_sort_unstable_by(|&a, &b| {
-        let g = if group { s.is_dir(b).cmp(&s.is_dir(a)) } else { Ordering::Equal };
-        if dirs_first_always {
-            g.then_with(|| if spec.ascending { key_cmp(a, b) } else { key_cmp(b, a) })
-        } else {
-            let o = g.then_with(|| key_cmp(a, b));
-            if spec.ascending { o } else { o.reverse() }
-        }
-    });
+    } else {
+        // Primary key in the caller's direction (applied by `par_sort`); later keys carry
+        // their own.
+        par_sort(ids, spec, s, |a, b| {
+            let mut o = column_cmp(spec.column, a, b);
+            for &(col, asc) in spec.then.iter().flatten() {
+                if o != Ordering::Equal {
+                    break;
+                }
+                let k = column_cmp(col, a, b);
+                o = if asc == spec.ascending { k } else { k.reverse() };
+            }
+            o.then_with(|| by_name(a, b))
+        });
+    }
     if cancel.is_cancelled() {
         return Err(Cancelled);
     }
