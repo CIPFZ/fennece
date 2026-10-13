@@ -12,6 +12,7 @@ members = [
     "crates/fnc-semantic",
     "crates/fnc-ipc",
     "crates/fnc-http",
+    "crates/fnc-etp",
     "crates/fnc-app",
     "crates/fnc-fes",
     "crates/fnc-service",
@@ -43,6 +44,7 @@ fnc-props = { path = "crates/fnc-props" }
 fnc-semantic = { path = "crates/fnc-semantic" }
 fnc-ipc = { path = "crates/fnc-ipc" }
 fnc-http = { path = "crates/fnc-http" }
+fnc-etp = { path = "crates/fnc-etp" }
 fnc-sdk = { path = "crates/fnc-sdk" }
 
 # gui

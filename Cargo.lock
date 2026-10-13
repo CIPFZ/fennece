@@ -1783,6 +1783,7 @@ dependencies = [
  "fluent-bundle",
  "fluent-syntax",
  "fnc-core",
+ "fnc-etp",
  "fnc-exec",
  "fnc-http",
  "fnc-index",
@@ -1830,6 +1831,22 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "unicode-normalization",
+]
+
+[[package]]
+name = "fnc-etp"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "fnc-core",
+ "fnc-exec",
+ "fnc-index",
+ "fnc-ipc",
+ "fnc-query",
+ "parking_lot",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tracing",
 ]
 
 [[package]]
