@@ -633,6 +633,9 @@ pub struct Settings {
     /// Pause semantic indexing.
     #[setting(key = "semantic_paused", default = false, page = "semantic")]
     pub semantic_paused: bool,
+    /// Model layers offloaded to the GPU (builds with the `vulkan` feature; 0 = CPU).
+    #[setting(key = "semantic_gpu_layers", default = 0, page = "semantic")]
+    pub semantic_gpu_layers: u32,
     /// Smart mode: send plain searches to the semantic channel too and fuse (`?sem:`).
     #[setting(key = "semantic_smart", default = false, page = "semantic")]
     pub semantic_smart: bool,

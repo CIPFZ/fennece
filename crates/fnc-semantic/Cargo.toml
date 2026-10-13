@@ -10,6 +10,8 @@ license.workspace = true
 default = []
 # llama.cpp embedder (compiles llama.cpp; needs CMake and a C++ compiler).
 llama = ["dep:llama-cpp-2"]
+# GPU offload through llama.cpp's Vulkan backend (needs the Vulkan SDK at build time).
+vulkan = ["llama", "llama-cpp-2/vulkan"]
 
 [dependencies]
 thiserror.workspace = true

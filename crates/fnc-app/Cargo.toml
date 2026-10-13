@@ -14,6 +14,8 @@ path = "src/main.rs"
 default = ["semantic"]
 # Semantic search (SPEC ch.5): llama.cpp + usearch (C/C++ build, ADR-020).
 semantic = ["dep:fnc-semantic"]
+# Semantic search on the GPU (Vulkan).
+vulkan = ["semantic", "fnc-semantic/vulkan"]
 
 [dependencies]
 fnc-core.workspace = true
