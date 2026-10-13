@@ -36,7 +36,7 @@ pub use exec::{
 };
 pub use ext::{ExecWarning, ExtCtx, Shared, SlowPolicy, content_highlights};
 pub use highlight::Highlighter;
-pub use semantic::SemanticSource;
+pub use semantic::{SemHit, SemanticSource};
 pub use sort::{SortColumn, SortKey, SortSpec, sort_ids, sort_ids_ext};
 pub use types::{TypeNameFn, TypeNames};
 

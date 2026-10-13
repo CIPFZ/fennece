@@ -18,7 +18,7 @@ const EFU: &str = "Filename,Size,Date Modified,Date Created,Attributes\n\
 \"C:\\Docs\\report.docx\",12000,,,32\n\
 \"C:\\Docs\\季度预算表.xlsx\",1048576,,,32\n";
 
-fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedIndex) -> AppDeps {
+pub(super) fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedIndex) -> AppDeps {
     crate::i18n::init("en");
     let (engine_tx, engine_rx) = crossbeam_channel::unbounded();
     let engine = SearchEngine::spawn(shared.clone(), engine_tx, Box::new(|| {}));
@@ -55,7 +55,7 @@ fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedIndex) -> AppDe
     }
 }
 
-fn wait_until(h: &mut Harness<'_, FennecApp>, what: &str, f: impl Fn(&FennecApp) -> bool) {
+pub(super) fn wait_until(h: &mut Harness<'_, FennecApp>, what: &str, f: impl Fn(&FennecApp) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while !f(h.state()) {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
@@ -64,7 +64,7 @@ fn wait_until(h: &mut Harness<'_, FennecApp>, what: &str, f: impl Fn(&FennecApp)
     }
 }
 
-fn harness(deps: AppDeps) -> Harness<'static, FennecApp> {
+pub(super) fn harness(deps: AppDeps) -> Harness<'static, FennecApp> {
     Harness::builder().with_size(egui::vec2(1000.0, 600.0)).build_eframe(|cc| FennecApp::new(cc, deps))
 }
 

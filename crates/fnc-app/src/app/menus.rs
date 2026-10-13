@@ -228,6 +228,7 @@ impl FennecApp {
                 ui.separator();
                 self.check(ui, K::PauseUpdates, self.indexer.paused(), &mut out);
                 self.item(ui, K::IndexJournal, &mut out);
+                self.item(ui, K::SemanticSetup, &mut out);
                 self.item(ui, K::SaveDatabase, &mut out);
                 ui.separator();
                 self.item(ui, K::InstallService, &mut out);

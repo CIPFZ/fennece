@@ -204,6 +204,8 @@ commands! {
     PauseUpdates = "pause-updates",
     /// Show the index journal (recent changes).
     IndexJournal = "index-journal",
+    /// Semantic search setup (scope, model download).
+    SemanticSetup = "semantic-setup",
     /// Search syntax help.
     Help = "help",
     /// About.

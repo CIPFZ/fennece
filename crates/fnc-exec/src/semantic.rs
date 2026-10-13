@@ -27,6 +27,25 @@ pub const MAX_TOP: usize = 5000;
 /// RRF constant.
 pub const RRF_K: f32 = 60.0;
 
+/// One semantic match.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct SemHit {
+    /// Entry.
+    pub id: EntryId,
+    /// Cosine similarity of its best chunk.
+    pub score: f32,
+    /// Byte range of that chunk in the document text (content/code chunks), for the
+    /// preview.
+    pub range: Option<(u32, u32)>,
+}
+
+impl SemHit {
+    /// A hit without a text range.
+    pub fn new(id: EntryId, score: f32) -> Self {
+        Self { id, score, range: None }
+    }
+}
+
 /// The embedding index as the executor sees it (implemented by the app).
 pub trait SemanticSource: Send + Sync {
     /// Changes whenever stored vectors change (cached results are recomputed).
@@ -43,8 +62,11 @@ pub trait SemanticSource: Send + Sync {
         s: &IndexStore,
         candidates: Option<&[EntryId]>,
         top: usize,
-    ) -> Result<Vec<(EntryId, f32)>, String>;
+    ) -> Result<Vec<SemHit>, String>;
 }
+
+/// Best similarity and chunk range per entry (`EntryId.0`).
+pub type Scores = HashMap<u32, (f32, Option<(u32, u32)>)>;
 
 /// Hits of one nested term.
 pub struct SemSet {
@@ -92,7 +114,7 @@ pub fn nested_sets(
     preds: &[SemPred],
     src: Option<&Arc<dyn SemanticSource>>,
     s: &IndexStore,
-    scores: &mut HashMap<u32, f32>,
+    scores: &mut Scores,
     errors: &mut Vec<String>,
 ) -> HashMap<SemPred, Arc<SemSet>> {
     let mut out = HashMap::new();
@@ -100,9 +122,9 @@ pub fn nested_sets(
         let mut bits = Bits::new(s.len());
         match run(p, src, s, None, None) {
             Ok(hits) => {
-                for (id, score) in hits {
-                    bits.set(id.idx());
-                    keep_best(scores, id, score);
+                for h in hits {
+                    bits.set(h.id.idx());
+                    keep_best(scores, &h);
                 }
             }
             Err(e) => push_unique(errors, e),
@@ -118,10 +140,10 @@ fn push_unique(v: &mut Vec<String>, e: String) {
     }
 }
 
-fn keep_best(scores: &mut HashMap<u32, f32>, id: EntryId, score: f32) {
-    let e = scores.entry(id.0).or_insert(score);
-    if score > *e {
-        *e = score;
+fn keep_best(scores: &mut Scores, h: &SemHit) {
+    let e = scores.entry(h.id.0).or_insert((h.score, h.range));
+    if h.score > e.0 {
+        *e = (h.score, h.range);
     }
 }
 
@@ -131,7 +153,7 @@ fn run(
     s: &IndexStore,
     candidates: Option<&[EntryId]>,
     top: Option<usize>,
-) -> Result<Vec<(EntryId, f32)>, String> {
+) -> Result<Vec<SemHit>, String> {
     let src = src.ok_or_else(|| "semantic search is off".to_string())?;
     let top = top.unwrap_or_else(|| p.top.map_or(src.default_top(), |t| t as usize)).clamp(1, MAX_TOP);
     src.search(p, s, candidates, top)
@@ -144,7 +166,7 @@ pub fn filter_top(
     candidates: Option<Vec<EntryId>>,
     src: Option<&Arc<dyn SemanticSource>>,
     s: &IndexStore,
-    scores: &mut HashMap<u32, f32>,
+    scores: &mut Scores,
     errors: &mut Vec<String>,
     cancel: &CancelToken,
 ) -> Result<Vec<EntryId>, Cancelled> {
@@ -172,8 +194,7 @@ pub fn filter_top(
                     match run(p, src, s, None, Some(k)) {
                         Ok(h) => {
                             let got = h.len();
-                            let inside: Vec<(EntryId, f32)> =
-                                h.into_iter().filter(|(id, _)| member.get(id.idx())).collect();
+                            let inside: Vec<SemHit> = h.into_iter().filter(|h| member.get(h.id.idx())).collect();
                             if inside.len() >= target || got < k || k >= MAX_TOP {
                                 break Ok(inside.into_iter().take(want).collect());
                             }
@@ -191,10 +212,10 @@ pub fn filter_top(
                 Vec::new()
             }
         };
-        let mut found: HashMap<u32, f32> = HashMap::with_capacity(hits.len());
-        for (id, score) in hits {
-            if s.is_live(id) {
-                found.insert(id.0, score);
+        let mut found: HashMap<u32, SemHit> = HashMap::with_capacity(hits.len());
+        for h in hits {
+            if s.is_live(h.id) {
+                found.insert(h.id.0, h);
             }
         }
         current = Some(match current {
@@ -205,8 +226,8 @@ pub fn filter_top(
             }
             Some(c) => c.into_iter().filter(|id| found.contains_key(&id.0)).collect(),
         });
-        for (&i, &score) in &found {
-            keep_best(scores, EntryId(i), score);
+        for h in found.values() {
+            keep_best(scores, h);
         }
     }
     let out = current.unwrap_or_default();
@@ -218,7 +239,7 @@ pub fn filter_top(
 /// Reciprocal Rank Fusion of a literal ranking and a semantic one (both best first):
 /// the fused order. Literal results beyond the semantic list keep their order at the end
 /// (their RRF score is below every semantic-only hit's).
-pub fn fuse(literal: &[EntryId], semantic: &[(EntryId, f32)]) -> Vec<EntryId> {
+pub fn fuse(literal: &[EntryId], semantic: &[SemHit]) -> Vec<EntryId> {
     let head_len = literal.len().min(semantic.len().max(1));
     let mut score: HashMap<u32, f32> = HashMap::with_capacity(head_len + semantic.len());
     let mut first_seen: HashMap<u32, usize> = HashMap::new();
@@ -226,10 +247,10 @@ pub fn fuse(literal: &[EntryId], semantic: &[(EntryId, f32)]) -> Vec<EntryId> {
         *score.entry(id.0).or_default() += 1.0 / (RRF_K + r as f32 + 1.0);
         first_seen.entry(id.0).or_insert(r);
     }
-    let sem_set: std::collections::HashSet<u32> = semantic.iter().map(|(id, _)| id.0).collect();
+    let sem_set: std::collections::HashSet<u32> = semantic.iter().map(|h| h.id.0).collect();
     let lit_pos: HashMap<u32, usize> =
         literal.iter().enumerate().filter(|(_, id)| sem_set.contains(&id.0)).map(|(r, id)| (id.0, r)).collect();
-    for (r, (id, _)) in semantic.iter().enumerate() {
+    for (r, SemHit { id, .. }) in semantic.iter().enumerate() {
         let e = score.entry(id.0).or_default();
         *e += 1.0 / (RRF_K + r as f32 + 1.0);
         // A semantic hit ranked low literally still gets its literal share.
@@ -258,7 +279,7 @@ mod tests {
     #[test]
     fn fusion_promotes_shared_hits_and_keeps_the_tail() {
         let lit = ids(&[1, 2, 3, 4, 5, 6]);
-        let sem = vec![(EntryId(9), 0.8), (EntryId(3), 0.7)];
+        let sem = vec![SemHit::new(EntryId(9), 0.8), SemHit::new(EntryId(3), 0.7)];
         let f = fuse(&lit, &sem);
         // In both lists: first. The literal head and the semantic-only hit follow.
         assert_eq!(f[0], EntryId(3), "{f:?}");

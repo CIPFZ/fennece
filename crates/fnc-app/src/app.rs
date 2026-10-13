@@ -13,6 +13,7 @@ mod grid;
 mod menus;
 mod options;
 mod preview;
+mod semantic_ui;
 pub(super) mod table;
 mod window;
 
@@ -240,6 +241,8 @@ pub struct FennecApp {
     ctx: egui::Context,
     /// Creates a search engine for a new view.
     new_engine: Arc<dyn Fn() -> (SearchEngine, Receiver<EngineEvent>) + Send + Sync>,
+    /// Semantic search (SPEC ch.5).
+    sem: semantic_ui::SemanticUi,
 }
 
 impl FennecApp {
@@ -358,7 +361,9 @@ impl FennecApp {
             close_secondary: false,
             new_engine,
             ctx: ctx.clone(),
+            sem: Default::default(),
         };
+        app.semantic_init();
         app.rebuild_search_options();
         app.send_search();
         if let Some(cli) = deps.initial_cli {
@@ -375,6 +380,8 @@ impl FennecApp {
         let mut o = SearchOptions::from_settings(&self.settings);
         o.macros.extend(self.filters.macros());
         o.type_names = Some(self.type_names.clone());
+        o.semantic = self.semantic_source();
+        o.semantic_fuse = o.semantic.is_some() && self.settings.semantic_smart;
         if !self.v.omit.is_empty() {
             let instance = self.shared.try_snapshot_for(Duration::from_millis(20)).map_or(0, |s| s.instance());
             o.omit = Some(fnc_query::plan::OmitSet { instance, ids: self.v.omit.iter().copied().collect() });
@@ -744,6 +751,7 @@ impl FennecApp {
         match cmd {
             K::FocusSearch => self.v.focus_search = true,
             K::Refresh => self.v.engine.refresh(),
+            K::SemanticSetup => self.semantic_open_setup(),
             K::MoveDown => self.move_cursor(self.row_step(), MoveMode::Select),
             K::MoveUp => self.move_cursor(-self.row_step(), MoveMode::Select),
             K::ExtendDown => self.move_cursor(1, MoveMode::Extend),
@@ -1454,6 +1462,7 @@ impl FennecApp {
             if !resp.has_focus() && !self.v.complete.hovered() {
                 self.v.complete.close();
             }
+            self.semantic_toggle(ui);
             self.filter_combo(ui, filter_w);
         });
         // `/key=value` and `/command` (SPEC ch.3 §13) run on Enter.
@@ -1628,6 +1637,12 @@ impl FennecApp {
                     s = format!("{s} ({})", t("status-paused"));
                 }
                 ui.label(s);
+                if let Some(sem) = self.semantic_status() {
+                    ui.separator();
+                    if ui.link(sem).clicked() {
+                        self.semantic_open_setup();
+                    }
+                }
             });
         });
     }
@@ -1683,6 +1698,7 @@ impl FennecApp {
         if restart {
             self.say(t("msg-restart-required"));
         }
+        self.semantic_apply(&old);
         self.rebuild_search_options();
         self.send_search();
         if let Err(e) = self.settings.save(&self.settings_path) {
@@ -1918,6 +1934,7 @@ const HISTORY_IDLE: Duration = Duration::from_secs(3);
 impl eframe::App for FennecApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_channels(ctx);
+        self.semantic_tick(ctx);
         if ctx.input(|i| i.viewport().close_requested())
             && !self.quitting
             && self.settings.close_to_tray
@@ -1963,6 +1980,7 @@ impl eframe::App for FennecApp {
         self.draw_main(ui, true);
         self.dialogs(&ctx);
         self.options_viewport(&ctx);
+        self.semantic_setup_window(&ctx);
         for cmd in std::mem::take(&mut self.pending) {
             self.run(&ctx, cmd);
         }
@@ -1981,6 +1999,7 @@ impl eframe::App for FennecApp {
                     format!("{:.0},{:.0},{:.0},{:.0}", rect.min.x, rect.min.y, rect.width(), rect.height());
             }
         }
+        self.semantic_stop();
         self.indexer.stop();
         self.indexer.save();
         self.history.save();
@@ -2017,3 +2036,5 @@ fn native_handle(frame: &eframe::Frame) -> isize {
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, feature = "semantic"))]
+mod tests_semantic;

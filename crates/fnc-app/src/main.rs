@@ -17,6 +17,8 @@ mod icon;
 mod import;
 mod indexer;
 mod journal;
+#[cfg(feature = "semantic")]
+mod semantic;
 mod thumbs;
 #[cfg(windows)]
 mod tray;
