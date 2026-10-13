@@ -553,6 +553,17 @@ pub struct Settings {
     #[setting(key = "http_access_log", default = false, page = "server")]
     pub http_access_log: bool,
 
+    // ---- tabs and sessions (SPEC ch.3 §7) ----
+    /// Show the tab bar even with a single tab.
+    #[setting(key = "show_tab_bar", default = false, page = "ui")]
+    pub show_tab_bar: bool,
+    /// Closing the last tab clears it instead of closing the window.
+    #[setting(key = "close_last_tab_keeps_window", default = true, page = "ui")]
+    pub close_last_tab_keeps_window: bool,
+    /// Save windows and tabs on exit and restore them at start.
+    #[setting(key = "restore_session", default = false, page = "ui")]
+    pub restore_session: bool,
+
     // ---- semantic (SPEC ch.5) ----
     /// Enable semantic search (`sem:`) and the background semantic indexer.
     #[setting(key = "semantic_enabled", default = false, page = "semantic")]

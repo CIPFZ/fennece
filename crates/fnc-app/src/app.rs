@@ -16,7 +16,9 @@ mod menus;
 mod options;
 mod preview;
 mod semantic_ui;
+mod session;
 pub(super) mod table;
+mod tabs;
 mod window;
 
 use std::collections::{HashMap, HashSet};
@@ -251,6 +253,8 @@ pub struct FennecApp {
     sem: semantic_ui::SemanticUi,
     /// Undo stack and advanced rename.
     edit: edit_ui::EditUi,
+    /// Tabs of the window being drawn (swapped like `v`).
+    tabs: tabs::Tabs,
     /// IPC, Everything-compatible and HTTP servers.
     servers: Option<integration::AppServers>,
 }
@@ -374,12 +378,17 @@ impl FennecApp {
             ctx: ctx.clone(),
             sem: Default::default(),
             edit: Default::default(),
+            tabs: Default::default(),
             servers: None,
         };
         app.semantic_init();
         app.rebuild_search_options();
         app.start_servers(servers);
         app.send_search();
+        // Sessions reopen the saved tabs unless the command line names a search.
+        if !deps.initial_cli.as_ref().is_some_and(|c| c.search.is_some()) && app.v.query.is_empty() {
+            app.restore_session();
+        }
         if let Some(cli) = deps.initial_cli {
             app.apply_cli(ctx, cli, false);
         }
@@ -871,6 +880,14 @@ impl FennecApp {
             K::Rename => self.start_rename(),
             K::AdvancedRename => self.open_advanced_rename(),
             K::Undo => self.undo_last(),
+            K::NewTab => self.tab_new(String::new()),
+            K::NextTab => self.tab_step(1),
+            K::PreviousTab => self.tab_step(-1),
+            K::CloseTab => {
+                if !self.tab_close() {
+                    self.run(ctx, K::CloseWindow);
+                }
+            }
             K::Redo => self.redo_last(),
             K::NewFolder => {
                 if let Some(parent) = self.paste_target() {
@@ -1932,6 +1949,7 @@ impl FennecApp {
         }
         egui::Panel::top("search").show(ui, |ui| {
             ui.add_space(4.0);
+            self.tab_bar(ui);
             self.search_bar(ui);
             if self.settings.show_filter_bar {
                 self.filter_bar(ui);
@@ -2036,6 +2054,7 @@ impl eframe::App for FennecApp {
                     format!("{:.0},{:.0},{:.0},{:.0}", rect.min.x, rect.min.y, rect.width(), rect.height());
             }
         }
+        self.save_session();
         self.semantic_stop();
         self.stop_servers();
         self.indexer.stop();
@@ -2078,3 +2097,5 @@ mod tests;
 mod tests_edit;
 #[cfg(all(test, feature = "semantic"))]
 mod tests_semantic;
+#[cfg(test)]
+mod tests_tabs;

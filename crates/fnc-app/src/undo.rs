@@ -161,7 +161,7 @@ mod tests {
     /// Real files: rename, folder creation and recycling are undone and redone (the
     /// recycle bin is the user's freedesktop trash; the item is restored by the test).
     #[test]
-        fn rename_folder_and_recycle_round_trip() {
+    fn rename_folder_and_recycle_round_trip() {
         let d = tempfile::tempdir().unwrap();
         let o = Owner(0);
         let a = d.path().join("a.txt");

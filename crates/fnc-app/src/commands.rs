@@ -72,6 +72,14 @@ commands! {
     AdvancedRename = "advanced-rename",
     /// Undo the last file operation.
     Undo = "undo",
+    /// New tab.
+    NewTab = "new-tab",
+    /// Close the current tab.
+    CloseTab = "close-tab",
+    /// Next tab.
+    NextTab = "next-tab",
+    /// Previous tab.
+    PreviousTab = "previous-tab",
     /// Redo the last undone file operation.
     Redo = "redo",
     /// New folder in the selected folder (or the selection's folder).
@@ -379,7 +387,6 @@ fn defaults() -> Vec<(KeyCtx, Chord, Command)> {
         (G, Chord::new(C, N, C, Key::Num0), K::ZoomReset),
         (G, Chord::new(C, N, N, Key::Q), K::Exit),
         (G, Chord::new(C, N, N, Key::N), K::NewWindow),
-        (G, Chord::new(C, N, N, Key::W), K::CloseWindow),
         (G, Chord::new(N, N, N, Key::F1), K::Help),
         (G, Chord::new(C, N, N, Key::P), K::TogglePreview),
         (G, Chord::new(C, C, N, Key::Num1), K::ViewDetails),
@@ -431,6 +438,10 @@ fn defaults() -> Vec<(KeyCtx, Chord, Command)> {
         (R, Chord::new(N, C, N, Key::Delete), K::DeletePermanently),
         (R, Chord::new(N, N, N, Key::F2), K::Rename),
         (R, Chord::new(C, N, N, Key::Z), K::Undo),
+        (G, Chord::new(C, N, N, Key::T), K::NewTab),
+        (G, Chord::new(C, N, N, Key::W), K::CloseTab),
+        (G, Chord::new(C, N, N, Key::Tab), K::NextTab),
+        (G, Chord::new(C, C, N, Key::Tab), K::PreviousTab),
         (R, Chord::new(C, N, N, Key::Y), K::Redo),
         (R, Chord::new(C, C, N, Key::Z), K::Redo),
         (R, Chord::new(N, C, N, Key::F10), K::ContextMenu),
