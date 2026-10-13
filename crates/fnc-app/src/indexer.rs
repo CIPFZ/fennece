@@ -298,8 +298,41 @@ fn folder_source(cfg: &IndexerConfig, root: PathBuf) -> FolderSource {
     FolderSource::with_options(root, opts)
 }
 
+/// `true` if `path` is `root` or below it (case-insensitive on Windows, either separator).
+fn is_within(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let norm = |p: &std::path::Path| {
+        let mut s = p.to_string_lossy().replace('/', "\\");
+        if cfg!(windows) {
+            s = s.to_lowercase();
+        }
+        s.trim_end_matches('\\').to_string() + "\\"
+    };
+    norm(path).starts_with(&norm(root))
+}
+
+/// Configured folders without the ones already indexed: on an indexed NTFS/ReFS volume
+/// (`volumes`: their roots) or inside another configured folder (every entry would be
+/// listed twice).
+fn distinct_folders(folders: &[PathBuf], volumes: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for (i, f) in folders.iter().enumerate() {
+        let inside_other = folders.iter().enumerate().any(|(j, g)| {
+            // Of two equal entries the first is kept.
+            j != i && is_within(f, g) && (!is_within(g, f) || j < i)
+        });
+        if volumes.iter().any(|v| is_within(f, v)) || inside_other {
+            tracing::info!(folder = %f.display(), "folder already indexed; skipped");
+            continue;
+        }
+        out.push(f.clone());
+    }
+    out
+}
+
 fn collect_sources(cfg: &IndexerConfig, emit: &Emitter) -> Vec<Box<dyn VolumeSource>> {
     let mut sources: Vec<Box<dyn VolumeSource>> = Vec::new();
+    #[allow(unused_mut)]
+    let mut volume_roots: Vec<PathBuf> = Vec::new();
     #[cfg(windows)]
     if cfg.ntfs {
         let opts = fnc_ntfs::NtfsOptions {
@@ -315,16 +348,20 @@ fn collect_sources(cfg: &IndexerConfig, emit: &Emitter) -> Vec<Box<dyn VolumeSou
             }
             let root = d.root.clone();
             match fnc_ntfs::NtfsSource::open(d, opts, &cfg.instance) {
-                Ok(s) => sources.push(Box::new(s)),
+                Ok(s) => {
+                    volume_roots.push(PathBuf::from(&root));
+                    sources.push(Box::new(s));
+                }
                 Err(SourceError::AccessDenied(_)) => {
                     emit.message(crate::i18n::t_args("index-folder-fallback", &[("volume", letter.into())]));
+                    volume_roots.push(PathBuf::from(&root));
                     sources.push(Box::new(folder_source(cfg, root.into())));
                 }
                 Err(e) => emit.message(crate::i18n::t_args("index-error", &[("message", e.to_string().into())])),
             }
         }
     }
-    for f in &cfg.folders {
+    for f in &distinct_folders(&cfg.folders, &volume_roots) {
         if f.is_dir() {
             sources.push(Box::new(folder_source(cfg, f.clone())));
         } else {
@@ -1897,5 +1934,21 @@ mod restart_tests {
         std::thread::sleep(Duration::from_millis(300));
         assert!(!has(&shared, "late-a.txt"), "old watcher retired");
         ix.stop();
+    }
+}
+
+#[cfg(test)]
+mod folder_overlap_tests {
+    use super::*;
+
+    #[test]
+    fn folders_already_indexed_are_skipped() {
+        let p = |s: &str| PathBuf::from(s);
+        let folders = [p("/data/a"), p("/data/a/b"), p("/data/ab"), p("/data/a/"), p("/srv/x")];
+        assert_eq!(distinct_folders(&folders, &[]), [p("/data/a"), p("/data/ab"), p("/srv/x")]);
+        assert_eq!(distinct_folders(&folders, &[p("/srv")]), [p("/data/a"), p("/data/ab")]);
+        if cfg!(windows) {
+            assert_eq!(distinct_folders(&[p(r"d:\Docs"), p(r"E:\x")], &[p(r"D:\")]), [p(r"E:\x")]);
+        }
     }
 }
