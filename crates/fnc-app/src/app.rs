@@ -1055,6 +1055,21 @@ impl FennecApp {
                     egui::Event::Text(s) if !modal && kctx == KeyCtx::Results && type_to_search => {
                         typed.push_str(s);
                     }
+                    // egui-winit delivers Ctrl+C/X/V as clipboard events, not keys; in the
+                    // result list they act on files (in the search box on text).
+                    egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)
+                        if !modal && kctx == KeyCtx::Results =>
+                    {
+                        let key = match &e {
+                            egui::Event::Copy => Key::C,
+                            egui::Event::Cut => Key::X,
+                            _ => Key::V,
+                        };
+                        let chord = Chord { ctrl: true, shift: false, alt: false, key };
+                        if let Some(cmd) = self.keymap.lookup(kctx, &chord) {
+                            cmds.push(cmd);
+                        }
+                    }
                     _ => keep.push(e),
                 }
             }

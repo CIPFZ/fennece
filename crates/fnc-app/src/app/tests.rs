@@ -247,4 +247,9 @@ fn mouse_selection_on_rows() {
     h.get_by_label_contains("0001").click_modifiers(egui::Modifiers::CTRL);
     h.run_steps(2);
     assert_eq!(h.state().sel.ids.len(), 2);
+    // Ctrl+C arrives as a clipboard event; in the list it copies the files (here: the
+    // text fallback, as the test has no file clipboard).
+    h.event(egui::Event::Copy);
+    h.run_steps(2);
+    assert!(h.state().message.as_ref().is_some_and(|(m, _)| !m.is_empty()));
 }
