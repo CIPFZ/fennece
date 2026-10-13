@@ -35,3 +35,10 @@ Measured on Windows Server 2022 as a standard user: 304k entries ready in 3.7 s,
 visible in 25 ms through the service. `fennec-service.exe` must not be run from the build
 directory while building (the running service locks it); it is installed from
 `C:\Program Files\Fennec` on the test machine.
+
+## Update (hardening)
+The service now checks every client's process at accept time: interactive session
+(session id ≠ 0) and integrity level ≥ Medium (`fnc_platform::session::is_interactive_client`).
+"Same session as the service" is not meaningful (the service runs in session 0). Verified on
+Windows: a standard user at Medium integrity still indexes through the service; a session-0
+(SYSTEM) client is refused and logged.
