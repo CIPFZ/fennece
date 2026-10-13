@@ -148,8 +148,8 @@ fn high_contrast_theme() {
     h.state_mut().run(&ctx, Command::ThemeHighContrast);
     h.run();
     assert_eq!(h.ctx.theme(), egui::Theme::Dark);
-    assert_eq!(h.ctx.style().visuals.panel_fill, egui::Color32::BLACK);
+    assert_eq!(h.ctx.style_of(egui::Theme::Dark).visuals.panel_fill, egui::Color32::BLACK);
     h.state_mut().run(&ctx, Command::ThemeDark);
     h.run();
-    assert_ne!(h.ctx.style().visuals.panel_fill, egui::Color32::BLACK, "plain dark restored");
+    assert_ne!(h.ctx.style_of(egui::Theme::Dark).visuals.panel_fill, egui::Color32::BLACK, "plain dark restored");
 }
