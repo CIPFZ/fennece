@@ -238,4 +238,14 @@ fn m3_metrics(store: &fnc_index::IndexStore, caches: &Caches, runs: usize, push:
     let (p50, p95, n) =
         measure(runs.min(10), || bench::run_query_ext(store, "regex:content:quarterly\\s+plan", caches, &cext).len());
     push("M3 query `regex:content:quarterly\\s+plan` (full text scan)", "ms", p50, p95, None, Some(n));
+    // Property sort column over every live entry (unknown widths first).
+    let all: Vec<EntryId> = (0..store.len() as u32).map(EntryId).filter(|&i| store.is_live(i)).collect();
+    let spec = SortSpec::by_property(fnc_props::PropertyId::WIDTH, false, FoldersFirst::Ascending);
+    let cancel = CancelToken::new();
+    let (p50, p95, n) = measure(runs.min(10), || {
+        let mut ids = all.clone();
+        let _ = fnc_exec::sort_ids_ext(&mut ids, &spec, store, caches, &cancel, Some(&props));
+        ids.len()
+    });
+    push("M3 sort 1M by width desc (property column)", "ms", p50, p95, Some(300.0), Some(n));
 }
