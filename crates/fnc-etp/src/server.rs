@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use fnc_core::FileTime;
 use fnc_ipc::backend::{IndexBackend, SearchKey, sort_spec};
-use fnc_ipc::proto::{Column, Mods, Status, UNKNOWN};
+use fnc_ipc::proto::{Column, FLAG_ROOT, Mods, Status, UNKNOWN};
 use parking_lot::Mutex;
 
 use crate::namespace::{self, Node};
@@ -486,7 +486,9 @@ impl<'a> Session<'a> {
         if verb.is_empty() {
             return Ok(());
         }
-        let open = matches!(verb.as_str(), "USER" | "PASS" | "QUIT" | "NOOP" | "FEAT" | "HELP" | "AUTH");
+        // OPTS before login: Windows ftp.exe sends `OPTS UTF8 ON` right after connecting
+        // and only decodes names as UTF-8 if that succeeds.
+        let open = matches!(verb.as_str(), "USER" | "PASS" | "QUIT" | "NOOP" | "FEAT" | "HELP" | "AUTH" | "OPTS");
         if self.login != Login::LoggedIn && !open {
             return self.send("530 Not logged on.");
         }
@@ -903,8 +905,15 @@ impl<'a> Session<'a> {
         let mut items = Vec::with_capacity(n);
         for i in 0..n {
             let r = page.row(i);
-            let mut item = ResultItem::new(r.name.clone(), r.is_folder());
-            item.path = f.path.then(|| r.path.clone());
+            // Folder-index roots are named by their full path (`D:\x\data`): send them as
+            // Everything does (`PATH D:\x`, `FOLDER data`); drive roots stay `C:`.
+            let (path, name) = if r.flags & FLAG_ROOT != 0 && r.path.is_empty() {
+                split_root(&r.name)
+            } else {
+                (r.path.clone(), r.name.clone())
+            };
+            let mut item = ResultItem::new(name, r.is_folder());
+            item.path = f.path.then_some(path);
             item.size = f.size.then_some(if r.is_folder() { UNKNOWN } else { r.size });
             item.date_modified = f.date_modified.then_some(r.date_modified);
             item.date_created = f.date_created.then_some(r.date_created);
@@ -915,6 +924,19 @@ impl<'a> Session<'a> {
         }
         proto::write_query_reply(out, page.total, &items);
         Ok(())
+    }
+}
+
+/// Parent path and name of a root given by its full path (`D:\x\data` → `D:\x`, `data`;
+/// `/home/u` → `/home`, `u`; `C:` and `/` unchanged).
+fn split_root(full: &str) -> (String, String) {
+    let t = full.trim_end_matches(['\\', '/']);
+    match t.rfind(['\\', '/']) {
+        Some(i) if i + 1 < t.len() && !t[..i].trim_start_matches(['\\', '/']).is_empty() => {
+            (t[..i].to_string(), t[i + 1..].to_string())
+        }
+        Some(0) if t.len() > 1 => ("/".to_string(), t[1..].to_string()),
+        _ => (String::new(), full.to_string()),
     }
 }
 
@@ -963,6 +985,20 @@ mod tests {
         let (text, mods) = combined_search(&s, &o);
         assert!(!mods.regex);
         assert!(text.ends_with("regex:^a.c$") || text.contains("regex:\"^a.c$\""), "{text}");
+    }
+
+    #[test]
+    fn roots_split_like_everything() {
+        let s = |p: &str| {
+            let (a, b) = split_root(p);
+            (a, b)
+        };
+        assert_eq!(s("D:\\fennec-etp\\data"), ("D:\\fennec-etp".into(), "data".into()));
+        assert_eq!(s("C:"), (String::new(), "C:".into()));
+        assert_eq!(s("C:\\"), (String::new(), "C:\\".into()));
+        assert_eq!(s("/home/u"), ("/home".into(), "u".into()));
+        assert_eq!(s("/tmp"), ("/".into(), "tmp".into()));
+        assert_eq!(s("\\\\srv\\share"), ("\\\\srv".into(), "share".into()));
     }
 
     #[test]

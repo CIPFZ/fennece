@@ -143,6 +143,8 @@ fn login_is_required_and_checked() {
     let feat = c.cmd("FEAT");
     assert_eq!(feat.code, 211);
     assert!(feat.lines.iter().any(|l| l.trim() == "EVERYTHING"), "{feat:?}");
+    // Windows ftp.exe sends this before logging in.
+    assert_eq!(c.cmd("OPTS UTF8 ON").code, 200);
     assert_eq!(c.cmd("USER u").code, 331);
     assert_eq!(c.cmd("PASS wrong").code, 530);
     // A wrong user name also asks for a password (and then fails).
@@ -270,8 +272,9 @@ fn everything_extension_pages_results() {
     // The root folder, docs, two files in docs, 40 pages.
     assert_eq!(page.total, 44);
     assert_eq!(page.items.len(), 26);
-    // Folders first: the indexed root (named by its full path), then docs.
-    assert_eq!(page.items[0].name, f.root);
+    // Folders first: the indexed root (sent as parent path + name, like Everything), docs.
+    assert_eq!(page.items[0].full_path(), f.root);
+    assert_ne!(page.items[0].name, f.root);
     assert_eq!(page.items[1].name, "docs");
     assert!(page.items[1].folder);
     assert_eq!(page.items[1].size, Some(u64::MAX), "folder sizes are unknown");
