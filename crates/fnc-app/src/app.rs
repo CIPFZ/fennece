@@ -236,6 +236,8 @@ pub struct FennecApp {
     in_secondary: bool,
     /// The secondary window being drawn asked to close (Esc, Ctrl+W).
     close_secondary: bool,
+    /// The UI context (dialogs that apply settings).
+    ctx: egui::Context,
     /// Creates a search engine for a new view.
     new_engine: Arc<dyn Fn() -> (SearchEngine, Receiver<EngineEvent>) + Send + Sync>,
 }
@@ -355,6 +357,7 @@ impl FennecApp {
             in_secondary: false,
             close_secondary: false,
             new_engine,
+            ctx: ctx.clone(),
         };
         app.rebuild_search_options();
         app.send_search();
@@ -920,6 +923,23 @@ impl FennecApp {
                 }
             }
             K::Export => self.dialog = Some(dialogs::Dialog::Export { path: default_export_path() }),
+            K::ImportSettings
+            | K::ExportSettings
+            | K::ImportEverythingIni
+            | K::ExportFilters
+            | K::ExportBookmarks
+            | K::ExportHistory => {
+                use dialogs::Transfer as T;
+                let action = match cmd {
+                    K::ImportSettings => T::ImportSettings,
+                    K::ExportSettings => T::ExportSettings,
+                    K::ImportEverythingIni => T::ImportEverythingIni,
+                    K::ExportFilters => T::ExportFilters,
+                    K::ExportBookmarks => T::ExportBookmarks,
+                    _ => T::ExportHistory,
+                };
+                self.dialog = Some(dialogs::Dialog::Transfer { action, path: action.default_path() });
+            }
             K::ToggleMenuBar => self.settings.show_menu_bar = !self.settings.show_menu_bar,
             K::ToggleStatusBar => self.settings.show_status_bar = !self.settings.show_status_bar,
             K::ToggleFilterBar => self.settings.show_filter_bar = !self.settings.show_filter_bar,

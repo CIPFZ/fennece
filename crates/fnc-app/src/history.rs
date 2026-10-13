@@ -110,6 +110,19 @@ impl SearchHistory {
         v
     }
 
+    /// The history as CSV (`Search,Count,Last Used`).
+    pub fn export_csv(&self) -> String {
+        let mut out = String::from("Search,Count,Last Used\r\n");
+        for e in &self.entries {
+            let when = fnc_core::FileTime::from_unix(e.last, 0)
+                .to_local()
+                .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+                .unwrap_or_default();
+            out.push_str(&format!("\"{}\",{},{when}\r\n", e.text.replace('"', "\"\""), e.count));
+        }
+        out
+    }
+
     /// Writes the file if changed.
     pub fn save(&mut self) {
         let Some(path) = &self.path else { return };

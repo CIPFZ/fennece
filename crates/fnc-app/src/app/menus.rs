@@ -83,6 +83,15 @@ impl FennecApp {
                 self.item(ui, K::CloseWindow, &mut out);
                 ui.separator();
                 self.item(ui, K::Export, &mut out);
+                ui.menu_button(t("menu-import-export"), |ui| {
+                    for c in [K::ImportSettings, K::ExportSettings, K::ImportEverythingIni] {
+                        self.item(ui, c, &mut out);
+                    }
+                    ui.separator();
+                    for c in [K::ExportFilters, K::ExportBookmarks, K::ExportHistory] {
+                        self.item(ui, c, &mut out);
+                    }
+                });
                 ui.separator();
                 self.item(ui, K::HideWindow, &mut out);
                 self.item(ui, K::Exit, &mut out);

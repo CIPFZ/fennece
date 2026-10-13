@@ -14,6 +14,7 @@ mod format;
 mod history;
 mod i18n;
 mod icon;
+mod import;
 mod indexer;
 mod journal;
 mod thumbs;

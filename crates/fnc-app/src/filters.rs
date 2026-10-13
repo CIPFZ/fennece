@@ -229,6 +229,51 @@ impl Bookmarks {
     }
 }
 
+fn csv_field(s: &str) -> String {
+    if s.contains([',', '"', '\n', '\r']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() }
+}
+
+impl Filters {
+    /// User filters as Everything's `Filters.csv`.
+    pub fn export_csv(&self) -> String {
+        let mut out = String::from("Name,Case,Whole Word,Path,Diacritics,Regex,Search,Macro,Key\r\n");
+        let b = |v: bool| if v { "1" } else { "0" };
+        for f in self.list.iter().filter(|f| !f.builtin) {
+            out.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{}\r\n",
+                csv_field(&f.name),
+                b(f.case),
+                b(f.whole_word),
+                b(f.path),
+                b(f.diacritics),
+                b(f.regex),
+                csv_field(&f.search),
+                csv_field(&f.macro_name),
+                csv_field(&f.key)
+            ));
+        }
+        out
+    }
+}
+
+impl Bookmarks {
+    /// Bookmarks as Everything's `Bookmarks.csv`.
+    pub fn export_csv(&self) -> String {
+        let mut out = String::from("Name,Search,Filter,Key,Folder\r\n");
+        for b in &self.list {
+            out.push_str(&format!(
+                "{},{},{},{},{}\r\n",
+                csv_field(&b.name),
+                csv_field(&b.search),
+                csv_field(&b.filter),
+                csv_field(&b.key),
+                csv_field(&b.folder)
+            ));
+        }
+        out
+    }
+}
+
 fn csv_rows(text: &str) -> Vec<Vec<String>> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     text.lines()
@@ -287,5 +332,22 @@ mod tests {
         let mut b = Bookmarks::load(None);
         assert_eq!(b.import_csv("Name,Search,Filter\nLogs,ext:log,\n"), 1);
         assert_eq!(b.list[0].search, "ext:log");
+    }
+
+    #[test]
+    fn csv_export_roundtrip() {
+        crate::i18n::init("en");
+        let mut f = Filters::load(None);
+        f.list.push(Filter { name: "A, b".into(), search: "ext:\"x\"".into(), case: true, ..Filter::default() });
+        let csv = f.export_csv();
+        let mut g = Filters::load(None);
+        assert_eq!(g.import_csv(&csv), 1);
+        let a = &g.list[g.find("A, b").unwrap()];
+        assert!(a.case && a.search == "ext:\"x\"");
+        let mut b = Bookmarks::load(None);
+        b.list.push(Bookmark { name: "n".into(), search: "s".into(), folder: "dir".into(), ..Bookmark::default() });
+        let mut c = Bookmarks::load(None);
+        assert_eq!(c.import_csv(&b.export_csv()), 1);
+        assert_eq!(c.list[0].folder, "dir");
     }
 }

@@ -11,19 +11,90 @@ use crate::i18n::{t, t_args};
 
 /// An open dialog.
 pub(super) enum Dialog {
-    NewFolder { parent: PathBuf, name: String },
-    SetRunCount { text: String },
+    NewFolder {
+        parent: PathBuf,
+        name: String,
+    },
+    SetRunCount {
+        text: String,
+    },
     Builder(Box<Builder>),
-    EditBookmark { index: Option<usize>, bookmark: Bookmark },
-    Bookmarks { selected: Option<usize> },
-    EditFilter { index: Option<usize>, filter: Filter },
-    Filters { selected: Option<usize> },
-    Export { path: String },
-    ConfirmDelete { paths: Vec<PathBuf> },
-    Journal { records: Vec<crate::journal::Record>, filter: String },
-    ContextMenu { at: egui::Pos2 },
+    EditBookmark {
+        index: Option<usize>,
+        bookmark: Bookmark,
+    },
+    Bookmarks {
+        selected: Option<usize>,
+    },
+    EditFilter {
+        index: Option<usize>,
+        filter: Filter,
+    },
+    Filters {
+        selected: Option<usize>,
+    },
+    Export {
+        path: String,
+    },
+    /// Import/export of settings, filters, bookmarks, history.
+    Transfer {
+        action: Transfer,
+        path: String,
+    },
+    ConfirmDelete {
+        paths: Vec<PathBuf>,
+    },
+    Journal {
+        records: Vec<crate::journal::Record>,
+        filter: String,
+    },
+    ContextMenu {
+        at: egui::Pos2,
+    },
     Help,
     About,
+}
+
+/// What a [`Dialog::Transfer`] does.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum Transfer {
+    ImportSettings,
+    ExportSettings,
+    ImportEverythingIni,
+    ExportFilters,
+    ExportBookmarks,
+    ExportHistory,
+}
+
+impl Transfer {
+    fn command(self) -> Command {
+        match self {
+            Transfer::ImportSettings => Command::ImportSettings,
+            Transfer::ExportSettings => Command::ExportSettings,
+            Transfer::ImportEverythingIni => Command::ImportEverythingIni,
+            Transfer::ExportFilters => Command::ExportFilters,
+            Transfer::ExportBookmarks => Command::ExportBookmarks,
+            Transfer::ExportHistory => Command::ExportHistory,
+        }
+    }
+
+    /// Default file name in the user's home folder.
+    pub(super) fn default_path(self) -> String {
+        let name = match self {
+            Transfer::ImportSettings | Transfer::ExportSettings => "fennec-settings.toml",
+            Transfer::ImportEverythingIni => {
+                return std::env::var_os("APPDATA")
+                    .map(|a| PathBuf::from(a).join("Everything").join("Everything.ini").display().to_string())
+                    .unwrap_or_else(|| "Everything.ini".into());
+            }
+            Transfer::ExportFilters => "Filters.csv",
+            Transfer::ExportBookmarks => "Bookmarks.csv",
+            Transfer::ExportHistory => "search-history.csv",
+        };
+        let home =
+            std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_default();
+        home.join(name).display().to_string()
+    }
 }
 
 /// Search builder form ("Advanced search").
@@ -206,6 +277,7 @@ impl FennecApp {
             Dialog::EditFilter { .. } => t("dialog-edit-filter"),
             Dialog::Filters { .. } => t("cmd-organize-filters"),
             Dialog::Export { .. } => t("cmd-export"),
+            Dialog::Transfer { action, .. } => action.command().label(),
             Dialog::ConfirmDelete { .. } => t("cmd-delete-permanently"),
             Dialog::Journal { .. } => t("cmd-index-journal"),
             Dialog::ContextMenu { .. } => String::new(),
@@ -510,6 +582,20 @@ impl FennecApp {
                 }
                 if ui.button(t("dialog-close")).clicked() { Act::Close } else { Act::Keep }
             }
+            Dialog::Transfer { action, path } => {
+                ui.label(t("dialog-transfer-path"));
+                ui.add(egui::TextEdit::singleline(path).desired_width(460.0));
+                let (ok, cancel) = buttons(ui, "dialog-ok");
+                if ok {
+                    let result = self.transfer(*action, std::path::Path::new(path.trim()));
+                    match result {
+                        Ok(msg) => self.say(msg),
+                        Err(e) => self.say(t_args("msg-op-failed", &[("error", e.into())])),
+                    }
+                    return Act::Close;
+                }
+                if cancel { Act::Close } else { Act::Keep }
+            }
             Dialog::Help => {
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                     ui.label(t("help-syntax"));
@@ -522,6 +608,44 @@ impl FennecApp {
                 if ui.button(t("dialog-close")).clicked() { Act::Close } else { Act::Keep }
             }
             Dialog::ContextMenu { .. } => Act::None,
+        }
+    }
+
+    /// Runs an import/export; returns the status message.
+    fn transfer(&mut self, action: Transfer, path: &std::path::Path) -> Result<String, String> {
+        let write = |text: &str| crate::history::write_atomic(path, text).map_err(|e| e.to_string());
+        let done = || t_args("msg-transfer-done", &[("path", path.display().to_string().into())]);
+        match action {
+            Transfer::ExportSettings => {
+                let t = self.settings.to_toml().map_err(|e| e.to_string())?;
+                write(&t)?;
+                Ok(done())
+            }
+            Transfer::ImportSettings => {
+                let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+                let s = crate::import::import_settings(&text)?;
+                let ctx = self.ctx.clone();
+                self.apply_settings(&ctx, s);
+                Ok(done())
+            }
+            Transfer::ImportEverythingIni => {
+                let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+                // Everything.ini is UTF-8 (1.5) or UTF-16 with BOM (older builds).
+                let text = match bytes.as_slice() {
+                    [0xFF, 0xFE, rest @ ..] => String::from_utf16_lossy(
+                        &rest.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect::<Vec<_>>(),
+                    ),
+                    b => String::from_utf8_lossy(b).into_owned(),
+                };
+                let mut s = self.settings.clone();
+                let applied = crate::import::import_everything_ini(&mut s, &text);
+                let ctx = self.ctx.clone();
+                self.apply_settings(&ctx, s);
+                Ok(t_args("msg-ini-imported", &[("count", applied.len().into())]))
+            }
+            Transfer::ExportFilters => write(&self.filters.export_csv()).map(|()| done()),
+            Transfer::ExportBookmarks => write(&self.bookmarks.export_csv()).map(|()| done()),
+            Transfer::ExportHistory => write(&self.history.export_csv()).map(|()| done()),
         }
     }
 

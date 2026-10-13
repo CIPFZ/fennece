@@ -150,6 +150,18 @@ commands! {
     Options = "options",
     /// Export the results to a file.
     Export = "export",
+    /// Import settings from a `settings.toml`.
+    ImportSettings = "import-settings",
+    /// Export settings to a `settings.toml`.
+    ExportSettings = "export-settings",
+    /// Import the mappable part of an `Everything.ini`.
+    ImportEverythingIni = "import-everything-ini",
+    /// Export filters as Everything's Filters.csv.
+    ExportFilters = "export-filters",
+    /// Export bookmarks as Everything's Bookmarks.csv.
+    ExportBookmarks = "export-bookmarks",
+    /// Export the search history as CSV.
+    ExportHistory = "export-search-history",
     /// Show/hide the menu bar.
     ToggleMenuBar = "toggle-menu-bar",
     /// Show/hide the status bar.
