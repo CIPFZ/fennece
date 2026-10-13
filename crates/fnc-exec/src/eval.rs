@@ -931,6 +931,32 @@ impl Compiled {
         }
     }
 
+    /// The query as plain substrings of the folded name, if it is just that (one term or
+    /// an AND of terms without options): the scan then runs a monomorphic loop instead of
+    /// the tree walk (most searches typed into the box have this shape).
+    pub fn name_substrings(&self) -> Option<Vec<&memchr::memmem::Finder<'static>>> {
+        fn plain(n: &CNode) -> Option<&memchr::memmem::Finder<'static>> {
+            match n {
+                CNode::Leaf(Leaf::Text(l))
+                    if l.pred.target == Target::Name
+                        && l.mode == SubjectMode::StoredFold
+                        && !l.pred.ignore_punct
+                        && !l.pred.ignore_ws =>
+                {
+                    match &l.pattern {
+                        Pattern::Contains(f) => Some(f),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+        match &self.root {
+            CNode::And(v) if !v.is_empty() => v.iter().map(plain).collect(),
+            n => plain(n).map(|f| vec![f]),
+        }
+    }
+
     /// Evaluates the whole query for entry `id`.
     #[inline]
     pub fn matches(&self, s: &IndexStore, id: EntryId, sc: &mut Scratch) -> bool {

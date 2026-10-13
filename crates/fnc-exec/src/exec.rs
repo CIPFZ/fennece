@@ -274,6 +274,28 @@ fn scan_all(root: &Node, s: &IndexStore, c: &Compiled, cancel: &CancelToken) -> 
     let n = s.len();
     let chunks = n.div_ceil(CHUNK);
     let match_all = *root == Node::All;
+    if let Some(needles) = c.name_substrings() {
+        let parts: Vec<Option<Vec<EntryId>>> = (0..chunks)
+            .into_par_iter()
+            .map(|k| {
+                if cancel.is_cancelled() {
+                    return None;
+                }
+                let lo = k * CHUNK;
+                let hi = (lo + CHUNK).min(n);
+                let mut out = Vec::new();
+                for i in lo..hi {
+                    let id = EntryId(i as u32);
+                    let f = s.fold(id);
+                    if needles.iter().all(|nd| nd.find(f).is_some()) && visible(s, id) {
+                        out.push(id);
+                    }
+                }
+                Some(out)
+            })
+            .collect();
+        return concat(parts, cancel);
+    }
     let parts: Vec<Option<Vec<EntryId>>> = (0..chunks)
         .into_par_iter()
         .map_init(Scratch::default, |sc, k| {
@@ -301,13 +323,21 @@ fn filter_ids(
     c: &Compiled,
     cancel: &CancelToken,
 ) -> Result<Vec<EntryId>, Cancelled> {
+    let needles = c.name_substrings();
     let parts: Vec<Option<Vec<EntryId>>> = input
         .par_chunks(CHUNK)
         .map_init(Scratch::default, |sc, chunk| {
             if cancel.is_cancelled() {
                 return None;
             }
-            Some(chunk.iter().copied().filter(|&id| s.is_live(id) && c.matches(s, id, sc)).collect())
+            Some(match &needles {
+                Some(nd) => chunk
+                    .iter()
+                    .copied()
+                    .filter(|&id| s.is_live(id) && nd.iter().all(|f| f.find(s.fold(id)).is_some()))
+                    .collect(),
+                None => chunk.iter().copied().filter(|&id| s.is_live(id) && c.matches(s, id, sc)).collect(),
+            })
         })
         .collect();
     concat(parts, cancel)

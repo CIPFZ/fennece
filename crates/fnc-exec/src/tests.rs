@@ -603,3 +603,31 @@ fn engine_pinyin_default_and_type_names() {
     let EngineEvent::Done(o) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(o.results.len(), 1);
 }
+
+#[test]
+fn name_substring_fast_path_matches_the_tree_walk() {
+    let mut s = store();
+    // A deleted entry must not appear on either path.
+    let victim = (0..s.len() as u32).map(fnc_core::EntryId).find(|&i| s.name_string(i) == "file2.txt").unwrap();
+    s.apply(vec![Change::Delete(EntryRef::Id(victim))]);
+    for q in ["file", "e", "img 000", "REPORT", "季度", "o w", "zzz"] {
+        let p = plan(&parse(q, &ParseEnv::default()).ast, &PlanEnv::default(), None);
+        let (caches, cancel) = (Caches::new(), CancelToken::new());
+        let c = crate::eval::Compiled::new(&p.root, &s, &caches, &cancel).unwrap();
+        assert!(c.name_substrings().is_some(), "{q} takes the fast path");
+        let mut sc = crate::eval::Scratch::default();
+        let slow: Vec<_> = (0..s.len() as u32)
+            .map(fnc_core::EntryId)
+            .filter(|&id| !s.flags(id).contains(fnc_core::EntryFlags::DELETED) && c.matches(&s, id, &mut sc))
+            .collect();
+        let fast = execute(&p, &s, &ExecCtx { cancel: &cancel, prev: None, caches: &caches }).unwrap().ids;
+        assert_eq!(fast, slow, "{q}");
+    }
+    // Options keep the general evaluator.
+    for q in ["ww:file", "path:users", "*.txt", "pinyin:jd", "case:File"] {
+        let p = plan(&parse(q, &ParseEnv::default()).ast, &PlanEnv::default(), None);
+        let (caches, cancel) = (Caches::new(), CancelToken::new());
+        let c = crate::eval::Compiled::new(&p.root, &s, &caches, &cancel).unwrap();
+        assert!(c.name_substrings().is_none(), "{q}");
+    }
+}
