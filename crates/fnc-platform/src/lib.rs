@@ -13,6 +13,7 @@
 #![allow(unsafe_code)]
 
 pub mod instance;
+pub mod locale;
 pub mod privilege;
 pub mod shell;
 pub mod source;

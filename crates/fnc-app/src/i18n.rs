@@ -54,10 +54,10 @@ pub fn resolve_language(requested: &str) -> &'static str {
     LANGUAGES.iter().find(|(t, _)| t.split('-').next() == Some(primary)).map_or("en", |(t, _)| t)
 }
 
-/// Initialises the active language (`""` = from the environment). Idempotent.
+/// Initialises the active language (`""` = the user's UI language). Idempotent.
 pub fn init(language: &str) {
     let requested = if language.is_empty() {
-        std::env::var("LC_ALL").or_else(|_| std::env::var("LANG")).unwrap_or_default()
+        fnc_platform::locale::ui_language().unwrap_or_default()
     } else {
         language.to_string()
     };
