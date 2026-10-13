@@ -29,6 +29,13 @@ impl Tabs {
         self.slots.iter().map(|s| s.as_ref().map(|v| v.query.clone())).collect()
     }
 
+    /// Renumbers the inactive tabs' views after a compaction.
+    pub(super) fn remap_ids(&mut self, old_instance: u64, remap: &[u32]) {
+        for v in self.slots.iter_mut().flatten() {
+            v.remap_ids(old_instance, remap);
+        }
+    }
+
     /// The view of inactive tab `i`.
     pub(super) fn view(&self, i: usize) -> Option<&View> {
         self.slots.get(i)?.as_ref()

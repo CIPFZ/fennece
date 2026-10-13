@@ -112,6 +112,33 @@ struct Selection {
     anchor: Option<usize>,
 }
 
+/// The new id of `id` after a compaction (`None` = removed).
+fn remapped(remap: &[u32], id: EntryId) -> Option<EntryId> {
+    remap.get(id.idx()).copied().filter(|&n| n != u32::MAX).map(EntryId)
+}
+
+impl View {
+    /// Renumbers everything this view keys by entry id (see `IndexEvent::Compacted`).
+    pub(super) fn remap_ids(&mut self, old_instance: u64, remap: &[u32]) {
+        // Views whose ids belong to another id space (a newer index) are left alone.
+        if self.results.instance != old_instance && self.results.instance != 0 {
+            return;
+        }
+        self.sel.ids = self.sel.ids.iter().filter_map(|&id| remapped(remap, id)).collect();
+        self.selected_id = self.selected_id.and_then(|id| remapped(remap, id));
+        self.omit = self.omit.iter().filter_map(|&id| remapped(remap, id)).collect();
+        if let Some(r) = &mut self.rename {
+            match remapped(remap, r.id) {
+                Some(n) => r.id = n,
+                None => self.rename = None,
+            }
+        }
+        // Rows are cached by id; the results are re-run.
+        self.rows.clear();
+        self.selected = None;
+    }
+}
+
 impl Selection {
     fn contains(&self, id: EntryId) -> bool {
         self.all || self.ids.contains(&id)
@@ -491,6 +518,19 @@ impl FennecApp {
         self.send_search();
     }
 
+    /// The index was renumbered: every view keeps its selection, cursor, omitted entries
+    /// and in-place rename on the same files, and searches again.
+    fn on_compacted(&mut self, old_instance: u64, remap: &[u32]) {
+        self.v.remap_ids(old_instance, remap);
+        self.tabs.remap_ids(old_instance, remap);
+        for w in &mut self.windows {
+            w.view.remap_ids(old_instance, remap);
+            w.tabs.remap_ids(old_instance, remap);
+        }
+        self.rebuild_search_options();
+        self.v.engine.refresh();
+    }
+
     /// Re-runs the view's search when the index changed since its results were computed
     /// and no search is in flight (at most every 250 ms).
     pub(super) fn refresh_if_stale(&mut self) {
@@ -571,6 +611,7 @@ impl FennecApp {
             match ev {
                 IndexEvent::Status(s) => self.status = s,
                 IndexEvent::Message(m) => self.message = Some((m, Instant::now())),
+                IndexEvent::Compacted { old_instance, remap } => self.on_compacted(old_instance, &remap),
             }
         }
         while let Ok(m) = self.worker_rx.try_recv() {

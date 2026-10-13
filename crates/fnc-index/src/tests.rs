@@ -553,3 +553,29 @@ fn find_path_walks_from_the_volume_root() {
     assert_eq!(s.find_path(r"D:\Users"), None);
     assert_eq!(s.find_path(r"C:\Usersx"), None);
 }
+
+/// Compaction cost on a large index (`cargo test --release -p fnc-index compact_1m -- --ignored --nocapture`).
+#[test]
+#[ignore = "builds 1M entries"]
+fn compact_1m_timing() {
+    let mut s = IndexStore::default();
+    let vol = s.add_volume(VolumeInfo::new(VolumeKind::Ntfs, "C:\\"), Some(5)).unwrap();
+    let mut b = s.bulk_load(vol);
+    b.push(5, 5, &u16s("."), &dir()).unwrap();
+    for d in 0..1000u64 {
+        b.push(100 + d, 5, &u16s(&format!("dir{d}")), &dir()).unwrap();
+        for f in 0..1000u64 {
+            b.push(10_000 + d * 1000 + f, 100 + d, &u16s(&format!("file {f} report.txt")), &file(f)).unwrap();
+        }
+    }
+    b.finish().unwrap();
+    s.rebuild_name_order();
+    let victims: Vec<EntryRef> = (0..100_000u64).map(|k| EntryRef::Frn(vol, 10_000 + k * 7)).collect();
+    s.apply(victims.into_iter().map(Change::Delete).collect());
+    let t = std::time::Instant::now();
+    let mut c = s.clone();
+    let clone = t.elapsed();
+    let t = std::time::Instant::now();
+    c.compact();
+    eprintln!("1M entries: clone {clone:?}, compact {:?}, live {}", t.elapsed(), c.live_count());
+}

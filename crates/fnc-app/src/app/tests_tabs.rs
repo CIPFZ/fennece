@@ -196,3 +196,28 @@ fn other_tabs_follow_index_changes() {
     h.state().shared.write().apply(vec![fnc_index::Change::Delete(fnc_index::EntryRef::Id(victim))]);
     wait_until(&mut h, "tab refreshed", |a| a.v.results.len() == 1);
 }
+
+#[test]
+fn selection_and_omit_follow_a_compaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && !a.v.results.is_empty());
+    h.state_mut().set_query("ext:jpg".into());
+    wait_until(&mut h, "jpg", |a| a.v.results.len() == 2);
+    let second = h.state().v.results.ids[1];
+    let name = h.state().shared.snapshot().name_string(second);
+    h.state_mut().select_only(1);
+    // Delete the other picture, compact, and tell the app.
+    let first = h.state().v.results.ids[0];
+    let shared = h.state().shared.clone();
+    shared.write().apply(vec![fnc_index::Change::Delete(fnc_index::EntryRef::Id(first))]);
+    let old = shared.snapshot().instance();
+    let remap: std::sync::Arc<[u32]> = shared.write().compact().into();
+    h.state_mut().on_compacted(old, &remap);
+    wait_until(&mut h, "re-searched", |a| a.v.results.len() == 1 && a.v.results.instance != old);
+    let sel = h.state().v.selected_id.unwrap();
+    assert_eq!(shared.snapshot().name_string(sel), name, "same file still selected");
+    assert!(h.state().v.sel.contains(sel));
+}

@@ -51,6 +51,14 @@ pub enum IndexEvent {
     Status(IndexStatus),
     /// Problem worth showing (already localised).
     Message(String),
+    /// The index was compacted while running: entry ids changed (`remap[old] = new`,
+    /// `u32::MAX` = removed). Views remap their selections and re-run their searches.
+    Compacted {
+        /// Id space before.
+        old_instance: u64,
+        /// Old → new id.
+        remap: Arc<[u32]>,
+    },
 }
 
 /// What to index.
@@ -511,6 +519,7 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
     tracing::info!(entries, seconds, loaded, "index published");
     saver.published();
     saver.spawn_periodic(stop.clone());
+    spawn_compactor(shared.clone(), cfg.hooks.clone(), emit.tx.clone(), emit.notify.clone(), stop.clone());
 
     let refresher = Refresher::spawn(refresh);
     let needs_meta: Vec<VolumeId> = {
@@ -890,6 +899,69 @@ impl Saver {
             }
         });
     }
+}
+
+/// Tombstone share that triggers a live compaction.
+const COMPACT_DELETED_SHARE: f64 = 0.2;
+
+/// `true` if `s` is worth compacting: ≥ 20 % tombstones and at least 10,000 of them.
+fn wants_compaction(s: &IndexStore) -> bool {
+    let dead = s.len() - s.live_count();
+    dead >= 10_000 && dead as f64 >= s.len() as f64 * COMPACT_DELETED_SHARE
+}
+
+/// Compacts `shared` without holding the write lock for the work: compact a copy, then
+/// swap it in if nothing changed meanwhile (else retry later). Returns the remap.
+fn compact_live(shared: &SharedIndex) -> Option<(u64, Vec<u32>, u64)> {
+    let (mut copy, generation, old) = {
+        let snap = shared.snapshot();
+        if !wants_compaction(&snap) {
+            return None;
+        }
+        (snap.clone(), snap.generation(), snap.instance())
+    };
+    let remap = copy.compact();
+    copy.rebuild_name_order();
+    copy.shrink_to_fit();
+    let mut w = shared.write();
+    if w.generation() != generation || w.instance() != old {
+        // Changes arrived while compacting: the copy is outdated.
+        return None;
+    }
+    let new = copy.instance();
+    *w = copy;
+    Some((old, remap, new))
+}
+
+/// Watches the share of deleted rows and compacts the live index (SPEC ch.1: tombstones
+/// are reclaimed without restarting). Stores and views follow the remap.
+fn spawn_compactor(
+    shared: SharedIndex,
+    hooks: Option<Arc<dyn IndexHooks>>,
+    tx: Sender<IndexEvent>,
+    notify: Callback,
+    stop: StopFlag,
+) {
+    let _ = std::thread::Builder::new().name("fennec-compact".into()).spawn(move || {
+        let mut last_check = Instant::now();
+        while !stop.is_stopped() {
+            std::thread::sleep(Duration::from_millis(500));
+            if last_check.elapsed() < Duration::from_secs(30) {
+                continue;
+            }
+            last_check = Instant::now();
+            let t = Instant::now();
+            if let Some((old, remap, new)) = compact_live(&shared) {
+                let removed = remap.iter().filter(|&&r| r == u32::MAX).count();
+                tracing::info!(removed, elapsed = ?t.elapsed(), "index compacted while running");
+                if let Some(h) = &hooks {
+                    h.compacted(old, &remap, new);
+                }
+                let _ = tx.send(IndexEvent::Compacted { old_instance: old, remap: remap.into() });
+                notify();
+            }
+        }
+    });
 }
 
 /// Coalesces "index changed" signals into at most one search refresh per 50 ms.
@@ -1674,5 +1746,45 @@ mod tests {
         let snap = shared.snapshot();
         assert!((0..snap.len() as u32).map(EntryId).any(|i| snap.name_string(i) == "notes.txt"));
         assert!((0..snap.len() as u32).map(EntryId).any(|i| snap.name_string(i) == "b.iso"));
+    }
+}
+
+#[cfg(test)]
+mod compact_tests {
+    use super::*;
+
+    #[test]
+    fn live_compaction_swaps_only_when_unchanged() {
+        let mut s = IndexStore::default();
+        let csv: String = std::iter::once("Filename,Size,Date Modified,Date Created,Attributes\n".to_string())
+            .chain((0..30_000).map(|i| format!("\"C:\\d\\f{i}.txt\",1,,,32\n")))
+            .collect();
+        fnc_index::efu::load_efu(&mut s, csv.as_bytes(), "t.efu").unwrap();
+        let shared = SharedIndex::new(s);
+        assert!(compact_live(&shared).is_none(), "nothing to reclaim");
+        let doomed: Vec<Change> = {
+            let snap = shared.snapshot();
+            (0..snap.len() as u32)
+                .map(EntryId)
+                .filter(|&id| snap.name_string(id).starts_with("f1"))
+                .map(|id| Change::Delete(EntryRef::Id(id)))
+                .collect()
+        };
+        assert!(doomed.len() >= 10_000);
+        shared.write().apply(doomed);
+        let keep = {
+            let snap = shared.snapshot();
+            (0..snap.len() as u32).map(EntryId).find(|&id| snap.name_string(id) == "f29999.txt").unwrap()
+        };
+        let before = shared.snapshot().live_count();
+        let (old, remap, new) = compact_live(&shared).unwrap();
+        let snap = shared.snapshot();
+        assert_eq!(snap.instance(), new);
+        assert_ne!(old, new);
+        assert_eq!(snap.len(), before, "tombstones reclaimed");
+        let moved = EntryId(remap[keep.idx()]);
+        assert_eq!(snap.name_string(moved), "f29999.txt");
+        assert!(snap.find_path("C:\\d\\f29999.txt") == Some(moved));
+        assert_eq!(snap.live_count(), before);
     }
 }
