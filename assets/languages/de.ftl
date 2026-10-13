@@ -828,3 +828,37 @@ msg-rebuilding-index = Der Index wird neu aufgebaut; bis dahin wird der aktuelle
 options-password-set = (gesetzt – zum Ändern eingeben)
 undo-copy = Kopieren
 undo-move = Verschieben
+
+## ETP/FTP server and client (ADR-036)
+cmd-connect-etp = Mit ETP-Server verbinden…
+cmd-disconnect-etp = Vom ETP-Server trennen
+options-page-etp = ETP/FTP-Server
+options-desc-etp = Everything- und FTP-Clients können diesen Index durchsuchen und durchblättern (ETP = FTP mit der Everything-Erweiterung); dazu die Einstellungen für Extras → Mit ETP-Server verbinden. Benutzername und Kennwort werden im Klartext übertragen.
+status-etp = ETP/FTP: { $url }
+status-etp-failed = ETP/FTP-Server: { $error }
+status-etp-remote = ETP: { $host } ({ $total } Ergebnisse)
+msg-etp-bad-bind = Ungültige ETP/FTP-Bindungsadresse: { $value }
+msg-etp-no-password = Ein Kennwort ist erforderlich (Optionen → ETP/FTP-Server)
+msg-etp-bad-port = Ungültige Portnummer
+msg-etp-bad-host = Ungültiger Server: Host, Host:Port oder Benutzer:Kennwort@Host:Port verwenden
+msg-etp-connecting = Verbindung mit { $host } wird hergestellt…
+msg-etp-connected = Mit dem ETP-Server { $host } verbunden
+msg-etp-disconnected = ETP-Verbindung getrennt: { $error }
+msg-etp-query-failed = ETP-Suche fehlgeschlagen: { $error }
+msg-etp-downloading = { $count ->
+    [one] 1 Datei wird heruntergeladen…
+   *[other] { $count } Dateien werden heruntergeladen…
+}
+msg-etp-download-failed = Download fehlgeschlagen: { $error }
+msg-etp-not-available = Für Ergebnisse eines ETP-Servers nicht verfügbar
+etp-host = Host:
+etp-port = Port:
+etp-username = Benutzername:
+etp-password = Kennwort:
+etp-link-type = Verknüpfungstyp:
+etp-link-ftp = ftp://host/C: (über den Server herunterladen)
+etp-link-server = C: (Pfade wie auf dem Server)
+etp-link-share = \\Server\C (Windows-Freigaben)
+etp-link-admin-share = \\Server\C$ (administrative Freigaben)
+etp-plain-text-warning = Benutzername und Kennwort werden im Klartext übertragen.
+etp-connect = Verbinden

@@ -66,6 +66,7 @@ impl FennecApp {
             sort_before_semantic: None,
             find: Default::default(),
             nav: Default::default(),
+            remote: None,
         }
     }
 

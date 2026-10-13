@@ -67,6 +67,8 @@ pub struct Cli {
     pub tool: Option<Tool>,
     /// Search modifiers from `-case`, `-ww`, `-path`, `-diacritics`, `-regex`.
     pub modifiers: Vec<&'static str>,
+    /// `-connect [user:password@]host[:port]`: search an ETP server (Everything's option).
+    pub connect: Option<String>,
     /// Unknown switches (reported as warnings).
     pub unknown: Vec<String>,
 }
@@ -147,6 +149,7 @@ fennec [options] [search text]
   -filelist <file.efu>    mount an EFU file list
   -folder <path>          index a folder (folder index)
   -instance <name>        use a separate instance (data, mutex, pipe)
+  -connect [user:password@]host[:port]   search an ETP/FTP server
   -newwindow              open a new window
   -startup, -minimized    start hidden in the tray
   -exit, -quit            exit the running instance
@@ -243,6 +246,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Cli {
                 }
             }
             "instance" => cli.instance = value(&mut it).unwrap_or_default(),
+            "connect" => cli.connect = value(&mut it),
             "newwindow" | "new-window" => cli.new_window = true,
             "startup" | "minimized" | "tray" => cli.start_hidden = true,
             "console" => cli.console = true,
@@ -345,6 +349,8 @@ mod tests {
         assert_eq!(p(&["-path"]).search.as_deref(), Some("path:"));
         assert_eq!(p(&["-parent", "C:\\x"]).search.as_deref(), Some("parent:\"C:\\x\""));
         assert_eq!(p(&[]).search, None);
+        let c = p(&["-connect", "u:p@host:2121", "abc"]);
+        assert_eq!((c.connect.as_deref(), c.search.as_deref()), (Some("u:p@host:2121"), Some("abc")));
     }
 
     #[test]

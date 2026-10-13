@@ -774,3 +774,34 @@ msg-rebuilding-index = Dizin yeniden oluşturuluyor; tamamlanana kadar geçerli 
 options-password-set = (ayarlı — değiştirmek için yazın)
 undo-copy = kopyalama
 undo-move = taşıma
+
+## ETP/FTP server and client (ADR-036)
+cmd-connect-etp = ETP Sunucusuna Bağlan…
+cmd-disconnect-etp = ETP Sunucusu Bağlantısını Kes
+options-page-etp = ETP/FTP Sunucusu
+options-desc-etp = Everything ve FTP istemcilerinin bu dizinde arama yapmasına ve göz atmasına izin verir (ETP = Everything uzantılı FTP); Araçlar → ETP Sunucusuna Bağlan ayarları da buradadır. Kullanıcı adı ve parola düz metin olarak gönderilir.
+status-etp = ETP/FTP: { $url }
+status-etp-failed = ETP/FTP sunucusu: { $error }
+status-etp-remote = ETP: { $host } ({ $total } sonuç)
+msg-etp-bad-bind = Geçersiz ETP/FTP bağlama adresi: { $value }
+msg-etp-no-password = parola gerekli (Seçenekler → ETP/FTP Sunucusu)
+msg-etp-bad-port = Geçersiz bağlantı noktası numarası
+msg-etp-bad-host = Geçersiz sunucu: ana bilgisayar, ana bilgisayar:bağlantı noktası veya kullanıcı:parola@ana bilgisayar:bağlantı noktası kullanın
+msg-etp-connecting = { $host } sunucusuna bağlanılıyor…
+msg-etp-connected = { $host } ETP sunucusuna bağlanıldı
+msg-etp-disconnected = ETP bağlantısı kapandı: { $error }
+msg-etp-query-failed = ETP araması başarısız: { $error }
+msg-etp-downloading = { $count } dosya indiriliyor…
+msg-etp-download-failed = İndirme başarısız: { $error }
+msg-etp-not-available = ETP sunucusu sonuçları için kullanılamaz
+etp-host = Ana bilgisayar:
+etp-port = Bağlantı noktası:
+etp-username = Kullanıcı adı:
+etp-password = Parola:
+etp-link-type = Bağlantı türü:
+etp-link-ftp = ftp://host/C: (sunucu üzerinden indir)
+etp-link-server = C: (sunucudaki yollar)
+etp-link-share = \\Sunucu\C (Windows paylaşımları)
+etp-link-admin-share = \\Sunucu\C$ (yönetim paylaşımları)
+etp-plain-text-warning = Kullanıcı adı ve parola düz metin olarak gönderilir.
+etp-connect = Bağlan

@@ -30,6 +30,7 @@ const PAGES: &[(&str, u8)] = &[
     ("semantic", 1),
     ("index_journal", 1),
     ("server", 0),
+    ("etp", 1),
     ("advanced", 0),
 ];
 

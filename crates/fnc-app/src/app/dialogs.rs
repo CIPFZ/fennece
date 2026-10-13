@@ -51,6 +51,8 @@ pub(super) enum Dialog {
     ContextMenu {
         at: egui::Pos2,
     },
+    /// Tools → Connect to ETP Server.
+    ConnectEtp(Box<super::remote_ui::ConnectForm>),
     Help,
     About,
 }
@@ -281,6 +283,7 @@ impl FennecApp {
             Dialog::ConfirmDelete { .. } => t("cmd-delete-permanently"),
             Dialog::Journal { .. } => t("cmd-index-journal"),
             Dialog::ContextMenu { .. } => String::new(),
+            Dialog::ConnectEtp(_) => t("cmd-connect-etp"),
             Dialog::Help => t("cmd-help"),
             Dialog::About => t("cmd-about"),
         };
@@ -605,6 +608,10 @@ impl FennecApp {
                 if ui.button(t("dialog-close")).clicked() { Act::Close } else { Act::Keep }
             }
             Dialog::ContextMenu { .. } => Act::None,
+            Dialog::ConnectEtp(form) => match self.connect_form_ui(ui, form) {
+                Some(_) => Act::Close,
+                None => Act::Keep,
+            },
         }
     }
 
@@ -679,7 +686,7 @@ impl FennecApp {
     /// JSON, M3U/M3U8, otherwise one path per line) with the visible columns.
     fn export(&mut self, path: PathBuf) {
         let ids = self.v.results.ids.clone();
-        let shared = self.shared.clone();
+        let shared = self.view_index().clone();
         let columns: Vec<crate::columns::ColumnId> = self.columns.iter().map(|c| c.id).collect();
         let types = self.type_names.clone();
         let done = t_args("msg-exported", &[("count", ids.len().into()), ("path", path.display().to_string().into())]);

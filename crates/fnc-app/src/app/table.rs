@@ -234,7 +234,8 @@ impl FennecApp {
             now: FileTime::now(),
             props: props.map(|p| &**p),
             results: Some(&results),
-            lazy: Some(&self.stores.cells),
+            // Remote results: no file reads for columns.
+            lazy: if self.v.remote.is_some() { None } else { Some(&self.stores.cells) },
         };
         for &c in cols {
             cells.push(crate::columns::cell(s, id, c, &mut f));
@@ -286,7 +287,7 @@ impl FennecApp {
         // context menu, drag).
         ui.style_mut().interaction.selectable_labels = false;
         // One short-lived snapshot for all visible rows; never wait more than 2 ms.
-        let snap = self.shared.try_snapshot_for(Duration::from_millis(2));
+        let snap = self.view_index().try_snapshot_for(Duration::from_millis(2));
         // The indexer held the lock: draw what is cached and come back for the rest.
         if snap.is_none() {
             ui.ctx().request_repaint_after(Duration::from_millis(30));
@@ -319,6 +320,7 @@ impl FennecApp {
             (text_h + 6.0).max(ui.spacing().interact_size.y)
         };
         let results = self.v.results.clone();
+        let remote = self.is_remote();
         let mut action: Option<(usize, RowAction)> = None;
         let ncols = cols.len();
         let mut builder = TableBuilder::new(ui)
@@ -360,7 +362,8 @@ impl FennecApp {
                     } else {
                         self.row(id, snap.as_ref(), props.as_ref(), &col_ids)
                     };
-                    let weak = data.as_ref().is_some_and(|r| r.offline);
+                    // Remote results live in an offline index but are not greyed out.
+                    let weak = data.as_ref().is_some_and(|r| r.offline) && !remote;
                     for (ci, c) in cols.iter().enumerate() {
                         row.col(|ui| {
                             let Some(r) = &data else {
@@ -385,7 +388,15 @@ impl FennecApp {
                                     } else {
                                         let px = (16.0 * ui.ctx().pixels_per_point()).round() as u32;
                                         let tex = self.settings.show_icons.then(|| {
-                                            self.thumbs.get(crate::thumbs::icon_key(&r.path, r.is_dir, px), &r.path)
+                                            // Remote paths are never read: icons by type only.
+                                            let path = if remote {
+                                                std::borrow::Cow::Owned(std::path::PathBuf::from(
+                                                    r.path.file_name().unwrap_or_default(),
+                                                ))
+                                            } else {
+                                                std::borrow::Cow::Borrowed(&r.path)
+                                            };
+                                            self.thumbs.get(crate::thumbs::icon_key(&path, r.is_dir, px), &path)
                                         });
                                         match tex.flatten() {
                                             Some(tex) => {

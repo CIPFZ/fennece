@@ -1,5 +1,5 @@
-//! Server lifecycle (SPEC ch.4 §3–4): the native IPC pipe, the Everything-compatible
-//! window and the HTTP server, started and stopped from the settings.
+//! Server lifecycle (SPEC ch.4 §3–5): the native IPC pipe, the Everything-compatible
+//! window, the HTTP server and the ETP/FTP server, started and stopped from the settings.
 //!
 //! All three share one [`IndexBackend`] (queries on index snapshots, independent of the
 //! UI's engines). Starting and stopping happen on the `fennec-servers` thread — stopping
@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 use fnc_core::settings::Settings;
+use fnc_etp::{EtpConfig, EtpHandle};
 use fnc_http::{HttpConfig, HttpHandle, HttpLabels};
 use fnc_ipc::IndexBackend;
 use fnc_ipc::server::{ServerConfig, ServerHandle};
@@ -42,12 +43,50 @@ pub struct Desired {
     pub compat: bool,
     /// HTTP server configuration (`Err`: invalid settings), `None` = off.
     pub http: Option<Result<HttpConfig, String>>,
+    /// ETP/FTP server configuration (`Err`: invalid settings), `None` = off.
+    pub etp: Option<Result<EtpConfig, String>>,
 }
 
 impl Desired {
-    /// From the settings (`server` page).
+    /// From the settings (`server` and `etp` pages).
     pub fn from_settings(s: &Settings) -> Self {
-        Self { ipc: s.ipc_server, compat: s.everything_ipc, http: s.http_enabled.then(|| http_config(s)) }
+        Self {
+            ipc: s.ipc_server,
+            compat: s.everything_ipc,
+            http: s.http_enabled.then(|| http_config(s)),
+            etp: s.etp_enabled.then(|| etp_config(s)),
+        }
+    }
+}
+
+/// The ETP/FTP server configuration of `s`.
+pub fn etp_config(s: &Settings) -> Result<EtpConfig, String> {
+    let bind: IpAddr =
+        s.etp_bind.trim().parse().map_err(|_| t_args("msg-etp-bad-bind", &[("value", s.etp_bind.clone().into())]))?;
+    let log = s.etp_log_file.trim();
+    Ok(EtpConfig {
+        bind,
+        port: s.etp_port,
+        username: s.etp_username.clone(),
+        password: s.etp_password.clone(),
+        allow_downloads: s.etp_allow_downloads,
+        allow_port: s.etp_allow_port,
+        max_connections: s.etp_max_connections.max(1) as usize,
+        welcome: s.etp_welcome_message.clone(),
+        log_file: (!log.is_empty()).then(|| log.into()),
+        log_max_bytes: u64::from(s.etp_log_max_kb.max(4)) * 1024,
+        ..EtpConfig::default()
+    })
+}
+
+/// Localised ETP start failure.
+fn etp_error(e: &fnc_etp::EtpError) -> String {
+    match e {
+        fnc_etp::EtpError::NoPassword => t("msg-etp-no-password"),
+        fnc_etp::EtpError::Bind { addr, source } => {
+            t_args("msg-http-bind-failed", &[("addr", addr.to_string().into()), ("error", source.to_string().into())])
+        }
+        other => other.to_string(),
     }
 }
 
@@ -111,6 +150,9 @@ pub enum HttpStatus {
     Failed(String),
 }
 
+/// ETP/FTP server state (like [`HttpStatus`]).
+pub type EtpStatus = HttpStatus;
+
 /// Everything-compatible window state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum CompatStatus {
@@ -134,6 +176,8 @@ pub struct ServersStatus {
     pub compat: CompatStatus,
     /// HTTP server.
     pub http: HttpStatus,
+    /// ETP/FTP server.
+    pub etp: EtpStatus,
     /// Number of configurations applied so far (tests wait for it).
     pub applied: u64,
 }
@@ -242,6 +286,7 @@ struct Running {
     ipc: Option<ServerHandle>,
     compat: Option<fnc_platform::compat::CompatWindow>,
     http: Option<HttpHandle>,
+    etp: Option<EtpHandle>,
 }
 
 fn worker(
@@ -312,12 +357,31 @@ fn worker(
                 },
             };
         }
+        if want.etp != cur.etp || (want.etp.is_some() && run.etp.is_none()) {
+            run.etp = None;
+            st.etp = match &want.etp {
+                None => EtpStatus::Off,
+                Some(Err(e)) => EtpStatus::Failed(e.clone()),
+                Some(Ok(cfg)) => match fnc_etp::start(cfg.clone(), backend.clone()) {
+                    Ok(h) => {
+                        let addr = h.local_addr();
+                        run.etp = Some(h);
+                        EtpStatus::Running(addr)
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "cannot start the ETP/FTP server");
+                        EtpStatus::Failed(etp_error(&e))
+                    }
+                },
+            };
+        }
         cur = want;
         st.applied += 1;
         *status.lock() = st;
         wake();
     }
     // The app is exiting.
+    drop(run.etp.take());
     drop(run.http.take());
     drop(run.compat.take());
     drop(run.ipc.take());
@@ -422,5 +486,45 @@ mod tests {
         let st = wait(&servers, 3);
         assert_eq!((st.ipc, st.http), (None, HttpStatus::Off));
         assert!(Client::connect(&ctx.instance, Duration::from_millis(300)).is_err(), "pipe closed");
+    }
+
+    /// ETP/FTP: off by default; starts with a password, answers an ETP query, stops.
+    #[test]
+    fn etp_server_follows_the_settings() {
+        crate::i18n::init("en");
+        assert!(Desired::from_settings(&Settings::default()).etp.is_none(), "ETP is off by default");
+        assert!(etp_config(&Settings { etp_bind: "x".into(), ..Settings::default() }).is_err());
+        let efu = "Filename,Size,Date Modified,Date Created,Attributes\n\"C:\\x\\abc.iso\",5,,,32\n";
+        let mut store = fnc_index::IndexStore::default();
+        fnc_index::efu::load_efu(&mut store, efu.as_bytes(), "t.efu").unwrap();
+        let backend = Arc::new(IndexBackend::new(fnc_index::SharedIndex::new(store), Arc::new(fnc_ipc::DefaultHost)));
+        let ctx = ServersContext { instance: format!("etp-test-{}", std::process::id()), portable: true };
+        let mut settings = Settings {
+            ipc_server: false,
+            everything_ipc: false,
+            etp_enabled: true,
+            etp_port: 0,
+            etp_username: "u".into(),
+            etp_password: fnc_core::secret::hash("p"),
+            ..Settings::default()
+        };
+        let servers = Servers::start(&ctx, backend, Desired::from_settings(&settings), Arc::new(|| {}));
+        let st = wait(&servers, 1);
+        let HttpStatus::Running(addr) = st.etp else { panic!("{:?}", st.etp) };
+        assert!(addr.ip().is_loopback());
+        let target =
+            fnc_etp::Target { host: "127.0.0.1".into(), port: addr.port(), username: "u".into(), password: "p".into() };
+        let mut c = fnc_etp::EtpClient::connect(&target, Duration::from_secs(10)).unwrap();
+        let page = c.query(&fnc_etp::SearchState { search: "abc".into(), ..Default::default() }).unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.items[0].name, "abc.iso");
+        drop(c);
+        settings.etp_password.clear();
+        servers.apply(Desired::from_settings(&settings));
+        assert_eq!(wait(&servers, 2).etp, HttpStatus::Failed(t("msg-etp-no-password")));
+        settings.etp_enabled = false;
+        servers.apply(Desired::from_settings(&settings));
+        assert_eq!(wait(&servers, 3).etp, HttpStatus::Off);
+        assert!(std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_err(), "port closed");
     }
 }

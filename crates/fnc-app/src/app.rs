@@ -16,6 +16,7 @@ mod integration;
 mod menus;
 mod options;
 mod preview;
+mod remote_ui;
 mod semantic_ui;
 mod session;
 mod sidebar;
@@ -233,6 +234,8 @@ pub(super) struct View {
     find: findbar::FindBar,
     /// Back/forward through the tab's searches.
     nav: toolbar::Nav,
+    /// Connected to an ETP server: searches run there (Tools → Connect to ETP Server).
+    remote: Option<remote_ui::RemoteView>,
 }
 
 /// Main application state.
@@ -428,6 +431,7 @@ impl FennecApp {
                 sort_before_semantic: None,
                 find: Default::default(),
                 nav: Default::default(),
+                remote: None,
             },
             windows: Vec::new(),
             in_secondary: false,
@@ -512,6 +516,9 @@ impl FennecApp {
         }
         self.v.sent_query = Some(self.v.query.clone());
         self.v.edited_at = None;
+        if self.send_remote_search(id) {
+            return;
+        }
         self.v.engine.search(SearchRequest {
             id,
             text: self.v.query.clone(),
@@ -557,6 +564,9 @@ impl FennecApp {
     /// Re-runs the view's search when the index changed since its results were computed
     /// and no search is in flight (at most every 250 ms).
     pub(super) fn refresh_if_stale(&mut self) {
+        if self.is_remote() {
+            return;
+        }
         let in_flight = self.v.latest_shown + 1 < self.v.next_id;
         if in_flight || self.v.stale_refresh.is_some_and(|t| t.elapsed() < Duration::from_millis(250)) {
             return;
@@ -596,7 +606,7 @@ impl FennecApp {
             self.v.rows.clear();
         }
         if let Some(target) = self.v.pending_select.take() {
-            let found = self.shared.try_snapshot_for(Duration::from_millis(50)).and_then(|s| {
+            let found = self.view_index().try_snapshot_for(Duration::from_millis(50)).and_then(|s| {
                 let mut buf = String::new();
                 self.v.results.ids.iter().position(|&id| {
                     s.full_path(id, &mut buf);
@@ -630,6 +640,7 @@ impl FennecApp {
         while let Ok(EngineEvent::Done(o)) = self.v.engine_rx.try_recv() {
             self.on_outcome(o);
         }
+        self.drain_remote();
         while let Ok(ev) = self.index_rx.try_recv() {
             match ev {
                 IndexEvent::Status(s) => self.status = s,
@@ -708,6 +719,16 @@ impl FennecApp {
         if forwarded && cli.new_window {
             self.open_window(cli.search.unwrap_or_default());
             return true;
+        }
+        if let Some(c) = &cli.connect {
+            // Everything's `-connect [user:password@]host[:port]`.
+            match fnc_etp::Target::parse(c, 21) {
+                Some(target) => {
+                    let link = self.settings.etp_client_link_type;
+                    self.connect_etp(crate::remote::RemoteTarget { target, link });
+                }
+                None => self.say(t("msg-etp-bad-host")),
+            }
         }
         if let Some(name) = &cli.filter {
             match self.filters.find(name) {
@@ -845,7 +866,7 @@ impl FennecApp {
         if ids.is_empty() {
             return Vec::new();
         }
-        let Some(snap) = self.shared.try_snapshot_for(Duration::from_millis(50)) else { return Vec::new() };
+        let Some(snap) = self.view_index().try_snapshot_for(Duration::from_millis(50)) else { return Vec::new() };
         let mut buf = String::new();
         ids.into_iter()
             .filter(|&id| snap.is_live(id))
@@ -906,9 +927,15 @@ impl FennecApp {
     fn run(&mut self, ctx: &egui::Context, cmd: Command) {
         use Command as K;
         let page = 20;
+        if self.remote_refuses(cmd) {
+            return;
+        }
         match cmd {
             K::FocusSearch => self.v.focus_search = true,
+            K::Refresh if self.is_remote() => self.send_search(),
             K::Refresh => self.v.engine.refresh(),
+            K::ConnectEtp => self.open_connect_dialog(),
+            K::DisconnectEtp => self.disconnect_etp(),
             K::SemanticSetup => self.semantic_open_setup(),
             K::MoveDown => self.move_cursor(self.row_step(), MoveMode::Select),
             K::MoveUp => self.move_cursor(-self.row_step(), MoveMode::Select),
@@ -1038,7 +1065,8 @@ impl FennecApp {
             }
             K::ExploreInFennec => {
                 if let Some((id, p)) = self.target_paths().into_iter().next() {
-                    let is_dir = self.shared.try_snapshot_for(Duration::from_millis(5)).is_some_and(|s| s.is_dir(id));
+                    let is_dir =
+                        self.view_index().try_snapshot_for(Duration::from_millis(5)).is_some_and(|s| s.is_dir(id));
                     let folder = if is_dir { p.clone() } else { p.parent().map(PathBuf::from).unwrap_or(p) };
                     let mut s = folder.display().to_string();
                     if !s.ends_with(['\\', '/']) {
@@ -1298,6 +1326,9 @@ impl FennecApp {
     }
 
     fn open_targets(&mut self, reveal: bool) {
+        if self.remote_open(reveal) {
+            return;
+        }
         let targets = self.target_paths();
         // Opening many files at once is almost always a mistake.
         for (id, path) in targets.into_iter().take(if reveal { 1 } else { 32 }) {
@@ -1305,7 +1336,8 @@ impl FennecApp {
             match r {
                 Ok(()) => {
                     self.record_history();
-                    if !reveal && self.settings.run_history_enabled {
+                    // Remote results have no run history here.
+                    if !reveal && self.settings.run_history_enabled && !self.is_remote() {
                         // The write lock may wait for a running search: never take it on
                         // the UI thread.
                         let (shared, engine) = (self.shared.clone(), self.v.engine.handle());
@@ -1333,14 +1365,14 @@ impl FennecApp {
         }
         if matches!(kind, TextKind::Csv | TextKind::Efu) {
             // Same writers as File → Export and fes.
-            let Some(snap) = self.shared.try_snapshot_for(Duration::from_millis(50)) else { return };
+            let Some(snap) = self.view_index().try_snapshot_for(Duration::from_millis(50)) else { return };
             let ids: Vec<EntryId> = targets.iter().map(|(id, _)| *id).collect();
             let format = if kind == TextKind::Efu { fnc_ipc::Format::Efu } else { fnc_ipc::Format::Csv };
             ctx.copy_text(crate::export::to_text(format, &snap, &ids, Some(self.type_names.clone())));
             self.say(t("msg-copied"));
             return;
         }
-        let snap = self.shared.try_snapshot_for(Duration::from_millis(50));
+        let snap = self.view_index().try_snapshot_for(Duration::from_millis(50));
         let mut out = String::new();
         for (id, p) in &targets {
             let full = p.display().to_string();
@@ -1784,13 +1816,14 @@ impl FennecApp {
         ui.horizontal(|ui| {
             let n = format::group_digits(self.v.results.len() as u64);
             ui.label(t_args("status-objects", &[("count", n.into())]));
+            self.remote_status_ui(ui);
             let sel = self.v.sel.count(self.v.results.len());
             if sel > 0 {
                 ui.separator();
                 let mut text = t_args("status-selected", &[("count", format::group_digits(sel as u64).into())]);
                 if !self.v.sel.all
                     && sel <= 10_000
-                    && let Some(s) = self.shared.try_snapshot_for(Duration::from_millis(1))
+                    && let Some(s) = self.view_index().try_snapshot_for(Duration::from_millis(1))
                 {
                     let total: u64 = self
                         .v
@@ -2346,6 +2379,8 @@ fn native_handle(frame: &eframe::Frame) -> isize {
 mod tests;
 #[cfg(test)]
 mod tests_edit;
+#[cfg(test)]
+mod tests_etp;
 #[cfg(all(test, feature = "semantic"))]
 mod tests_semantic;
 #[cfg(test)]

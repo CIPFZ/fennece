@@ -777,3 +777,34 @@ msg-rebuilding-index = 正在重建索引；完成前搜索仍使用当前索引
 options-password-set = （已设置——输入以更改）
 undo-copy = 复制
 undo-move = 移动
+
+## ETP/FTP server and client (ADR-036)
+cmd-connect-etp = 连接到 ETP 服务器…
+cmd-disconnect-etp = 断开 ETP 服务器
+options-page-etp = ETP/FTP 服务器
+options-desc-etp = 允许 Everything 客户端和 FTP 客户端搜索、浏览本索引（ETP = 带 Everything 扩展的 FTP），以及“工具 → 连接到 ETP 服务器”的设置。用户名和密码以明文发送。
+status-etp = ETP/FTP：{ $url }
+status-etp-failed = ETP/FTP 服务器：{ $error }
+status-etp-remote = ETP：{ $host }（{ $total } 个结果）
+msg-etp-bad-bind = 无效的 ETP/FTP 绑定地址：{ $value }
+msg-etp-no-password = 需要设置密码（选项 → ETP/FTP 服务器）
+msg-etp-bad-port = 无效的端口号
+msg-etp-bad-host = 无效的服务器：请使用 主机、主机:端口 或 用户名:密码@主机:端口
+msg-etp-connecting = 正在连接 { $host }…
+msg-etp-connected = 已连接到 ETP 服务器 { $host }
+msg-etp-disconnected = ETP 连接已关闭：{ $error }
+msg-etp-query-failed = ETP 搜索失败：{ $error }
+msg-etp-downloading = 正在下载 { $count } 个文件…
+msg-etp-download-failed = 下载失败：{ $error }
+msg-etp-not-available = 对 ETP 服务器的结果不可用
+etp-host = 主机：
+etp-port = 端口：
+etp-username = 用户名：
+etp-password = 密码：
+etp-link-type = 链接类型：
+etp-link-ftp = ftp://host/C:（通过服务器下载）
+etp-link-server = C:（使用服务器上的路径）
+etp-link-share = \\Server\C（Windows 共享）
+etp-link-admin-share = \\Server\C$（管理共享）
+etp-plain-text-warning = 用户名和密码以明文发送。
+etp-connect = 连接
