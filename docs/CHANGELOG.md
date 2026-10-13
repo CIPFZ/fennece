@@ -26,3 +26,9 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 - [M1][fnc-ntfs] enumerate with HighUsn = MAX; every USN record upserts (self-healing); device-gone → offline; root id via FileIdInfo; fixed drives only (removable in M2).
 - [M1][fnc-exec] submit under the token lock (no lost searches); per-query panic containment.
 - [M1][fnc-app] concurrent back-fill and journal watch; single instance kept alive on Windows; tray/close-to-tray/start-hidden fixes; run count off the UI thread; exact-modifier shortcuts.
+
+## M1 — verified on Windows Server 2022 (2026-10-13)
+- [M1][fnc-ntfs] synthesize `$Extend`; hard-link names via `FileIdBothDirectoryInfo` back-fill; USN data records → `Touch` (ADR-010).
+- [M1][fnc-index] `Change::Touch`, hard-link alias table, `apply_initial` (back-fill is not an index-journal change), shrink after back-fill.
+- [M1][fnc-platform] Windows UI language detection; [fnc-app] keep search focus after sorting; `ntfs_end_to_end` real-volume test.
+- [M1][bench] `bench/results-windows.md`; report `docs/reports/M1-windows.md`.

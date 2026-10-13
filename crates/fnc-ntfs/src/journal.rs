@@ -7,6 +7,8 @@
 //! * data/attribute/hard-link records become `Change::Touch` ("this name exists"),
 //!   which never moves an entry: such records may name the file by any of its hard
 //!   links;
+//!   SPEC-GAP: removing one name of a multi-link file (`HARD_LINK_CHANGE`) is not
+//!   detected; the stale alias stays until the file is deleted or the index rebuilt;
 //! * size/date changes only request a metadata refresh when the handle is closed
 //!   (`USN_REASON_CLOSE`), so a file written in many chunks is re-read once.
 //!

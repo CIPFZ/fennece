@@ -894,7 +894,7 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | 日期字段顺序 / 每周首日 | 跟随系统区域 | 默认 月/日/年、周一（设置可改）| 区域查询待 M2 接入 `GetLocaleInfoEx` |
 | `ext:` 与文件夹 | — | 文件夹无扩展名，`ext:` 永不匹配文件夹 | 与资源管理器"类型"一致 |
 | `junction:` / `symlink:` | 依据重解析标记 | 文件夹重解析点视为 junction、文件视为 symlink | 重解析标记未入索引（M3 属性索引补齐）|
-| NTFS 硬链接 | 每个文件名一个条目 | M1 仅首个名称（`FSCTL_ENUM_USN_DATA` 只返回一个）| M2 `$MFT` 解析路径补齐 |
+| NTFS 硬链接 | 每个文件名一个条目 | 每个名称一个条目：MFT 枚举得到一个名称，其余名称由大小/日期补齐阶段的目录列举（带文件 ID）补全；删除多链接文件的单个名称暂不检测（该别名保留到文件删除/重建）| `FSCTL_ENUM_USN_DATA` 每个文件只返回一个名称（ADR-010）|
 | ReFS 128 位文件 ID | 原样 | 折叠为 64 位（零扩展保持原值，否则 xxh3）| 索引 FRN 列为 u64 |
 | 命令行 `-filelist` / `-folder`，`fes -filelist` | 无 | 新增：挂载 EFU / 文件夹索引；`fes` 离线查询 | 便于脚本与测试 |
 
