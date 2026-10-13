@@ -1174,12 +1174,7 @@ mod tests {
     #[cfg(windows)]
     impl Live {
         fn start(db: &std::path::Path, reindex: bool) -> Self {
-            let shared = SharedIndex::default();
-            let (tx, rx) = crossbeam_channel::unbounded();
-            let engine = fnc_exec::SearchEngine::spawn(shared.clone(), tx, Box::new(|| {}));
-            let (itx, irx) = crossbeam_channel::unbounded();
-            let handle = engine.handle();
-            let cfg = IndexerConfig {
+            Self::with(IndexerConfig {
                 ntfs: true,
                 usn_create: true,
                 usn_max_size: 32 << 20,
@@ -1188,7 +1183,15 @@ mod tests {
                 db_path: Some(db.to_path_buf()),
                 reindex,
                 ..IndexerConfig::default()
-            };
+            })
+        }
+
+        fn with(cfg: IndexerConfig) -> Self {
+            let shared = SharedIndex::default();
+            let (tx, rx) = crossbeam_channel::unbounded();
+            let engine = fnc_exec::SearchEngine::spawn(shared.clone(), tx, Box::new(|| {}));
+            let (itx, irx) = crossbeam_channel::unbounded();
+            let handle = engine.handle();
             let started = Instant::now();
             let indexer = Indexer::spawn(cfg, shared.clone(), Arc::new(move || handle.refresh()), itx, Arc::new(|| {}));
             Self { engine, rx, irx, indexer, shared, next_id: 0, started }
@@ -1418,6 +1421,69 @@ mod tests {
         assert!(!exclusion_rules_kept(&fp(&["a", "b"], false), &fp(&["a"], false)), "rule removed");
         assert!(!exclusion_rules_kept(&fp(&["a"], true), &fp(&["a"], false)), "hidden no longer excluded");
         assert!(!exclusion_rules_kept(&fp(&["a"], false), ""), "all rules removed");
+    }
+
+    /// IDX-06 / IDX-07 (Windows, elevated): a FAT32 disk (VHD as `U:`) indexed as a
+    /// folder index is searchable, follows changes, goes offline when detached and comes
+    /// back when re-attached; a mounted EFU list is searchable and offline.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "needs Windows, administrator rights and diskpart"]
+    fn folder_index_fat32_and_efu() {
+        crate::i18n::init("en");
+        assert!(fnc_platform::privilege::is_elevated(), "run elevated");
+        let vhd = std::env::temp_dir().join(format!("fennec-fat-{}.vhdx", std::process::id()));
+        let diskpart = |script: &str| {
+            let f = std::env::temp_dir().join("fennec-diskpart-fat.txt");
+            std::fs::write(&f, script).unwrap();
+            let out = std::process::Command::new("diskpart").arg("/s").arg(&f).output().unwrap();
+            assert!(out.status.success(), "diskpart failed: {}", String::from_utf8_lossy(&out.stdout));
+        };
+        let v = vhd.display().to_string();
+        diskpart(&format!(
+            "create vdisk file=\"{v}\" maximum=64 type=expandable\nselect vdisk file=\"{v}\"\nattach vdisk\ncreate partition primary\nformat fs=fat32 quick label=FNUSB\nassign letter=U\n"
+        ));
+        std::fs::create_dir_all(r"U:\photos").unwrap();
+        std::fs::write(r"U:\photos\usb-holiday.jpg", b"jpg").unwrap();
+        let efu = std::env::temp_dir().join("fennec-it.efu");
+        std::fs::write(
+            &efu,
+            "Filename,Size,Date Modified,Date Created,Attributes\n\"E:\\Backup\\efu-offline-doc.pdf\",12345,,,32\n",
+        )
+        .unwrap();
+        let mut live = Live::with(IndexerConfig {
+            folders: vec![r"U:\".into()],
+            file_lists: vec![efu.clone()],
+            folder_watch: true,
+            ..IndexerConfig::default()
+        });
+        let (t, msgs) = live.ready();
+        eprintln!("ready after {t:?}; messages {msgs:?}");
+        assert_eq!(live.count("usb-holiday.jpg", &|n| n == 1, Duration::from_secs(10)), 1);
+        assert_eq!(live.count("efu-offline-doc.pdf offline:", &|n| n == 1, Duration::from_secs(10)), 1);
+        eprintln!("IDX-07: EFU entry searchable and offline");
+        let t = Instant::now();
+        std::fs::write(r"U:\photos\usb-new.jpg", b"x").unwrap();
+        live.count("usb-new.jpg", &|n| n == 1, Duration::from_secs(10));
+        eprintln!("IDX-06: change on the FAT32 folder index visible after {:?}", t.elapsed());
+        diskpart(&format!("select vdisk file=\"{v}\"\ndetach vdisk\n"));
+        let t = Instant::now();
+        live.count("usb-holiday.jpg offline:", &|n| n == 1, Duration::from_secs(15));
+        eprintln!("IDX-06: detached -> offline after {:?}", t.elapsed());
+        diskpart(&format!("select vdisk file=\"{v}\"\nattach vdisk\n"));
+        // Windows may need the letter re-assigned after attach.
+        if !std::path::Path::new(r"U:\").exists() {
+            diskpart(&format!("select vdisk file=\"{v}\"\nselect partition 1\nassign letter=U\n"));
+        }
+        let t = Instant::now();
+        live.count("usb-holiday.jpg online:", &|n| n == 1, Duration::from_secs(20));
+        std::fs::write(r"U:\after-reattach.txt", b"y").unwrap();
+        live.count("after-reattach.txt", &|n| n == 1, Duration::from_secs(10));
+        eprintln!("IDX-06: re-attached -> online and watched again after {:?}", t.elapsed());
+        diskpart(&format!("select vdisk file=\"{v}\"\ndetach vdisk\n"));
+        live.stop();
+        let _ = std::fs::remove_file(&vhd);
+        let _ = std::fs::remove_file(&efu);
     }
 
     /// IDX-02 (pipeline part): a change delivered by a watcher becomes visible in the
