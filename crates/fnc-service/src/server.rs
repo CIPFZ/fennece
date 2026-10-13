@@ -32,6 +32,13 @@ pub fn serve(instance: &str, stop: &StopFlag) -> io::Result<()> {
         }
         match conn {
             Ok(c) => {
+                // Defence in depth behind the pipe DACL: only interactive, medium-or-higher
+                // integrity processes (not services, not sandboxes) get volume access.
+                let pid = c.peer_creds().ok().and_then(|p| p.pid());
+                if !pid.is_some_and(fnc_platform::session::is_interactive_client) {
+                    tracing::warn!(?pid, "refused a non-interactive or low-integrity client");
+                    continue;
+                }
                 let _ = std::thread::Builder::new().name("fennec-svc-conn".into()).spawn(move || {
                     if let Err(e) = handle(c) {
                         tracing::debug!(error = %e, "connection ended");

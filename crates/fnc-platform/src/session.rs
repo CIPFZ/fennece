@@ -36,6 +36,17 @@ pub fn is_trusted_peer(pid: u32) -> bool {
     same && (!cfg!(windows) || process_integrity(pid).is_some_and(|l| l >= INTEGRITY_MEDIUM))
 }
 
+/// `true` if `pid` is an interactive process (session ≠ 0, i.e. not a service) with at
+/// least medium integrity (not a sandboxed low-integrity process): the clients the
+/// SYSTEM service answers (ADR-011). The service runs in session 0, so "same session"
+/// cannot apply there.
+pub fn is_interactive_client(pid: u32) -> bool {
+    if !cfg!(windows) {
+        return true;
+    }
+    process_session_id(pid).is_some_and(|s| s != 0) && process_integrity(pid).is_some_and(|l| l >= INTEGRITY_MEDIUM)
+}
+
 #[cfg(windows)]
 mod imp {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
