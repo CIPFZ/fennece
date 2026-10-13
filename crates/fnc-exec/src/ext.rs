@@ -77,11 +77,18 @@ pub struct SlowPolicy {
     /// At most this many file reads per search (the rest stay unknown and a
     /// [`ExecWarning::SlowLimit`] is reported). Default 10,000.
     pub max_files: usize,
+    /// Also read entries the store does not cover when the property (all its sources)
+    /// is indexed, or for `content:` when a content store is attached. Default `true`
+    /// (indexed values plus reads for the rest); `false` = an indexed property or the
+    /// content index is authoritative (entries outside its scope or not extracted yet
+    /// are absent, as with Everything's include folders), so `width:>4000` stays
+    /// instant. `notindexed:` always reads.
+    pub read_uncovered: bool,
 }
 
 impl Default for SlowPolicy {
     fn default() -> Self {
-        Self { props: true, content: true, hashes: true, max_files: 10_000 }
+        Self { props: true, content: true, hashes: true, max_files: 10_000, read_uncovered: true }
     }
 }
 
@@ -554,7 +561,8 @@ pub(crate) fn compile_prop(
             }
         }
     }
-    let read = p.not_indexed || ext.policy.props;
+    let indexed = store.is_some_and(|st| sources.iter().all(|q| st.is_indexed(*q)));
+    let read = p.not_indexed || (ext.policy.props && (ext.policy.read_uncovered || !indexed));
     let slow_ok = read && slow.on_demand.is_some();
     if !slow_ok && store.is_none_or(|st| !sources.iter().all(|q| st.is_indexed(*q))) {
         slow.warn(ExecWarning::NotIndexed(p.id.name()));
@@ -693,7 +701,8 @@ pub(crate) fn compile_content(
             }
         }
     }
-    let read = ext.policy.content && slow.on_demand.is_some();
+    let authoritative = !ext.policy.read_uncovered && p.source == ContentSource::Indexed && store.is_some();
+    let read = ext.policy.content && slow.on_demand.is_some() && !authoritative;
     if !read && (p.source != ContentSource::Indexed || store.is_none()) {
         slow.warn(ExecWarning::NotIndexed(match p.source {
             ContentSource::Indexed => "content",
