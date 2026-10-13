@@ -384,6 +384,11 @@ impl FennecApp {
             self.selected_id = None;
         }
         self.sel.all = false;
+        // Deleted or no longer matching entries leave the selection.
+        if !self.sel.ids.is_empty() {
+            let listed: HashSet<EntryId> = self.results.ids.iter().copied().collect();
+            self.sel.ids.retain(|id| listed.contains(id));
+        }
     }
 
     fn drain_channels(&mut self, ctx: &egui::Context) {
@@ -644,7 +649,10 @@ impl FennecApp {
                     match fnc_platform::fileops::set_clipboard_files(&paths, cmd == K::CutFiles) {
                         Ok(()) => self.say(t_args("msg-copied-files", &[("count", paths.len().into())])),
                         // No file clipboard on this platform: copy the paths as text.
-                        Err(_) => self.copy_text(ctx, TextKind::FullPath),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "cannot put files on the clipboard; copying paths");
+                            self.copy_text(ctx, TextKind::FullPath);
+                        }
                     }
                 }
             }
