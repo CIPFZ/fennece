@@ -1,0 +1,512 @@
+app-title = Fennec
+search-hint = Rechercher
+col-name = Nom
+col-path = Chemin
+col-size = Taille
+col-modified = Modifié le
+status-objects = { $count ->
+    [one] { $count } objet
+   *[other] { $count } objets
+}
+status-selected = { $count ->
+    [one] { $count } sélectionné
+   *[other] { $count } sélectionnés
+}
+status-elapsed = { $ms } ms
+index-starting = Démarrage…
+index-building = Indexation de { $volume } : { $done } entrées
+index-meta = Lecture des tailles et des dates { $percent }%
+index-ready = { $count ->
+    [one] { $count } entrée indexée en { $seconds } s
+   *[other] { $count } entrées indexées en { $seconds } s
+}
+index-error = Erreur d'index : { $message }
+index-db-rebuild = La base de données de l'index est illisible et va être reconstruite ({ $message }).
+index-volume-rebuild = Le journal des modifications de { $volume } a changé ; réindexation de ce volume.
+index-volume-added = { $volume } a été ajouté à l'index.
+index-watch-error = Surveillance de { $volume } arrêtée : { $message }
+index-folder-fallback = Pas d'accès au journal NTFS de { $volume } (exécutez en tant qu'administrateur ou installez le service) ; indexation en tant que dossier.
+empty-results = Aucun résultat
+empty-indexing = Création de l'index…
+action-open = Ouvrir
+action-open-path = Ouvrir l'emplacement
+action-copy-path = Copier le chemin complet
+action-copy-name = Copier le nom
+tray-show = Afficher Fennec
+tray-exit = Quitter
+msg-copied = Copié dans le Presse-papiers
+msg-open-failed = Impossible d'ouvrir { $path } : { $error }
+diag-unsupported = Pas encore pris en charge : { $name }:
+diag-invalid = Valeur non valide pour { $name } : { $value }
+diag-pattern = Motif non valide : { $message }
+diag-quote = Guillemet non fermé
+diag-group = < non fermé
+msg-restart-required = Redémarrez Fennec pour modifier les dossiers indexés et les listes de fichiers.
+
+## M2 Interface utilisateur
+cmd-focus-search = Activer la zone de recherche
+cmd-refresh = Actualiser
+cmd-open = Ouvrir
+cmd-open-path = Ouvrir l'emplacement
+cmd-open-with = Ouvrir avec…
+cmd-run-as-admin = Exécuter en tant qu'administrateur
+cmd-properties = Propriétés
+cmd-context-menu = Menu contextuel
+cmd-copy = Copier
+cmd-cut = Couper
+cmd-paste = Coller
+cmd-copy-full-path = Copier le chemin complet
+cmd-copy-full-path-quoted = Copier le chemin complet (entre guillemets)
+cmd-copy-name = Copier le nom
+cmd-copy-path = Copier le chemin
+cmd-copy-as-tsv = Copier en TSV
+cmd-copy-as-csv = Copier en CSV
+cmd-copy-as-efu = Copier en liste de fichiers
+cmd-delete = Supprimer
+cmd-delete-permanently = Supprimer définitivement
+cmd-rename = Renommer
+cmd-new-folder = Nouveau dossier
+cmd-explore-in-fennec = Parcourir dans Fennec
+cmd-omit = Masquer les résultats
+cmd-set-run-count = Définir le nombre d'exécutions…
+cmd-select-all = Sélectionner tout
+cmd-invert-selection = Inverser la sélection
+cmd-toggle-selection = Basculer la sélection
+cmd-move-down = Descendre
+cmd-move-up = Monter
+cmd-extend-down = Étendre la sélection vers le bas
+cmd-extend-up = Étendre la sélection vers le haut
+cmd-focus-down = Focus vers le bas
+cmd-focus-up = Focus vers le haut
+cmd-page-down = Page suivante
+cmd-page-up = Page précédente
+cmd-first = Premier résultat
+cmd-last = Dernier résultat
+cmd-match-case = Respecter la casse
+cmd-match-whole-word = Mot entier
+cmd-match-path = Rechercher dans le chemin
+cmd-match-diacritics = Respecter les accents
+cmd-enable-regex = Activer les expressions régulières
+cmd-advanced-search = Recherche avancée…
+cmd-add-bookmark = Ajouter aux signets…
+cmd-organize-bookmarks = Organiser les signets…
+cmd-organize-filters = Organiser les filtres…
+cmd-add-filter = Ajouter un filtre…
+cmd-filter-everything = Tout
+cmd-options = Options…
+cmd-export = Exporter…
+cmd-toggle-menu-bar = Barre de menus
+cmd-toggle-status-bar = Barre d'état
+cmd-toggle-filter-bar = Barre de filtres
+cmd-theme-light = Clair
+cmd-theme-dark = Sombre
+cmd-theme-system = Suivre le système
+cmd-zoom-in = Zoom avant
+cmd-zoom-out = Zoom arrière
+cmd-zoom-reset = Réinitialiser le zoom
+cmd-search-history = Historique des recherches
+cmd-clear-history = Effacer l'historique des recherches
+cmd-install-service = Installer le service Fennec
+cmd-uninstall-service = Désinstaller le service Fennec
+cmd-save-database = Enregistrer l'index maintenant
+cmd-pause-updates = Suspendre les mises à jour de l'index
+cmd-help = Syntaxe de recherche
+cmd-about = À propos de Fennec
+cmd-hide-window = Masquer la fenêtre
+cmd-exit = Quitter
+cmd-filter-1 = Filtre 1
+cmd-filter-2 = Filtre 2
+cmd-filter-3 = Filtre 3
+cmd-filter-4 = Filtre 4
+cmd-filter-5 = Filtre 5
+cmd-filter-6 = Filtre 6
+cmd-filter-7 = Filtre 7
+cmd-filter-8 = Filtre 8
+cmd-filter-9 = Filtre 9
+col-ext = Extension
+col-type = Type
+col-dm = Modifié le
+col-dc = Date de création
+col-da = Date d'accès
+col-attributes = Attributs
+col-runcount = Nombre d'exécutions
+col-dr = Date d'exécution
+col-rc = Date de modification récente
+col-fullpath = Chemin complet
+col-filelist = Nom de la liste de fichiers
+col-indexsource = Source d'index
+col-volume = Volume
+col-depth = Profondeur
+col-namelength = Longueur du nom
+col-frn = Numéro de référence de fichier
+options-page-general = Général
+options-desc-general = Langue, instance unique, zone de notification et raccourci global.
+options-page-ui = Interface
+options-desc-ui = Thème, zoom, hauteur des lignes et barres affichées.
+options-page-search = Recherche
+options-desc-search = Mode de correspondance par défaut des recherches.
+options-page-results = Résultats
+options-desc-results = Mise en surbrillance, ordre des dossiers et ouverture.
+options-page-view = Affichage
+options-desc-view = Colonnes, ordre de tri et formats.
+options-page-fonts_colors = Polices et couleurs
+options-desc-fonts_colors =  
+options-page-history = Historique
+options-desc-history = Historique des recherches et des exécutions.
+options-page-keyboard = Clavier
+options-desc-keyboard =  
+options-page-context_menu = Menu contextuel
+options-desc-context_menu = L'intégration à l'Explorateur de fichiers est installée avec les entrées du menu contextuel (fennec -install-shell, M4).
+options-page-open_commands = Commandes d'ouverture
+options-desc-open_commands = Commandes d'ouverture personnalisées : Libellé|programme arguments, %1 = chemin complet.
+options-page-index = Index
+options-desc-index = Ce qui est indexé et comment la base de données est enregistrée.
+options-page-ntfs = NTFS / ReFS
+options-desc-ntfs = Volumes NTFS/ReFS et leurs journaux des modifications.
+options-page-folders = Dossiers
+options-desc-folders = Index de dossiers (FAT, réseau, n'importe quel dossier).
+options-page-filelists = Listes de fichiers
+options-desc-filelists = Listes de fichiers EFU montées.
+options-page-exclude = Exclusions
+options-desc-exclude = Fichiers cachés/système et dossiers exclus.
+options-page-properties = Propriétés
+options-desc-properties = Indexation des propriétés (largeur, durée, auteur…).
+options-page-content = Contenu
+options-desc-content = Indexation du contenu.
+options-page-semantic = Recherche sémantique
+options-desc-semantic = Recherche sémantique locale avec EmbeddingGemma-2. Téléchargez le modèle et consultez son état dans Outils → Recherche sémantique…
+options-page-index_journal = Journal d'index
+options-desc-index_journal = Journal d'index (date de modification récente).
+options-page-server = Serveurs
+options-desc-server = Le serveur IPC pour fes.exe et le SDK, la fenêtre IPC compatible Everything (es.exe, lanceurs) et le serveur HTTP.
+options-page-advanced = Avancé
+options-desc-advanced =  
+keyctx-search = Zone de recherche
+keyctx-results = Liste des résultats
+keyctx-global = Global
+filter-audio = Audio
+filter-compressed = Compressé
+filter-document = Document
+filter-executable = Exécutable
+filter-folder = Dossier
+filter-picture = Image
+filter-video = Vidéo
+filter-everything = Tout
+menu-file = Fichier
+menu-edit = Édition
+menu-view = Affichage
+menu-search = Recherche
+menu-bookmarks = Signets
+menu-tools = Outils
+menu-help = Aide
+menu-copy-as = Copier en
+menu-theme = Thème
+menu-zoom = Zoom
+menu-columns = Colonnes
+menu-reset-columns = Réinitialiser les colonnes
+tray-options = Options…
+tray-pause = Suspendre/reprendre les mises à jour de l'index
+status-paused = mises à jour suspendues
+type-folder = Dossier de fichiers
+type-file = Fichier
+source-folder = Dossier
+source-filelist = Liste de fichiers
+time-just-now = à l'instant
+new-folder-name = Nouveau dossier
+dialog-ok = OK
+dialog-cancel = Annuler
+dialog-close = Fermer
+dialog-add = Ajouter…
+dialog-edit = Modifier…
+dialog-delete = Supprimer
+dialog-import = Importer depuis Everything
+dialog-create = Créer
+dialog-search = Rechercher
+dialog-save = Enregistrer
+dialog-edit-filter = Filtre
+dialog-run-count = Nombre d'exécutions :
+dialog-export-help = Exporte les résultats dans un fichier ; l'extension détermine le format : .efu (liste de fichiers), .csv / .tsv / .json (colonnes visibles), .m3u / .m3u8, toute autre extension un chemin par ligne.
+field-name = Nom
+field-search = Recherche
+field-filter = Filtre
+field-sort = Tri
+field-folder = Dossier
+field-macro = Macro
+builder-all-words = Tous ces mots
+builder-exact-phrase = Cette expression exacte
+builder-any-words = N'importe lequel de ces mots
+builder-none-words = Aucun de ces mots
+builder-match-case = Respecter la casse
+builder-whole-word = Mots entiers uniquement
+builder-folder = Dans le dossier
+builder-subfolders = Inclure les sous-dossiers
+builder-extensions = Extensions
+builder-kind = Rechercher
+builder-kind-all = Fichiers et dossiers
+builder-kind-files = Fichiers
+builder-kind-folders = Dossiers
+builder-size = Taille
+builder-date = Date de modification
+builder-attributes = Attributs
+builder-hidden = Caché
+builder-system = Système
+builder-readonly = Lecture seule
+builder-preview = Recherche :
+options-title = Options de Fennec
+options-ok = OK
+options-cancel = Annuler
+options-apply = Appliquer
+options-reset = Réinitialiser
+options-reset-keys = Restaurer les raccourcis par défaut
+options-show-containing = Afficher les paramètres contenant :
+options-empty-page = Rien à configurer ici pour l'instant.
+options-command = Commande
+options-press-key = Appuyez sur une touche…
+options-filter-hint = Filtrer les commandes
+options-keyboard-help = Cliquez sur un raccourci pour le modifier ; ✕ le supprime.
+msg-copied-files = { $count ->
+    [one] { $count } élément copié dans le Presse-papiers
+   *[other] { $count } éléments copiés dans le Presse-papiers
+}
+msg-pasted = Collé
+msg-op-failed = Échec de l'opération : { $error }
+msg-deleted = { $count ->
+    [one] { $count } élément supprimé
+   *[other] { $count } éléments supprimés
+}
+msg-renamed = Renommé en { $name }
+msg-created = Créé : { $name }
+msg-db-saved = Index enregistré
+msg-service-requested = Commande de service lancée
+msg-history-cleared = Historique des recherches effacé
+msg-setting-changed = { $key } = { $value }
+msg-unknown-command = Commande inconnue : /{ $command }
+msg-bad-bindings = Raccourcis non valides ignorés : { $bindings }
+msg-updates-paused = Mises à jour de l'index suspendues
+msg-updates-resumed = Mises à jour de l'index reprises
+msg-imported = { $count ->
+    [one] { $count } élément importé depuis { $file }
+   *[other] { $count } éléments importés depuis { $file }
+}
+msg-import-missing = { $file } introuvable (recherché dans les dossiers de données de Fennec et d'Everything)
+msg-exported = { $count ->
+    [one] { $count } résultat exporté vers { $path }
+   *[other] { $count } résultats exportés vers { $path }
+}
+about-text =
+    Trouvez tout en un clin d'œil.
+    Un moteur de recherche de noms de fichiers compatible avec la syntaxe de recherche d'Everything 1.5.
+time-minutes-ago = il y a { $n } min
+time-hours-ago = { $n ->
+    [one] il y a { $n } heure
+   *[other] il y a { $n } heures
+}
+time-days-ago = { $n ->
+    [one] il y a { $n } jour
+   *[other] il y a { $n } jours
+}
+type-ext-file = Fichier { $ext }
+dialog-new-folder-in = Nouveau dossier dans { $path } :
+help-syntax =
+    Syntaxe de recherche (compatible Everything)
+        espace   ET        |   OU        !   NON       < >   regroupement       "…"   texte littéral
+        {"*"}  ?    caractères génériques (nom entier)   \ dans un terme cherche dans le chemin complet   ^abc / abc$ début / fin du nom
+    Modificateurs : case: ww: wfn: path: regex: diacritics: nopath: py: (pinyin) …
+    Fonctions : ext:jpg;png  size:>10mb  dm:today  dc:2026  attrib:H  parent:C:\Windows  child:*.mp3  dupe:  empty:  depth:2 …
+    Macros : audio: zip: doc: exe: pic: video:
+    Commandes : tapez /search_delay=100 ou /reindex dans la zone de recherche et appuyez sur Entrée.
+dialog-confirm-delete = { $count ->
+    [one] Supprimer définitivement cet élément ? Cette action est irréversible.
+   *[other] Supprimer définitivement ces { $count } éléments ? Cette action est irréversible.
+}
+cmd-index-journal = Journal d'index…
+journal-create = Créé
+journal-delete = Supprimé
+journal-rename = Renommé
+journal-move = Déplacé
+journal-modify = Modifié
+journal-filter = Afficher les modifications contenant :
+journal-count = { $count ->
+    [one] { $count } enregistrement
+   *[other] { $count } enregistrements
+}
+journal-time = Heure
+journal-action = Modification
+journal-before = Avant
+journal-after = Après
+cmd-toggle-preview = Aperçu
+cmd-view-details = Détails
+cmd-view-medium-thumbnails = Miniatures moyennes
+cmd-view-large-thumbnails = Grandes miniatures
+cmd-view-extra-large-thumbnails = Très grandes miniatures
+cmd-next-item = Élément suivant
+cmd-previous-item = Élément précédent
+preview-nothing = Sélectionnez un résultat pour afficher son aperçu.
+preview-loading = Chargement…
+preview-binary = Fichier binaire (pas d'aperçu texte)
+preview-truncated = Seul le premier 1 MB est affiché.
+preview-selected = { $count ->
+    [one] { $count } élément sélectionné
+   *[other] { $count } éléments sélectionnés
+}
+preview-total-size = Taille totale : { $size }
+preview-contents = Contenu
+preview-children = { $files ->
+        [one] { $files } fichier
+       *[other] { $files } fichiers
+    }, { $folders ->
+        [one] { $folders } dossier
+       *[other] { $folders } dossiers
+    }
+cmd-new-window = Nouvelle fenêtre
+cmd-close-window = Fermer la fenêtre
+msg-unknown-filter = Filtre inconnu : { $name }
+msg-unknown-bookmark = Signet inconnu : { $name }
+msg-unknown-sort = Colonne de tri inconnue : { $name }
+shell-search-fennec = Rechercher avec Fennec
+shell-explore-in-fennec = Parcourir dans Fennec
+cmd-import-settings = Importer les paramètres…
+cmd-export-settings = Exporter les paramètres…
+cmd-import-everything-ini = Importer Everything.ini…
+cmd-export-filters = Exporter les filtres…
+cmd-export-bookmarks = Exporter les signets…
+cmd-export-search-history = Exporter l'historique des recherches…
+menu-import-export = Importer / Exporter
+dialog-transfer-path = Fichier :
+msg-transfer-done = Terminé : { $path }
+msg-ini-imported = { $count ->
+    [one] { $count } paramètre importé depuis Everything.ini
+   *[other] { $count } paramètres importés depuis Everything.ini
+}
+sem-err-no-model = La recherche sémantique nécessite le fichier de modèle { $path } (Options → Index → Recherche sémantique → Télécharger le modèle)
+sem-err-no-images = La recherche d'images (semimage:) nécessite le projecteur multimodal, absent de cette version
+sem-err-no-url = Ce modèle n'a pas d'adresse de téléchargement ; téléchargez-le vous-même et indiquez son fichier dans les options
+sem-status-idle = Sémantique : aucun dossier
+sem-status-no-model = Sémantique : modèle manquant
+sem-status-loading = Sémantique : chargement du modèle
+sem-status-ready = Sémantique : prête ({ $chunks } segments)
+sem-status-indexing = Sémantique : indexation de { $chunks } segments ({ $percent }%)
+sem-status-paused = Sémantique : en pause
+sem-status-error = Sémantique : { $error }
+sem-status-download = Sémantique : téléchargement du modèle ({ $percent }%)
+sem-download-cancelled = Téléchargement annulé
+sem-download-bad-size = Le fichier téléchargé fait { $got } octets au lieu de { $want }
+sem-download-bad-hash = Le fichier téléchargé ne correspond pas à sa somme de contrôle SHA-256
+cmd-semantic-setup = Recherche sémantique…
+sem-toggle = Sémantique
+sem-toggle-tip = Rechercher aussi par le sens (ajoute ?sem: à chaque recherche ; les résultats sont fusionnés)
+sem-download-done = Le modèle sémantique a été téléchargé et vérifié
+sem-download-failed = Échec du téléchargement du modèle : { $error }
+sem-setup-title = Recherche sémantique
+sem-setup-intro = La recherche sémantique trouve les fichiers par leur sens (« tableau budgétaire du dernier trimestre », « comment renouveler une clé d'API ») en plus de la recherche littérale habituelle. Elle s'exécute entièrement sur cet ordinateur : le modèle EmbeddingGemma-2 (environ 300 MB) n'est chargé qu'en cas de besoin, et les vecteurs occupent environ 0,5–1 KB par segment. Seuls les dossiers ci-dessous sont vectorisés, en arrière-plan et avec une limite d'utilisation du CPU.
+sem-setup-unavailable = Cette version de Fennec n'inclut pas la recherche sémantique.
+sem-setup-folders = Dossiers :
+sem-setup-folders-hint = Séparez les dossiers par ; — laissez vide pour utiliser vos dossiers Documents et Bureau.
+sem-setup-model = Modèle : { $name }
+sem-setup-model-ok = Le fichier du modèle est présent.
+sem-setup-download = Télécharger le modèle ({ $mb } MB)
+sem-setup-stats = { $docs } fichiers, { $chunks } segments, { $size } en mémoire
+sem-setup-enable-first = Activez la recherche sémantique pour choisir le modèle.
+sem-setup-enable = Activer la recherche sémantique
+sem-setup-apply = Appliquer
+sem-setup-rebuild = Reconstruire l'index sémantique
+sem-setup-loaded = Le modèle est en mémoire.
+sem-setup-unloaded = Le modèle n'est pas en mémoire (il sera chargé à la prochaine recherche sémantique).
+
+## M4 Intégration (IPC, compatibilité Everything, serveur HTTP)
+status-http = HTTP : { $url }
+status-http-failed = Serveur HTTP : { $error }
+msg-http-bad-bind = Adresse d'écoute HTTP non valide : { $value }
+msg-everything-running = Everything est en cours d'exécution : la fenêtre IPC compatible Everything n'a pas été créée.
+msg-http-no-password = un mot de passe est requis (Options → Serveurs)
+msg-http-bind-failed = impossible d'écouter sur { $addr } : { $error }
+msg-ipc-failed = Serveur IPC non démarré : { $error }
+http-search = Rechercher
+http-results = { $count ->
+    [one] { $count } résultat
+   *[other] { $count } résultats
+}
+http-previous = Précédent
+http-next = Suivant
+cmd-advanced-rename = Renommage avancé…
+cmd-undo = Annuler
+cmd-redo = Rétablir
+cmd-undo-action = Annuler { $action }
+cmd-redo-action = Rétablir { $action }
+undo-delete = la suppression
+undo-rename = le renommage
+undo-new-folder = la création du dossier
+undo-advanced-rename = le renommage avancé
+msg-undone = Annulation effectuée : { $action }
+msg-redone = Rétablissement effectué : { $action }
+msg-nothing-to-undo = Rien à annuler
+msg-nothing-to-redo = Rien à rétablir
+msg-renamed-many = { $count ->
+    [one] { $count } élément renommé
+   *[other] { $count } éléments renommés
+}
+rename-title = { $count ->
+    [one] Renommage avancé ({ $count } élément)
+   *[other] Renommage avancé ({ $count } éléments)
+}
+rename-template = Nouveau nom :
+rename-template-help = $name: $stem: $ext: $parent: $size: $dm: $dc: et $n (compteur)
+rename-find = Rechercher :
+rename-replace = Remplacer par :
+rename-regex = Expression régulière
+rename-match-case = Respecter la casse
+rename-keep-ext = Conserver l'extension
+rename-trim = Supprimer les espaces superflus
+rename-case = Casse :
+rename-case-keep = Inchangée
+rename-case-lower = minuscules
+rename-case-upper = MAJUSCULES
+rename-case-title = Majuscule À Chaque Mot
+rename-case-sentence = Majuscule en début de phrase
+rename-counter = Compteur ($n) :
+rename-start = début
+rename-step = pas
+rename-digits = chiffres
+rename-old = Nom actuel
+rename-new = Nouveau nom
+rename-apply = { $count ->
+    [one] Renommer { $count } élément
+   *[other] Renommer { $count } éléments
+}
+rename-problems = { $count ->
+    [one] { $count } nom inutilisable
+   *[other] { $count } noms inutilisables
+}
+rename-problem-empty = nom vide
+rename-problem-invalid = caractères non valides
+rename-problem-duplicate = nom en double
+rename-problem-exists = existe déjà
+rename-problem-pattern = expression régulière non valide
+tab-new = Nouvel onglet
+cmd-new-tab = Nouvel onglet
+cmd-close-tab = Fermer l'onglet
+cmd-next-tab = Onglet suivant
+cmd-previous-tab = Onglet précédent
+cmd-find-in-results = Rechercher dans les résultats…
+cmd-find-next = Rechercher le suivant
+cmd-find-previous = Rechercher le précédent
+find-label = Rechercher :
+find-case = Respecter la casse
+find-whole-word = Mot entier
+find-regex = Expression régulière
+find-next = Suivant (F3)
+find-previous = Précédent (Shift+F3)
+find-none = Introuvable
+find-count = { $count ->
+    [one] { $count } correspondance
+   *[other] { $count } correspondances
+}
+find-close = Fermer (Esc)
+cmd-navigate-back = Précédent
+cmd-navigate-forward = Suivant
+cmd-toggle-sidebar = Barre latérale
+cmd-toggle-toolbar = Barre d'outils
+sidebar-folders = Dossiers
+sidebar-bookmarks = Signets
+sidebar-no-bookmarks = Aucun signet pour l'instant (Signets → Ajouter aux signets).
+cmd-theme-high-contrast = Contraste élevé

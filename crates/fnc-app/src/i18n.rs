@@ -12,9 +12,26 @@ use unic_langid::LanguageIdentifier;
 
 const EN: &str = include_str!("../../../assets/languages/en.ftl");
 const ZH_CN: &str = include_str!("../../../assets/languages/zh-CN.ftl");
+const ZH_TW: &str = include_str!("../../../assets/languages/zh-TW.ftl");
+const JA: &str = include_str!("../../../assets/languages/ja.ftl");
+const DE: &str = include_str!("../../../assets/languages/de.ftl");
+const FR: &str = include_str!("../../../assets/languages/fr.ftl");
+const RU: &str = include_str!("../../../assets/languages/ru.ftl");
+const PL: &str = include_str!("../../../assets/languages/pl.ftl");
+const TR: &str = include_str!("../../../assets/languages/tr.ftl");
 
-/// Shipped languages: `(tag, source)`.
-pub const LANGUAGES: &[(&str, &str)] = &[("en", EN), ("zh-CN", ZH_CN)];
+/// Shipped languages: `(tag, source)` (SPEC ch.3 §14: the first nine).
+pub const LANGUAGES: &[(&str, &str)] = &[
+    ("en", EN),
+    ("zh-CN", ZH_CN),
+    ("zh-TW", ZH_TW),
+    ("ja", JA),
+    ("de", DE),
+    ("fr", FR),
+    ("ru", RU),
+    ("pl", PL),
+    ("tr", TR),
+];
 
 struct I18n {
     active: FluentBundle<FluentResource>,
@@ -48,7 +65,9 @@ pub fn resolve_language(requested: &str) -> &'static str {
         return tag;
     }
     if req.starts_with("zh") {
-        return "zh-CN";
+        // Traditional script and its regions; everything else is Simplified.
+        let traditional = req.contains("hant") || ["zh-tw", "zh-hk", "zh-mo"].iter().any(|r| req.starts_with(r));
+        return if traditional { "zh-TW" } else { "zh-CN" };
     }
     let primary = req.split('-').next().unwrap_or("");
     LANGUAGES.iter().find(|(t, _)| t.split('-').next() == Some(primary)).map_or("en", |(t, _)| t)
@@ -105,7 +124,11 @@ mod tests {
         assert_eq!(resolve_language("zh_CN"), "zh-CN");
         assert_eq!(resolve_language("zh-Hans-CN"), "zh-CN");
         assert_eq!(resolve_language("en-US"), "en");
-        assert_eq!(resolve_language("de-DE"), "en");
+        assert_eq!(resolve_language("de-DE"), "de");
+        assert_eq!(resolve_language("zh-Hant-TW"), "zh-TW");
+        assert_eq!(resolve_language("zh_HK"), "zh-TW");
+        assert_eq!(resolve_language("ja-JP"), "ja");
+        assert_eq!(resolve_language("pt-BR"), "en");
         assert_eq!(resolve_language(""), "en");
     }
 
@@ -121,6 +144,9 @@ mod tests {
             .collect();
         assert!(keys.len() > 20);
         for (tag, src) in LANGUAGES {
+            if let Err((_, errs)) = FluentResource::try_new(src.to_string()) {
+                panic!("{tag}: Fluent syntax errors {errs:?}");
+            }
             let b = bundle(tag, src);
             for k in &keys {
                 assert!(b.has_message(k), "{tag} is missing {k}");
