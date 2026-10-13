@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fennec MSI (SPEC ch.4 §9). Built by packaging/build.ps1 with WiX 3.x:
+     candle -arch x64 -dVersion=... -dBinDir=... fennec.wxs ; light -ext WixUIExtension -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Fennec" Language="1033" Version="$(var.Version)" Manufacturer="The Fennec authors"
+           UpgradeCode="8738795c-c37e-40fe-b304-eee4a13b0386">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64"
+             Description="Fennec file search" Comments="Find anything in a blink." />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Fennec is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <Icon Id="FennecIcon" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="FennecIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/fennec-search/fennec" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="Fennec" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+    </Directory>
+
+    <ComponentGroup Id="CoreFiles" Directory="INSTALLFOLDER">
+      <Component Id="FennecExe" Guid="*" Win64="yes">
+        <File Id="fennec.exe" Source="$(var.BinDir)\fennec.exe" KeyPath="yes" />
+        <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Fennec" WorkingDirectory="INSTALLFOLDER"
+                  Icon="FennecIcon" Advertise="yes" />
+      </Component>
+      <Component Id="FesExe" Guid="*" Win64="yes">
+        <File Id="fes.exe" Source="$(var.BinDir)\fes.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="Licenses" Guid="*" Win64="yes">
+        <File Id="LICENSE_MIT" Source="$(var.SrcDir)\LICENSE-MIT" KeyPath="yes" />
+        <File Id="LICENSE_APACHE" Source="$(var.SrcDir)\LICENSE-APACHE" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Lets standard users index NTFS volumes (IDX-10). -->
+    <ComponentGroup Id="ServiceFiles" Directory="INSTALLFOLDER">
+      <Component Id="ServiceExe" Guid="*" Win64="yes">
+        <File Id="fennec_service.exe" Source="$(var.BinDir)\fennec-service.exe" KeyPath="yes" />
+        <ServiceInstall Id="FennecService" Name="FennecService" DisplayName="Fennec Service"
+                        Description="Lets Fennec index NTFS volumes without administrator rights."
+                        Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" />
+        <ServiceControl Id="FennecServiceControl" Name="FennecService" Start="install" Stop="both" Remove="uninstall"
+                        Wait="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Explorer integration for all users (SPEC ch.4 §6). -->
+    <ComponentGroup Id="ShellIntegration" Directory="INSTALLFOLDER">
+      <Component Id="FolderContextMenu" Guid="*" Win64="yes">
+        <RegistryKey Root="HKLM" Key="Software\Classes\Directory\shell\Fennec">
+          <RegistryValue Type="string" Value="Search Fennec" KeyPath="yes" />
+          <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]fennec.exe" />
+          <RegistryValue Key="command" Type="string" Value="&quot;[INSTALLFOLDER]fennec.exe&quot; -path &quot;%1&quot;" />
+        </RegistryKey>
+        <RegistryKey Root="HKLM" Key="Software\Classes\Directory\Background\shell\Fennec">
+          <RegistryValue Type="string" Value="Search Fennec" />
+          <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]fennec.exe" />
+          <RegistryValue Key="command" Type="string" Value="&quot;[INSTALLFOLDER]fennec.exe&quot; -path &quot;%V&quot;" />
+        </RegistryKey>
+        <RegistryKey Root="HKLM" Key="Software\Classes\Drive\shell\Fennec">
+          <RegistryValue Type="string" Value="Search Fennec" />
+          <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]fennec.exe" />
+          <RegistryValue Key="command" Type="string" Value="&quot;[INSTALLFOLDER]fennec.exe&quot; -path &quot;%1&quot;" />
+        </RegistryKey>
+      </Component>
+      <Component Id="FileContextMenu" Guid="*" Win64="yes">
+        <RegistryKey Root="HKLM" Key="Software\Classes\*\shell\FennecExplore">
+          <RegistryValue Type="string" Value="Explore in Fennec" KeyPath="yes" />
+          <RegistryValue Name="Icon" Type="string" Value="[INSTALLFOLDER]fennec.exe" />
+          <RegistryValue Key="command" Type="string" Value="&quot;[INSTALLFOLDER]fennec.exe&quot; -filename &quot;%1&quot;" />
+        </RegistryKey>
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="Autostart" Directory="INSTALLFOLDER">
+      <Component Id="RunAtStartup" Guid="*" Win64="yes">
+        <RegistryValue Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Run" Name="Fennec" Type="string"
+                       Value="&quot;[INSTALLFOLDER]fennec.exe&quot; -startup" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="Fennec" Description="Fennec and the fes command line tool." Level="1"
+             Absent="disallow" Display="expand" ConfigurableDirectory="INSTALLFOLDER">
+      <ComponentGroupRef Id="CoreFiles" />
+      <Feature Id="Service" Title="Fennec Service" Level="1"
+               Description="Index NTFS volumes without administrator rights (recommended).">
+        <ComponentGroupRef Id="ServiceFiles" />
+      </Feature>
+      <Feature Id="Shell" Title="Explorer context menu" Level="1"
+               Description="&quot;Search Fennec&quot; on folders, &quot;Explore in Fennec&quot; on files.">
+        <ComponentGroupRef Id="ShellIntegration" />
+      </Feature>
+      <Feature Id="Startup" Title="Start with Windows" Level="1" Description="Start Fennec hidden in the tray at log-on.">
+        <ComponentGroupRef Id="Autostart" />
+      </Feature>
+    </Feature>
+
+    <UIRef Id="WixUI_FeatureTree" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+  </Product>
+</Wix>
