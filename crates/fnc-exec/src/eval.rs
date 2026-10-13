@@ -95,13 +95,8 @@ pub enum Leaf {
         /// against the fallback description).
         overflow: Box<TextLeaf>,
     },
-    /// `filelist:`: whole names or resolved paths.
-    NameSet {
-        /// Folded whole names.
-        names: HashSet<Box<[u8]>>,
-        /// Entries resolved from full paths.
-        ids: Bits,
-    },
+    /// `filelist:`: whole names or resolved paths (boxed: keeps `Leaf` small).
+    NameSet(Box<NameSetLeaf>),
     /// `fileexists:` / `folderexists:`.
     Exists(Box<ExistsLeaf>),
     /// Attributes.
@@ -141,6 +136,14 @@ pub enum NumAux {
     Tree(Arc<TreeAggregates>),
     /// Hard link counts.
     Links(Arc<LinkCounts>),
+}
+
+/// Compiled `filelist:`.
+pub struct NameSetLeaf {
+    /// Folded whole names.
+    names: HashSet<Box<[u8]>>,
+    /// Entries resolved from full paths.
+    ids: Bits,
 }
 
 /// Compiled `fileexists:` / `folderexists:`.
@@ -453,7 +456,7 @@ impl Compiled {
                         ids.set(id.idx());
                     }
                 }
-                Leaf::NameSet { names: names.iter().map(|n| n.as_bytes().into()).collect(), ids }
+                Leaf::NameSet(Box::new(NameSetLeaf { names: names.iter().map(|n| n.as_bytes().into()).collect(), ids }))
             }
             Pred::Exists { template, folder } => Leaf::Exists(Box::new(ExistsLeaf {
                 template: template.clone(),
@@ -743,7 +746,7 @@ impl Compiled {
                     e => ids.get(e as usize),
                 }
             }
-            Leaf::NameSet { names, ids } => ids.get(id.idx()) || (!names.is_empty() && names.contains(s.fold(id))),
+            Leaf::NameSet(n) => n.ids.get(id.idx()) || (!n.names.is_empty() && n.names.contains(s.fold(id))),
             Leaf::Exists(x) => Self::exists(x, s, id, sc),
             Leaf::Attrib { mask, exact } => {
                 let mut a = s.attributes(id);

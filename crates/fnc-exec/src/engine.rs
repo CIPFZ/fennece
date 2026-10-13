@@ -41,7 +41,8 @@ pub struct SearchOptions {
     /// Results hidden with "Omit result"; excluded unless the search uses `omit:`.
     pub omit: Option<OmitSet>,
     /// Type-name provider for `type:` (Windows: registry lookup); `None` = the
-    /// fallback "`EXT` File" names.
+    /// fallback "`EXT` File" names. Create it once and reuse it: descriptions are
+    /// cached per extension until a different provider is installed.
     pub type_names: Option<TypeNames>,
 }
 

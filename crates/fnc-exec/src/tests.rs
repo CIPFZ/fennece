@@ -552,6 +552,13 @@ fn engine_filters_with_options() {
 }
 
 #[test]
+fn compiled_nodes_stay_small() {
+    // Compiled nodes are walked for every entry; keep them within a cache line.
+    assert!(std::mem::size_of::<eval::Leaf>() <= 64, "Leaf is {} bytes", std::mem::size_of::<eval::Leaf>());
+    assert!(std::mem::size_of::<eval::CNode>() <= 64, "CNode is {} bytes", std::mem::size_of::<eval::CNode>());
+}
+
+#[test]
 fn engine_pinyin_default_and_type_names() {
     let (engine, rx, _) = engine_with(store());
     let mut r = req(1, "jdys");
