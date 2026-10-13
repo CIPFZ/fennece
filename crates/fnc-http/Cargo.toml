@@ -7,6 +7,19 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+fnc-core.workspace = true
+fnc-index.workspace = true
+fnc-ipc.workspace = true
+tokio.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+percent-encoding.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+fnc-exec.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

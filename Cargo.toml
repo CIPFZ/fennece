@@ -96,6 +96,13 @@ proptest = "1.12"
 tempfile = "3"
 dhat = "0.3"
 
+# integration (M4: fnc-ipc, fnc-http)
+rmp-serde = "1.3"
+tokio = { version = "1.47", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros", "fs", "io-util"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+percent-encoding = "2.3"
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"

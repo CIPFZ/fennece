@@ -6,7 +6,18 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[lib]
+# `fennec_sdk.dll` / `libfennec_sdk.so` for C callers, `fennec_sdk` for Rust.
+name = "fennec_sdk"
+crate-type = ["rlib", "cdylib"]
+
 [dependencies]
+fnc-ipc.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+fnc-index.workspace = true
 
 [lints]
 workspace = true
