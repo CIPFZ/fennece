@@ -769,7 +769,8 @@ pub fn collect_content(n: &Node, out: &mut Vec<ContentPred>) {
 
 /// `true` if `n` contains a predicate whose matches can change without an index change
 /// (properties, content, hashes, file reads: link targets, signatures, recycle bin
-/// records) — the executor gives such plans the slow-path state (file budget, caches).
+/// records, the Windows Search system index) — the executor gives such plans the
+/// slow-path state (file budget, caches, warnings).
 pub fn uses_stores(n: &Node) -> bool {
     match n {
         Node::And(v) | Node::Or(v) => v.iter().any(uses_stores),
@@ -781,7 +782,8 @@ pub fn uses_stores(n: &Node) -> bool {
             | Pred::Hash(_)
             | Pred::LinkTarget(_)
             | Pred::Signature(_)
-            | Pred::Recycled(Some(_)),
+            | Pred::Recycled(Some(_))
+            | Pred::SystemIndex(_),
         ) => true,
         _ => false,
     }

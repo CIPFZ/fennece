@@ -706,6 +706,9 @@ impl Compiled {
                 Some(set) => Leaf::In(set.bits.clone()),
                 None => Leaf::Nothing,
             },
+            Pred::SystemIndex(q) => {
+                crate::sysindex::compile(q, s, caches, cancel, ext.system_index, self.slow.as_ref())?
+            }
             Pred::Set(_) => Leaf::Nothing,
             Pred::Unsupported(_) | Pred::Invalid(_) => Leaf::Nothing,
         })

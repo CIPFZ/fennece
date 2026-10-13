@@ -105,6 +105,13 @@ pub enum ExecWarning {
     /// The function reads files (`target:`, `fsi:`, `recycled:<text>`) but the search has
     /// no on-demand source: nothing matches.
     NoFileAccess(&'static str),
+    /// `si:` found no system index: Windows Search is not installed or not running (or
+    /// the search has no system index source, or the platform is not Windows).
+    SystemIndexUnavailable,
+    /// The Windows Search query of `si:` failed (message from the source).
+    SystemIndexFailed(String),
+    /// Windows Search returned more items than this; only the first ones are used.
+    SystemIndexLimit(usize),
 }
 
 impl fmt::Display for ExecWarning {
@@ -118,6 +125,11 @@ impl fmt::Display for ExecWarning {
             }
             ExecWarning::Semantic(why) => write!(f, "semantic search: {why}"),
             ExecWarning::NoFileAccess(name) => write!(f, "{name}: needs file access, not available for this search"),
+            ExecWarning::SystemIndexUnavailable => f.write_str(
+                "si: the Windows Search system index is not available (service not installed or not running)",
+            ),
+            ExecWarning::SystemIndexFailed(why) => write!(f, "si: Windows Search query failed: {why}"),
+            ExecWarning::SystemIndexLimit(n) => write!(f, "si: only the first {n} Windows Search results are used"),
         }
     }
 }
@@ -137,6 +149,8 @@ pub struct ExtCtx<'a> {
     pub policy: SlowPolicy,
     /// Embedding index for `sem:` terms (`None` = semantic search off).
     pub semantic: Option<&'a Arc<dyn crate::semantic::SemanticSource>>,
+    /// Windows Search system index for `si:` terms (`None` = unavailable).
+    pub system_index: Option<&'a Arc<dyn crate::sysindex::SystemIndexSource>>,
 }
 
 impl ExtCtx<'_> {

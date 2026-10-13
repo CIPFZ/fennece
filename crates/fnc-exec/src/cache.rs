@@ -96,6 +96,8 @@ pub struct Caches {
     on_demand: Mutex<Option<Arc<crate::ext::OnDemandCache>>>,
     /// Link targets, signatures and recycle bin records read on demand (across queries).
     file_texts: Mutex<Option<Arc<crate::ext::FileTextCache>>>,
+    /// Recent `si:` results (across queries, short-lived).
+    system_index: Mutex<Option<Arc<crate::sysindex::SystemIndexCache>>>,
 }
 
 impl Caches {
@@ -231,6 +233,11 @@ impl Caches {
     /// (keyed by file identity).
     pub fn file_texts(&self) -> Arc<crate::ext::FileTextCache> {
         self.file_texts.lock().get_or_insert_with(Default::default).clone()
+    }
+
+    /// Recent results of system index queries (`si:`), by query text.
+    pub fn system_index(&self) -> Arc<crate::sysindex::SystemIndexCache> {
+        self.system_index.lock().get_or_insert_with(Default::default).clone()
     }
 
     /// Drops everything (e.g. after compaction). The type-name provider stays.

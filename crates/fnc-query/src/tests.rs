@@ -211,7 +211,10 @@ const CASES: &[(&str, &str)] = &[
     ("width:1920;3840", "width={'1920','3840'}"),
     ("case:regex:content:\"^Start\"", "case:regex:content='^Start'"),
     ("content:\"quarterly plan\"", "content='quarterly plan'"),
-    ("si*:\"1+1=2\"", "si='1+1=2'"),
+    // `si*:` passes the rest verbatim, double quotes included (an AQS phrase).
+    ("si*:\"1+1=2\"", "si='\"1+1=2\"'"),
+    ("si*:\"a b\"", "si='\"a b\"'"),
+    ("system-index*:x \"a b\"", "(and si='x' 'a b')"),
     ("si*:a|b", "si='a|b'"),
     ("name*:<x>", "name='<x>'"),
     ("::ext:jpg", "ext='jpg'"),
@@ -827,6 +830,7 @@ fn psexp(n: &Node) -> String {
             Pred::LinkTarget(t) => format!("target({})", t.as_ref().map_or("*".into(), tsexp)),
             Pred::Recycled(t) => format!("recycled({})", t.as_ref().map_or("*".into(), tsexp)),
             Pred::Signature(names) => format!("fsi({})", names.join(",")),
+            Pred::SystemIndex(q) => format!("si({q:?})"),
             Pred::Invalid(_) => "invalid".into(),
             Pred::Prop(p) => {
                 use crate::plan::PropTest;
@@ -964,6 +968,17 @@ const PLAN_CASES: &[(&str, &str)] = &[
     ("recyclebinoriginalpath:", "recycled(*)"),
     ("recycled:report", "recycled(sub:path'report')"),
     ("recycled:c:/users/*", "recycled(wild:path'c:\\users\\*')"),
+    // ---- system index ----
+    ("si:foo", "si(\"foo\")"),
+    ("system-index:\"my content\"", "si(\"my content\")"),
+    ("systemindex:kind:music", "si(\"kind:music\")"),
+    ("si:a;b", "si(\"a;b\")"),
+    ("si:", "si(\"\")"),
+    ("si*:\"a phrase\"", "si(\"\\\"a phrase\\\"\")"),
+    ("si:\"&quot:a phrase&quot:\"", "si(\"\\\"a phrase\\\"\")"),
+    ("ext:docx si:report", "(and Ext si(\"report\"))"),
+    ("si:report *.docx", "(and si(\"report\") wild:'*.docx')"),
+    ("!si:draft", "(not si(\"draft\"))"),
     // ---- M3: properties ----
     ("width:>4000", "width[4001..max]"),
     ("width:1920;3840", "width[1920..1921,3840..3841]"),
@@ -1263,7 +1278,8 @@ fn plan_values() {
     assert!(matches!(plan_of("size:banana"), Node::Leaf(Pred::Invalid(_))));
     assert!(matches!(plan_of("width:>100"), Node::Leaf(Pred::Prop(_))));
     assert!(matches!(plan_of("target:x"), Node::Leaf(Pred::LinkTarget(Some(_)))));
-    assert!(matches!(plan_of("si:x"), Node::Leaf(Pred::Unsupported(_))));
+    assert!(matches!(plan_of("random:x"), Node::Leaf(Pred::Unsupported(_))));
+    assert!(matches!(plan_of("si:x"), Node::Leaf(Pred::SystemIndex(_))));
     assert!(matches!(plan_of("audio:"), Node::Leaf(Pred::Ext { .. })));
 }
 

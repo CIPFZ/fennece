@@ -2122,6 +2122,13 @@ fn warning_text(w: &fnc_exec::ExecWarning) -> String {
         }
         fnc_exec::ExecWarning::Semantic(reason) => t_args("warn-semantic", &[("reason", reason.clone().into())]),
         fnc_exec::ExecWarning::NoFileAccess(name) => t_args("warn-no-file-access", &[("name", (*name).into())]),
+        fnc_exec::ExecWarning::SystemIndexUnavailable => t("warn-system-index-unavailable"),
+        fnc_exec::ExecWarning::SystemIndexFailed(reason) => {
+            t_args("warn-system-index-failed", &[("reason", reason.clone().into())])
+        }
+        fnc_exec::ExecWarning::SystemIndexLimit(n) => {
+            t_args("warn-system-index-limit", &[("count", format::group_digits(*n as u64).into())])
+        }
     }
 }
 

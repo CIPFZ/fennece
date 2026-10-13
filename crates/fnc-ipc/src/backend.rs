@@ -517,6 +517,7 @@ impl IndexBackend {
                 on_demand: options.on_demand.as_ref().map(|o| &o.0),
                 policy: options.slow,
                 semantic: options.semantic.as_ref().map(|v| &v.0),
+                system_index: options.system_index.as_ref().map(|v| &v.0),
             };
             let env =
                 PlanEnv { indexed_props: props.as_deref().map(|p| p.indexed().to_vec()).unwrap_or_default(), ..env };

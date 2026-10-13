@@ -314,6 +314,9 @@ pub enum Pred {
     /// (the `$R…` entries and everything below them); with a pattern, their original path
     /// (from the `$I…` record) matches.
     Recycled(Option<TextPred>),
+    /// `si:` / `system-index:` — the entry is one of the items the Windows Search system
+    /// index returns for this Advanced Query Syntax text (`""` = every indexed item).
+    SystemIndex(String),
     /// Function not implemented yet: matches nothing, reported in diagnostics.
     Unsupported(FuncId),
     /// Value could not be interpreted: matches nothing.
@@ -897,6 +900,12 @@ impl Cx<'_> {
                 _ => self.text_items(t, Target::Name, Pred::Type),
             },
             F::FileListFn => self.file_list(t),
+            F::SystemIndex => leaf(Pred::SystemIndex(match &t.value {
+                Value::Text(s) => s.trim().to_string(),
+                // `;` is plain AQS text, which the term parser split into a list.
+                Value::List(items) => items.iter().filter_map(Value::as_text).collect::<Vec<_>>().join(";"),
+                _ => String::new(),
+            })),
             F::FileExists | F::FolderExists => self.exists(t, f == F::FolderExists),
             F::Omit => match &self.env.omit {
                 Some(set) => leaf(Pred::Omitted(set.clone())),
@@ -1413,6 +1422,8 @@ pub fn cost(n: &Node) -> u32 {
             Pred::Parent(_) | Pred::Ancestor(_) | Pred::Child(_) | Pred::ParentUp(..) => 9,
             Pred::FileListName(_) => 2,
             Pred::Recycled(None) => 3,
+            // One Windows Search query when the plan is compiled; per entry a bit lookup.
+            Pred::SystemIndex(_) => 3,
             // File reads, but only for links / recycle bin items.
             Pred::LinkTarget(_) => 120,
             Pred::Recycled(Some(_)) => 110,
