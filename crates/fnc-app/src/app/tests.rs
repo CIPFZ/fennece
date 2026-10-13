@@ -52,6 +52,7 @@ fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedIndex) -> AppDe
         initial_search: None,
         initial_cli: None,
         start_hidden: false,
+        servers: None,
     }
 }
 
@@ -409,4 +410,51 @@ fn forwarded_command_lines() {
     assert_eq!(h.state().active_filter_name(), "Picture");
     h.state_mut().set_query(String::new());
     wait_until(&mut h, "pictures only", |a| a.v.results.len() == 2 && a.v.sent_query.as_deref() == Some(""));
+}
+
+/// M4: the servers follow the settings; the HTTP address shows in the status bar and the
+/// Options → Servers page lists the server settings (password masked).
+#[test]
+fn http_server_address_in_status_bar() {
+    let mut deps = deps_for(None, SharedIndex::default());
+    deps.servers =
+        Some(crate::servers::ServersContext { instance: format!("kittest-{}", std::process::id()), portable: true });
+    deps.settings.ipc_server = false;
+    deps.settings.everything_ipc = false;
+    deps.settings.http_enabled = true;
+    deps.settings.http_port = 0;
+    deps.settings.http_password = "secret-pw".into();
+    let mut h = harness(deps);
+    let t0 = Instant::now();
+    while h.query_by_label_contains("http://127.0.0.1:").is_none() {
+        assert!(t0.elapsed() < Duration::from_secs(20), "HTTP address never shown");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(matches!(h.state().servers_status().unwrap().http, crate::servers::HttpStatus::Running(_)));
+    // Turning it off removes the address.
+    let ctx = h.ctx.clone();
+    let mut s = h.state().settings.clone();
+    s.http_enabled = false;
+    h.state_mut().apply_settings(&ctx, s);
+    let t0 = Instant::now();
+    while h.query_by_label_contains("http://127.0.0.1:").is_some() {
+        assert!(t0.elapsed() < Duration::from_secs(20), "HTTP address still shown");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Options → Servers.
+    let keymap = h.state().keymap.clone();
+    let settings = h.state().settings.clone();
+    h.state_mut().options_window = Some(super::options::OptionsState::new(&settings, &keymap).on_page("server"));
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("HTTP server port").is_some());
+    assert!(h.query_by_label_contains("Everything 1.4 compatible IPC window").is_some());
+    assert!(
+        h.get_all_by_role(Role::PasswordInput).count() == 1
+            || h.get_all_by_role(Role::TextInput).all(|n| n.value().as_deref() != Some("secret-pw")),
+        "the password is masked"
+    );
+    h.state_mut().options_window = None;
+    h.state_mut().stop_servers();
 }

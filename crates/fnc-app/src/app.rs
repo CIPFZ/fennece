@@ -10,6 +10,7 @@
 mod complete;
 mod dialogs;
 mod grid;
+mod integration;
 mod menus;
 mod options;
 mod preview;
@@ -76,6 +77,8 @@ pub struct AppDeps {
     pub initial_cli: Option<crate::cli::Cli>,
     /// Start hidden (tray).
     pub start_hidden: bool,
+    /// Run the IPC/Everything/HTTP servers for this instance (`None`: no servers).
+    pub servers: Option<crate::servers::ServersContext>,
 }
 
 #[derive(Clone)]
@@ -240,6 +243,8 @@ pub struct FennecApp {
     ctx: egui::Context,
     /// Creates a search engine for a new view.
     new_engine: Arc<dyn Fn() -> (SearchEngine, Receiver<EngineEvent>) + Send + Sync>,
+    /// IPC, Everything-compatible and HTTP servers.
+    servers: Option<integration::AppServers>,
 }
 
 impl FennecApp {
@@ -284,6 +289,7 @@ impl FennecApp {
             deps.indexer.set_paused(true);
         }
         let new_engine = deps.new_engine;
+        let servers = deps.servers;
         let mut app = Self {
             shared: deps.shared,
             index_rx: deps.index_rx,
@@ -358,8 +364,10 @@ impl FennecApp {
             close_secondary: false,
             new_engine,
             ctx: ctx.clone(),
+            servers: None,
         };
         app.rebuild_search_options();
+        app.start_servers(servers);
         app.send_search();
         if let Some(cli) = deps.initial_cli {
             app.apply_cli(ctx, cli, false);
@@ -380,6 +388,7 @@ impl FennecApp {
             o.omit = Some(fnc_query::plan::OmitSet { instance, ids: self.v.omit.iter().copied().collect() });
         }
         self.v.search_opts = Arc::new(o);
+        self.sync_host();
     }
 
     /// The active filters with their own match options (SPEC ch.2 §7).
@@ -490,6 +499,7 @@ impl FennecApp {
             };
             self.message = Some((text, Instant::now()));
         }
+        self.drain_host_events(ctx);
         let forwarded: Vec<Vec<String>> =
             self.instance.as_ref().map(|p| p.commands().try_iter().collect()).unwrap_or_default();
         for args in forwarded {
@@ -1133,11 +1143,17 @@ impl FennecApp {
         if targets.is_empty() {
             return;
         }
+        if matches!(kind, TextKind::Csv | TextKind::Efu) {
+            // Same writers as File → Export and fes.
+            let Some(snap) = self.shared.try_snapshot_for(Duration::from_millis(50)) else { return };
+            let ids: Vec<EntryId> = targets.iter().map(|(id, _)| *id).collect();
+            let format = if kind == TextKind::Efu { fnc_ipc::Format::Efu } else { fnc_ipc::Format::Csv };
+            ctx.copy_text(crate::export::to_text(format, &snap, &ids, Some(self.type_names.clone())));
+            self.say(t("msg-copied"));
+            return;
+        }
         let snap = self.shared.try_snapshot_for(Duration::from_millis(50));
         let mut out = String::new();
-        if matches!(kind, TextKind::Csv | TextKind::Efu) {
-            out.push_str("Filename,Size,Date Modified,Date Created,Attributes\r\n");
-        }
         for (id, p) in &targets {
             let full = p.display().to_string();
             let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| full.clone());
@@ -1148,24 +1164,18 @@ impl FennecApp {
                 TextKind::Name => name,
                 TextKind::Folder => folder,
                 TextKind::Tsv | TextKind::Csv | TextKind::Efu => {
-                    let (size, dm, dc, attr) = snap.as_ref().map_or((String::new(), 0, 0, 0), |s| {
-                        (
-                            s.size(*id).filter(|_| !s.is_dir(*id)).map(|v| v.to_string()).unwrap_or_default(),
-                            s.date_modified(*id).0,
-                            s.date_created(*id).0,
-                            s.attributes(*id),
-                        )
-                    });
-                    match kind {
-                        TextKind::Tsv => format!("{name}\t{folder}\t{size}"),
-                        _ => format!("\"{}\",{size},{dm},{dc},{attr}", full.replace('"', "\"\"")),
-                    }
+                    let size = snap
+                        .as_ref()
+                        .and_then(|s| s.size(*id).filter(|_| !s.is_dir(*id)))
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    format!("{name}\t{folder}\t{size}")
                 }
             };
             out.push_str(&line);
             out.push_str("\r\n");
         }
-        if targets.len() == 1 && !matches!(kind, TextKind::Csv | TextKind::Efu) {
+        if targets.len() == 1 {
             out.truncate(out.trim_end().len());
         }
         ctx.copy_text(out);
@@ -1628,6 +1638,7 @@ impl FennecApp {
                     s = format!("{s} ({})", t("status-paused"));
                 }
                 ui.label(s);
+                self.server_status_ui(ui);
             });
         });
     }
@@ -1683,6 +1694,7 @@ impl FennecApp {
         if restart {
             self.say(t("msg-restart-required"));
         }
+        self.apply_server_settings();
         self.rebuild_search_options();
         self.send_search();
         if let Err(e) = self.settings.save(&self.settings_path) {
@@ -1981,6 +1993,7 @@ impl eframe::App for FennecApp {
                     format!("{:.0},{:.0},{:.0},{:.0}", rect.min.x, rect.min.y, rect.width(), rect.height());
             }
         }
+        self.stop_servers();
         self.indexer.stop();
         self.indexer.save();
         self.history.save();
