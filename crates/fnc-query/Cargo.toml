@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 fnc-core.workspace = true
+# Property table only (no file parsers).
+fnc-props = { path = "../fnc-props", default-features = false }
 chrono.workspace = true
 
 [dev-dependencies]

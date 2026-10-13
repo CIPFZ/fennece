@@ -90,6 +90,10 @@ pub struct Caches {
     names: Mutex<Option<Arc<NameLookup>>>,
     type_names: Mutex<Option<TypeNames>>,
     type_cache: Mutex<HashMap<Box<[u8]>, Arc<str>>>,
+    /// Hashes computed when the app supplies no cache (kept for the engine's lifetime).
+    hashes: Mutex<Option<Arc<fnc_props::hash::HashCache>>>,
+    /// Properties read on demand (across queries).
+    on_demand: Mutex<Option<Arc<crate::ext::OnDemandCache>>>,
 }
 
 impl Caches {
@@ -208,6 +212,17 @@ impl Caches {
         let d: Arc<str> = type_name(&String::from_utf8_lossy(ext), provider.as_ref()).into();
         self.type_cache.lock().insert(ext.into(), d.clone());
         d
+    }
+
+    /// Fallback hash cache used when the search options carry none.
+    pub fn query_hashes(&self) -> Arc<fnc_props::hash::HashCache> {
+        self.hashes.lock().get_or_insert_with(|| Arc::new(fnc_props::hash::HashCache::new())).clone()
+    }
+
+    /// Cache of properties read from files (keyed by file identity, so it survives index
+    /// changes and compaction).
+    pub fn on_demand_props(&self) -> Arc<crate::ext::OnDemandCache> {
+        self.on_demand.lock().get_or_insert_with(Default::default).clone()
     }
 
     /// Drops everything (e.g. after compaction). The type-name provider stays.

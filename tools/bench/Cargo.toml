@@ -20,6 +20,7 @@ fnc-core.workspace = true
 fnc-index.workspace = true
 fnc-query.workspace = true
 fnc-exec.workspace = true
+fnc-props.workspace = true
 gen-fixtures = { path = "../gen-fixtures" }
 anyhow.workspace = true
 serde.workspace = true

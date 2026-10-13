@@ -462,7 +462,7 @@ const MORE_CASES: &[(&str, &str)] = &[
     ("length:>5min", "length=>'5min'"),
     ("length:1:30..2:00", "length='1:30'..'2:00'"),
     ("duration:90s", "length='90s'"),
-    ("bitrate:>320", "bitrate=>'320'"),
+    ("bitrate:>320", "bit-rate=>'320'"),
     ("year:2020..2023", "year='2020'..'2023'"),
     ("genre:rock;pop", "genre={'rock','pop'}"),
     ("author:\"Jane Roe\"", "author='Jane Roe'"),
@@ -632,6 +632,80 @@ fn plan_of(input: &str) -> Node {
     plan(&parse(input, &ParseEnv::default()).ast, &PlanEnv::default(), None).root
 }
 
+#[test]
+fn set_functions_are_hoisted_with_keys() {
+    use crate::plan::{DupeKey, SetKind};
+    use fnc_props::PropertyId;
+    use fnc_props::hash::HashAlgo;
+    let p = |q: &str| plan(&parse(q, &ParseEnv::default()).ast, &PlanEnv::default(), None);
+    let q = p("dupe:");
+    assert_eq!(q.root, Node::All);
+    assert_eq!(q.post.len(), 1);
+    assert_eq!(q.post[0].kind, SetKind::Dupe);
+    assert_eq!(q.post[0].keys.as_deref(), Some(&[DupeKey::Name][..]));
+    let keys = |q: &str| p(q).post[0].keys.clone().unwrap();
+    assert_eq!(keys("dupe:size;sha256"), [DupeKey::Size, DupeKey::Hash(HashAlgo::Sha256)]);
+    assert_eq!(keys("dupe:name;size"), [DupeKey::Name, DupeKey::Size]);
+    assert_eq!(keys("sizedupe:"), [DupeKey::Size]);
+    assert_eq!(keys("namepartdupe:"), [DupeKey::NamePart]);
+    assert_eq!(keys("attribdupe:"), [DupeKey::Attrib]);
+    assert_eq!(keys("dadupe:"), [DupeKey::DateAccessed]);
+    assert_eq!(keys("dcdupe:"), [DupeKey::DateCreated]);
+    assert_eq!(keys("dmdupe:"), [DupeKey::DateModified]);
+    assert_eq!(keys("distinct:artist"), [DupeKey::Prop(PropertyId::ARTIST)]);
+    assert_eq!(p("unique:ext").post[0].kind, SetKind::Unique);
+    assert_eq!(p("distinct:").post[0].kind, SetKind::Distinct);
+    // dupe-count:/dupe-max: group like the other set function of the query.
+    let q = p("dupe:size dupe-count:3 dupe-max:2 *.jpg");
+    assert_eq!(q.post.len(), 3);
+    assert!(matches!(q.post[1].kind, SetKind::DupeCount(_)));
+    assert_eq!(q.post[1].keys.as_deref(), Some(&[DupeKey::Size][..]));
+    assert_eq!(q.post[2].kind, SetKind::DupeMax(2));
+    assert_eq!(p("dupe-max:1").post[0].keys.as_deref(), Some(&[DupeKey::Name][..]));
+    assert!(p("!dupe:").post[0].negate);
+    assert!(!p("dupe:bogus").diagnostics.is_empty());
+    assert!(!p("dupe-max:x").diagnostics.is_empty());
+    assert!(!p("<dupe:|a>").diagnostics.is_empty(), "nested set function reported");
+    // Plans with set functions never filter the previous result set.
+    let a = p("abc dupe:");
+    let b = plan(&parse("abcd dupe:", &ParseEnv::default()).ast, &PlanEnv::default(), Some(&a));
+    assert_eq!(b.input, InputSet::All);
+    let a = p("abc");
+    let b = plan(&parse("abcd dupe:", &ParseEnv::default()).ast, &PlanEnv::default(), Some(&a));
+    assert_eq!(b.input, InputSet::All);
+}
+
+#[test]
+fn property_cost_ordering_and_names() {
+    use fnc_props::PropertyId;
+    // Unindexed properties run after cheap filters; indexed ones before string matching.
+    let n = plan_of("width:>10 abc ext:jpg");
+    match n {
+        Node::And(v) => {
+            assert!(matches!(v[0], Node::Leaf(Pred::Ext { .. })));
+            assert!(matches!(v[2], Node::Leaf(Pred::Prop(_))), "{v:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let env = PlanEnv { indexed_props: vec![PropertyId::WIDTH], ..PlanEnv::default() };
+    match plan(&parse("abc width:>10", &ParseEnv::default()).ast, &env, None).root {
+        Node::And(v) => assert!(matches!(v[0], Node::Leaf(Pred::Prop(ref p)) if p.indexed), "{v:?}"),
+        other => panic!("{other:?}"),
+    }
+    // Every property name is a function, dashed or not.
+    for (name, p) in PropertyId::search_names() {
+        match plan_of(&format!("{name}:unknown")) {
+            Node::Leaf(Pred::Prop(pp)) => assert_eq!(pp.id, p, "{name}"),
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+    assert!(matches!(plan_of("camera-model:x"), Node::Leaf(Pred::Prop(_))));
+    // Round trip through the canonical text form.
+    let q = parse("camera-model:\"EOS R5\" width:>4000 dupe:size", &ParseEnv::default()).ast;
+    let s = crate::to_query_string(&q, Precedence::Or);
+    assert_eq!(parse(&s, &ParseEnv::default()).ast, q);
+}
+
 /// Compact form of a text predicate: `kind:target'pattern'+flags`.
 fn tsexp(t: &crate::plan::TextPred) -> String {
     use crate::plan::PinyinMode;
@@ -721,6 +795,52 @@ fn psexp(n: &Node) -> String {
             Pred::DateWild(_, w) => format!("datewild({:b})", w.mask),
             Pred::Unsupported(f) => format!("unsupported({})", f.name()),
             Pred::Invalid(_) => "invalid".into(),
+            Pred::Prop(p) => {
+                use crate::plan::PropTest;
+                let r = |n: &crate::plan::NumPred| {
+                    let big = n.ranges.iter().any(|&(lo, hi)| {
+                        [lo, hi].iter().any(|&v| v != i64::MAX && v != i64::MIN + 1 && v.abs() > 1_000_000_000_000)
+                    });
+                    if big {
+                        return format!("[{}]{}", n.ranges.len(), if n.unknown { "?" } else { "" });
+                    }
+                    let v: Vec<String> = n
+                        .ranges
+                        .iter()
+                        .map(|&(lo, hi)| {
+                            let f = |v: i64| match v {
+                                i64::MAX => "max".to_string(),
+                                v if v == i64::MIN + 1 => "min".to_string(),
+                                v => v.to_string(),
+                            };
+                            format!("{}..{}", f(lo), f(hi))
+                        })
+                        .collect();
+                    format!("[{}]{}", v.join(","), if n.unknown { "?" } else { "" })
+                };
+                let test = match &p.test {
+                    PropTest::Num(n) => r(n),
+                    PropTest::Text { pred, all } => format!("({}){}", tsexp(pred), if *all { "+all" } else { "" }),
+                    PropTest::Len(n) => format!("len{}", r(n)),
+                    PropTest::Count(n) => format!("count{}", r(n)),
+                    PropTest::Atoi(n) => format!("atoi{}", r(n)),
+                    PropTest::Atof(n) => format!("atof[{}]", n.ranges.len()),
+                    PropTest::Dims(w, h) => format!("dims{}x{}", r(w), r(h)),
+                    PropTest::Known => "known".into(),
+                    PropTest::Unknown => "unknown".into(),
+                };
+                format!("{}{}{}", p.id.name(), test, if p.not_indexed { "+notindexed" } else { "" })
+            }
+            Pred::Content(c) => format!(
+                "content:{:?}({}){}",
+                c.source,
+                tsexp(&c.text),
+                if c.bytes.is_empty() { String::new() } else { format!("{:x?}", c.bytes) }
+            ),
+            Pred::ContentHits(n, c) => format!("contenthits[{}]({})", n.ranges.len(), c.len()),
+            Pred::Hash(h) => {
+                format!("{}({}){}", h.algo.name(), h.prefixes.join(","), if h.unknown { "unknown" } else { "" })
+            }
             other => {
                 let d = format!("{other:?}");
                 d.split(['(', ' ', '{']).next().unwrap_or("").to_string()
@@ -790,9 +910,76 @@ const PLAN_CASES: &[(&str, &str)] = &[
     ("fsi:png", "unsupported(fsi)"),
     ("recycled:", "unsupported(recycled)"),
     ("filelistfilename:x.txt", "unsupported(filelistfilename)"),
-    ("dupe:", "unsupported(dupe)"),
-    ("content:x", "unsupported(content)"),
-    ("length:>5min", "unsupported(length)"),
+    // ---- M3: properties ----
+    ("width:>4000", "width[4001..max]"),
+    ("width:1920;3840", "width[1920..1921,3840..3841]"),
+    ("width:", "width[1..max]"),
+    ("width:unknown", "widthunknown"),
+    ("height:100..200", "height[100..201]"),
+    ("notindexed:width:>10", "width[11..max]+notindexed"),
+    ("bit-rate:320kbps", "bit-rate[320..321]"),
+    ("sample-rate:44.1khz", "sample-rate[44100..44200]"),
+    ("machine:x64", "machine[34404..34405]"),
+    ("is-dll:", "is-dll[1..max]"),
+    ("is-dll:no", "is-dll[0..1]"),
+    ("orientation:rotate-90", "orientation[6..7]"),
+    ("length:1min..5min", "length[60000..360000]"),
+    ("length:3:25", "length[205000..206000]"),
+    ("duration:>1h", "length[7200000..max]"),
+    ("artist:\"John Doe\"", "artist(sub:'John Doe')"),
+    ("artist:", "artistknown"),
+    ("artist:unknown", "artistunknown"),
+    ("artist:a;b", "(or artist(sub:'a') artist(sub:'b'))"),
+    ("wfn:album:abc", "album(eq:'abc')"),
+    ("tags:sea*", "tags(wild:'sea*')"),
+    ("allstrings:tags:s", "tags(sub:'s')+all"),
+    ("keywords:x", "tags(sub:'x')"),
+    ("len:album:>20", "albumlen[21..max]"),
+    ("count:tags:2", "tagscount[2..3]"),
+    ("atoi:file-version:>9", "file-versionatoi[10..max]"),
+    ("camera-model:", "camera-modelknown"),
+    ("cameramodel:eos", "camera-model(sub:'eos')"),
+    ("file-version:10.0", "file-version(sub:'10.0')"),
+    ("page-count:>10", "page-count[11..max]"),
+    ("word-count:<100", "word-count[min..100]"),
+    ("dimensions:1920x1080", "dimensionsdims[1920..1921]x[1080..1081]"),
+    ("dimensions:>=3840x2160", "dimensionsdims[3840..max]x[2160..max]"),
+    ("dimensions:800x600..1024x768", "dimensionsdims[800..1025]x[600..769]"),
+    ("dimensions:!800x600", "(not dimensionsdims[800..801]x[600..601])"),
+    ("dimensions:unknown", "dimensionsunknown"),
+    ("dimensions:big", "invalid"),
+    ("aspect-ratio:landscape", "aspect-ratio[1]"),
+    ("aspect-ratio:16:9", "aspect-ratio[1]"),
+    ("date-taken:2026", "date-taken[1]"),
+    ("f-stop:2.8", "f-stop[1]"),
+    ("exposure-time:1/250", "exposure-time[1]"),
+    ("rating:bogus", "invalid"),
+    // ---- M3: content and hashes ----
+    ("content:\"quarterly plan\"", "(and IsDir content:Indexed(sub:'quarterly plan'))"),
+    ("case:content:Plan", "(and IsDir content:Indexed(sub:'Plan'+case))"),
+    ("regex:content:^Start", "(and IsDir content:Indexed(re:'^Start'))"),
+    ("ww:content:plan", "(and IsDir content:Indexed(sub:'plan'+ww))"),
+    ("content:a\\b/c", "(and IsDir content:Indexed(sub:'a\\b/c'))"),
+    ("content:a;b", "(and IsDir (or content:Indexed(sub:'a') content:Indexed(sub:'b')))"),
+    ("content:", "*"),
+    ("utf8content:x", "(and IsDir content:Plain(Utf8)(sub:'x'))"),
+    ("ansicontent:x", "(and IsDir content:Plain(Ansi)(sub:'x'))"),
+    ("utf16content:x", "(and IsDir content:Plain(Utf16Le)(sub:'x'))"),
+    ("utf16becontent:x", "(and IsDir content:Plain(Utf16Be)(sub:'x'))"),
+    ("textplain:x", "(and IsDir content:Plain(Auto)(sub:'x'))"),
+    ("utf16:content:x", "(and IsDir content:Plain(Utf16Le)(sub:'x'))"),
+    ("binary:content:\"MZ\\x90\\x00\"", "(and IsDir content:Binary(sub:'MZ\\x90\\x00')[4d, 5a, 90, 0])"),
+    ("contenthits:>2 content:x", "(and (and IsDir content:Indexed(sub:'x')) contenthits[1](1))"),
+    ("contenthits:>2", "invalid"),
+    ("sha256:ba78", "(and IsDir sha256(ba78))"),
+    ("md5:", "(and IsDir md5())"),
+    ("crc32:unknown", "(and IsDir crc32()unknown)"),
+    ("sha1:a;b", "(and IsDir sha1(a,b))"),
+    ("crc64:xyz", "invalid"),
+    // ---- M3: set functions are hoisted out of the tree ----
+    ("dupe:", "*"),
+    ("dupe:size abc", "sub:'abc'"),
+    ("<dupe: | abc>", "(or invalid sub:'abc')"),
 ];
 
 #[test]
@@ -1018,7 +1205,8 @@ fn plan_values() {
         other => panic!("{other:?}"),
     }
     assert!(matches!(plan_of("size:banana"), Node::Leaf(Pred::Invalid(_))));
-    assert!(matches!(plan_of("width:>100"), Node::Leaf(Pred::Unsupported(_))));
+    assert!(matches!(plan_of("width:>100"), Node::Leaf(Pred::Prop(_))));
+    assert!(matches!(plan_of("target:x"), Node::Leaf(Pred::Unsupported(_))));
     assert!(matches!(plan_of("audio:"), Node::Leaf(Pred::Ext { .. })));
 }
 

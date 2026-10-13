@@ -10,6 +10,7 @@ use std::cmp::Ordering;
 use fnc_core::EntryId;
 use fnc_core::settings::FoldersFirst;
 use fnc_index::IndexStore;
+use fnc_props::{PropertyId, PropertyStore};
 use rayon::prelude::*;
 
 use crate::cache::{Caches, CancelToken, Cancelled};
@@ -92,37 +93,91 @@ pub struct SortSpec {
     /// Secondary and tertiary keys (`Ctrl`+click on a column header), each with its
     /// own direction; ties after all keys are broken by name.
     pub then: [Option<(SortColumn, bool)>; 2],
+    /// Property columns: when `props[k]` is set, key `k` (0 = `column`, 1–2 = `then`)
+    /// sorts by that property (unknown values first) and its `SortColumn` is ignored.
+    pub props: [Option<PropertyId>; 3],
 }
 
 impl Default for SortSpec {
     fn default() -> Self {
-        Self { column: SortColumn::Name, ascending: true, folders_first: FoldersFirst::Ascending, then: [None; 2] }
+        Self {
+            column: SortColumn::Name,
+            ascending: true,
+            folders_first: FoldersFirst::Ascending,
+            then: [None; 2],
+            props: [None; 3],
+        }
     }
+}
+
+/// One sort key.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SortKey {
+    /// A built-in column.
+    Column(SortColumn),
+    /// A property column.
+    Property(PropertyId),
 }
 
 impl SortSpec {
     /// Single-key sort.
     pub fn by(column: SortColumn, ascending: bool, folders_first: FoldersFirst) -> Self {
-        Self { column, ascending, folders_first, then: [None; 2] }
+        Self { column, ascending, folders_first, then: [None; 2], props: [None; 3] }
+    }
+
+    /// Single-key sort by a property column.
+    pub fn by_property(p: PropertyId, ascending: bool, folders_first: FoldersFirst) -> Self {
+        let mut s = Self::by(SortColumn::Name, ascending, folders_first);
+        s.props[0] = Some(p);
+        s
+    }
+
+    /// All keys in priority order with their directions, property columns included.
+    pub fn sort_keys(&self) -> impl Iterator<Item = (SortKey, bool)> + '_ {
+        let cols = std::iter::once(Some((self.column, self.ascending))).chain(self.then.iter().copied());
+        cols.zip(self.props.iter()).filter_map(|(c, p)| {
+            let (col, asc) = c?;
+            Some((p.map_or(SortKey::Column(col), SortKey::Property), asc))
+        })
+    }
+
+    /// Adds (or flips, if present) a secondary property key; keeps at most three keys.
+    pub fn push_property_key(&mut self, p: PropertyId, ascending: bool) {
+        if self.props[0] == Some(p) {
+            self.ascending = !self.ascending;
+            return;
+        }
+        for (k, slot) in self.then.iter_mut().enumerate() {
+            if let Some(key) = slot
+                && self.props[k + 1] == Some(p)
+            {
+                key.1 = !key.1;
+                return;
+            }
+        }
+        let k = self.then.iter().position(Option::is_none).unwrap_or(1);
+        self.then[k] = Some((SortColumn::Name, ascending));
+        self.props[k + 1] = Some(p);
     }
 
     /// Adds (or flips, if present) a secondary key; keeps at most three keys.
     pub fn push_key(&mut self, column: SortColumn, ascending: bool) {
-        if self.column == column {
+        if self.column == column && self.props[0].is_none() {
             self.ascending = !self.ascending;
             return;
         }
-        for k in self.then.iter_mut().flatten() {
-            if k.0 == column {
-                k.1 = !k.1;
+        for (k, slot) in self.then.iter_mut().enumerate() {
+            if let Some(key) = slot
+                && key.0 == column
+                && self.props[k + 1].is_none()
+            {
+                key.1 = !key.1;
                 return;
             }
         }
-        if let Some(slot) = self.then.iter_mut().find(|k| k.is_none()) {
-            *slot = Some((column, ascending));
-        } else {
-            self.then[1] = Some((column, ascending));
-        }
+        let k = self.then.iter().position(Option::is_none).unwrap_or(1);
+        self.then[k] = Some((column, ascending));
+        self.props[k + 1] = None;
     }
 
     /// All keys in priority order with their directions.
@@ -154,7 +209,7 @@ fn par_sort(
     });
 }
 
-/// Sorts `ids` in place.
+/// Sorts `ids` in place (property columns sort as unknown).
 pub fn sort_ids(
     ids: &mut [EntryId],
     spec: &SortSpec,
@@ -162,9 +217,44 @@ pub fn sort_ids(
     caches: &Caches,
     cancel: &CancelToken,
 ) -> Result<(), Cancelled> {
+    sort_ids_ext(ids, spec, s, caches, cancel, None)
+}
+
+/// Sorts `ids` in place; property columns read `props`.
+pub fn sort_ids_ext(
+    ids: &mut [EntryId],
+    spec: &SortSpec,
+    s: &IndexStore,
+    caches: &Caches,
+    cancel: &CancelToken,
+    props: Option<&PropertyStore>,
+) -> Result<(), Cancelled> {
     if cancel.is_cancelled() {
         return Err(Cancelled);
     }
+    // Property keys: dense key columns for the results (unknown = i64::MIN, first).
+    let prop_keys: Vec<Option<Vec<i64>>> = if spec.props.iter().any(Option::is_some) {
+        let st = props.filter(|p| p.instance() == s.instance());
+        spec.props
+            .iter()
+            .map(|p| {
+                p.map(|p| {
+                    let ranks = st.map(|st| st.text_ranks(p)).unwrap_or_default();
+                    let mut v = vec![i64::MIN; s.len()];
+                    if let Some(st) = st {
+                        for &id in ids.iter() {
+                            if let Some(slot) = v.get_mut(id.idx()) {
+                                *slot = st.sort_key(id, p, &ranks);
+                            }
+                        }
+                    }
+                    v
+                })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let order = s.name_order();
     let by_name = |a: EntryId, b: EntryId| -> Ordering {
         if order.is_clean(a) && order.is_clean(b) { order.rank(a).cmp(&order.rank(b)) } else { s.cmp_names(a, b) }
@@ -204,6 +294,24 @@ pub fn sort_ids(
             SortColumn::Frn => s.frn(a).cmp(&s.frn(b)),
         }
     };
+    let pkey = |k: usize, a: EntryId, b: EntryId| -> Option<Ordering> {
+        let v = prop_keys.get(k)?.as_ref()?;
+        Some(v.get(a.idx()).cmp(&v.get(b.idx())))
+    };
+    if !prop_keys.is_empty() {
+        par_sort(ids, spec, s, |a, b| {
+            let mut o = pkey(0, a, b).unwrap_or_else(|| column_cmp(spec.column, a, b));
+            for (k, &(col, asc)) in spec.then.iter().enumerate().filter_map(|(k, t)| t.as_ref().map(|t| (k, t))) {
+                if o != Ordering::Equal {
+                    break;
+                }
+                let c = pkey(k + 1, a, b).unwrap_or_else(|| column_cmp(col, a, b));
+                o = if asc == spec.ascending { c } else { c.reverse() };
+            }
+            o.then_with(|| by_name(a, b))
+        });
+        return if cancel.is_cancelled() { Err(Cancelled) } else { Ok(()) };
+    }
     // The common single-key sorts get their own monomorphised comparator (a runtime
     // column switch per comparison costs ~35% on 1M entries).
     if spec.then.iter().all(Option::is_none) {

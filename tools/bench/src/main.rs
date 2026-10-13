@@ -158,6 +158,13 @@ fn main() -> anyhow::Result<()> {
     let per = p50 * 1e6 / all.len() as f64;
     push("full path join per entry", "ns", per, p95 * 1e6 / all.len() as f64, None, None);
 
+    // M3: property scan (10 % of the files have a width) and content search (10k docs),
+    // after the M2 metrics so their allocations do not disturb them.
+    // `FENNEC_BENCH_SKIP_M3=1` skips them (A/B runs against older builds).
+    if std::env::var_os("FENNEC_BENCH_SKIP_M3").is_none() {
+        m3_metrics(&store, &caches, runs, &mut push);
+    }
+
     let mut md = String::new();
     let _ = writeln!(md, "# Fennec benchmark baseline\n");
     let _ = writeln!(
@@ -192,4 +199,53 @@ fn main() -> anyhow::Result<()> {
         eprintln!("BUDGET EXCEEDED: {} p95 {:.2} > {:?}", f.name, f.p95, f.target);
     }
     Ok(())
+}
+
+type Push<'a> = dyn FnMut(&str, &'static str, f64, f64, Option<f64>, Option<usize>) + 'a;
+
+/// Property and content index metrics (M3).
+fn m3_metrics(store: &fnc_index::IndexStore, caches: &Caches, runs: usize, push: &mut Push<'_>) {
+    let t = Instant::now();
+    let props = bench::width_store(store, 0.10, 7);
+    let pbuild = t.elapsed();
+    push("M3 property store build (10% with width)", "ms", ms(pbuild), ms(pbuild), None, Some(props.len()));
+    let pext = fnc_exec::ExtCtx { props: Some(&props), ..fnc_exec::ExtCtx::default() };
+    for q in ["width:>4000", "ext:jpg width:>4000", "dimensions:>=1920x1440"] {
+        let (p50, p95, n) = measure(runs, || bench::run_query_ext(store, q, caches, &pext).len());
+        eprintln!("{q:<34} p50 {p50:7.2} ms  p95 {p95:7.2} ms  ({n} results)");
+        push(&format!("M3 query `{q}` (indexed property, 1M entries)"), "ms", p50, p95, None, Some(n));
+    }
+    let t = Instant::now();
+    let content = bench::content_store(store, 10_000, 11);
+    let cbuild = t.elapsed();
+    push("M3 content store build (10k docs)", "ms", ms(cbuild), ms(cbuild), None, Some(content.len()));
+    let cmib = content.compressed_bytes() as f64 / (1024.0 * 1024.0);
+    let tmib = content.text_bytes() as f64 / (1024.0 * 1024.0);
+    push("M3 content text stored (uncompressed)", "MiB", tmib, tmib, None, None);
+    push("M3 content text stored (LZ4)", "MiB", cmib, cmib, None, None);
+    let heap = content.heap_bytes() as f64 / (1024.0 * 1024.0);
+    push("M3 content store heap (incl. inverted index)", "MiB", heap, heap, None, None);
+    let (p50, p95, n) = measure(runs, || content.search_text("quarterly plan").len());
+    eprintln!("content store search            p50 {p50:7.2} ms  p95 {p95:7.2} ms  ({n} results)");
+    push("M3 ContentStore::search \"quarterly plan\" (10k docs)", "ms", p50, p95, Some(200.0), Some(n));
+    let cext = fnc_exec::ExtCtx { content: Some(&content), ..fnc_exec::ExtCtx::default() };
+    for q in ["content:\"quarterly plan\"", "content:plan", "content:季度", "ext:txt content:\"quarterly plan\""] {
+        let (p50, p95, n) = measure(runs, || bench::run_query_ext(store, q, caches, &cext).len());
+        eprintln!("{q:<34} p50 {p50:7.2} ms  p95 {p95:7.2} ms  ({n} results)");
+        let target = (q == "content:\"quarterly plan\"").then_some(200.0);
+        push(&format!("M3 query `{q}` (10k docs indexed, 1M entries)"), "ms", p50, p95, target, Some(n));
+    }
+    let (p50, p95, n) =
+        measure(runs.min(10), || bench::run_query_ext(store, "regex:content:quarterly\\s+plan", caches, &cext).len());
+    push("M3 query `regex:content:quarterly\\s+plan` (full text scan)", "ms", p50, p95, None, Some(n));
+    // Property sort column over every live entry (unknown widths first).
+    let all: Vec<EntryId> = (0..store.len() as u32).map(EntryId).filter(|&i| store.is_live(i)).collect();
+    let spec = SortSpec::by_property(fnc_props::PropertyId::WIDTH, false, FoldersFirst::Ascending);
+    let cancel = CancelToken::new();
+    let (p50, p95, n) = measure(runs.min(10), || {
+        let mut ids = all.clone();
+        let _ = fnc_exec::sort_ids_ext(&mut ids, &spec, store, caches, &cancel, Some(&props));
+        ids.len()
+    });
+    push("M3 sort 1M by width desc (property column)", "ms", p50, p95, Some(300.0), Some(n));
 }

@@ -921,6 +921,24 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | 多个筛选器 | `and-filter:` / `or-filter:` | `FilterSet` 默认 OR 组合（任一为"Everything"即全部），查询中的 `and-filter:`/`or-filter:` 优先于 `FilterSet::and`；每个筛选器的 case/ww/path/diacritics 仅作为其自身项的默认值，`regex` 使整个筛选器搜索为一个正则 | 与 Everything 筛选器选项一致 |
 | `target:` `fsi:` `recycled:` `filelistfilename:` | 访问文件系统 | M2 仍为 `Unsupported`（匹配空并提示）| 需文件系统访问（fs 类），计划随属性/内容索引在 M3 实现 |
 | `parent+N:` | 第 N 级父 | 未注册（`parent+2:x` 作为字面文本）| 官方文档未给出精确语法与语义（SPEC-GAP），待核对 |
+| 属性名表（附录 B）| 约 300 个属性 | M3 注册约 95 个（SPEC 第 2 章 §5.5–5.9 全部 + 派生 `dimensions`/`aspect-ratio`），其余待补；未注册名称为字面文本 | 分阶段覆盖（SPEC-GAP）|
+| 未索引属性 | 从磁盘读取（慢）| 未提取的条目视为 `unknown`（仅匹配 `prop:unknown`）；有按需数据源时按需读取（`SlowPolicy::props` 默认开），每次搜索最多读 10,000 个文件，超出部分保持 unknown 并在状态栏提示；`notindexed:` 总是读取 | 防止无过滤的慢查询失控（第 2 章 §8.6）|
+| 已提取但无该属性 | — | 视为"已知为空"，与未提取一样匹配 `prop:unknown` | 语义统一 |
+| `bit-rate:` / `sample-rate:` / `rating:` | Windows 属性原值 | `bit-rate:` 以 kbps 存储与比较（可写 `320kbps`、`1.4mbps`）；`sample-rate:` 以 Hz（可写 `44.1khz`）；`rating:` 为 0–5 星 | 与界面显示一致（SPEC-GAP）|
+| 浮点属性（`f-stop:` `exposure-time:` `focal-length:` GPS…）| — | 相等按书写精度四舍五入（`f-stop:2.8` 匹配 2.75–2.85），分数精确（`exposure-time:1/250`），比较运算精确；可带单位 `f/` `mm` `sec` | 文档未定义（SPEC-GAP）|
+| `dimensions:` / `aspect-ratio:` | 图像尺寸 | 图像宽高，否则视频帧宽高；`dimensions:>1920x1080` 等比较同时作用于宽和高；`aspect-ratio:16:9` 容差 1 %，`portrait`/`landscape`/`square` | 文档未定义比较细节（SPEC-GAP）|
+| `orientation:` `machine:` `subsystem:` `security:` | — | 数值属性，另可用名称：`orientation:rotate-90`、`machine:x64`、`subsystem:console` | 便于输入 |
+| `is-signed:` `language:` | 签名验证 / 区域名 | `is-signed:` = PE 含 Authenticode 签名目录（不验证）；`language:` 为版本资源语言名（常见 LANGID 英文名，其余十六进制）| 无 WinVerifyTrust（fnc-props 禁止 unsafe）|
+| `line-count:` `word-count:` `char-count:` | 文档属性 | 先取文档元数据（OOXML `app.xml`），否则用已索引/按需提取文本统计：行数、空白分隔词数、不含换行的字符数 | 一个函数同时覆盖文档与文本文件 |
+| `content:` | 已索引文本或 IFilter | 已索引条目用存储的提取文本；否则按需提取（文本编码检测、OOXML、PDF，无 IFilter）；每文件最多读 4 MB；`exact:`/`startwith:`/`endwith:` 对内容按子串处理，通配符不锚定（`*` 不跨行）| IFilter 需 COM 隔离进程（后续）|
+| `ansicontent:` | 系统 ANSI 代码页 | `ContentExtractor::ansi_code_page`（默认 1252，由应用按 `GetACP()` 设置）| fnc-props 不调用 Win32 |
+| `contenthits:` | 命中次数 | 查询中所有 `content:` 类项的命中总数；查询无内容项时无效并提示 | 文档未定义（SPEC-GAP）|
+| `crc64:` / 哈希 | — | CRC-64/XZ（同 7-Zip）；值为十六进制前缀匹配（大小写、`0x`、空格/`-` 忽略）；`sha256:unknown` = 未在缓存中（不计算）；按需计算受每次搜索文件数上限约束，缓存键为（卷、FRN 或路径、大小、修改日期）| 文档未定义 CRC-64 变体（SPEC-GAP）|
+| 查重函数位置 | 任意 | 只能出现在搜索顶层（与其它项 AND）；嵌套在 `<…\|…>` 内时无效并提示；`!dupe:` 取补集 | 结果集语义只对整个结果定义 |
+| 查重键 | — | 名称比较不区分大小写与变音（折叠键）；未知值（文件夹大小、未知日期/属性、无法读取的哈希）从不算重复；`dupe-count:N` 为组大小（支持比较），`dupe-max:N` 每组保留排序后前 N 个；二者按查询中其它查重函数的键分组，否则按名称 | 文档未给出细节（SPEC-GAP）|
+| PDF | IFilter / Windows 属性 | 自带最小解析器：`/Info`、页数、文本（FlateDecode、ToUnicode、对象流）；不支持加密、OCR、无 ToUnicode 的自定义编码字体 | ADR-014 |
+| Windows 属性系统兜底 | 任意 `System.*` | 由应用通过 `PropertyProvider` 注入；未注入时仅内置提取器 | fnc-props 禁止 unsafe/COM |
+| 属性列排序 | 列排序 | `SortSpec::props`（每个排序键可指定属性列），未知值排在最前 | 与应用并行开发，暂不扩展 `SortColumn` 枚举（ADR-015）|
 
 ---
 
