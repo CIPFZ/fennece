@@ -57,7 +57,7 @@ impl FennecApp {
     #[cfg(feature = "semantic")]
     fn semantic_start(&mut self) {
         let dir = self.semantic_data_dir();
-        let text = crate::semantic::SemanticSearch::plain_text();
+        let text = crate::semantic::SemanticSearch::document_text();
         match crate::semantic::SemanticSearch::start(&self.settings, &dir, self.shared.clone(), text) {
             Ok(s) => self.sem.search = Some(s),
             Err(e) => {

@@ -17,6 +17,7 @@ pub mod instance;
 pub mod integration;
 pub mod locale;
 pub mod privilege;
+pub mod process;
 pub mod shell;
 pub mod source;
 pub mod thumb;

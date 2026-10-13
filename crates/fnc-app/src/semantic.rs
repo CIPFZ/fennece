@@ -16,7 +16,6 @@ use fnc_core::settings::Settings;
 use fnc_exec::{SemHit, SemanticSource, Shared};
 use fnc_index::{IndexStore, SharedIndex};
 use fnc_query::SemPred;
-use fnc_semantic::engine::PlainText;
 use fnc_semantic::{
     Candidate, Catalog, EngineConfig, Kind, ModelHost, ModelSpec, SemError, SemQuery, SemanticEngine, Status,
     TextSource,
@@ -117,6 +116,20 @@ impl SemanticSource for Source {
                 Ok(hits.iter().filter_map(|h| s.find_path(&h.path).map(|id| hit(id, h))).collect())
             }
         }
+    }
+}
+
+/// [`TextSource`] over the content extractor.
+struct DocumentText(fnc_props::content::ContentExtractor);
+
+impl TextSource for DocumentText {
+    fn text(&self, path: &str, max_bytes: u64) -> Option<String> {
+        let p = Path::new(path);
+        if std::fs::metadata(p).ok()?.len() > max_bytes {
+            return None;
+        }
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        self.0.extract(p, &ext)
     }
 }
 
@@ -261,9 +274,19 @@ impl SemanticSearch {
         })
     }
 
-    /// Plain-text extraction for content chunks when no content extractor is plugged in.
+    /// Plain-text files only (tests).
+    #[cfg(test)]
     pub fn plain_text() -> Arc<dyn TextSource> {
-        Arc::new(PlainText)
+        Arc::new(fnc_semantic::engine::PlainText)
+    }
+
+    /// Text of documents for content chunks: the content extractor of the content index
+    /// (encoding detection, HTML, OOXML, PDF; SPEC ch.5 §2.2 S2 "复用内容索引的提取文本").
+    pub fn document_text() -> Arc<dyn TextSource> {
+        Arc::new(DocumentText(fnc_props::content::ContentExtractor::new(fnc_props::ContentLimits {
+            max_file_bytes: 64 << 20,
+            ..fnc_props::ContentLimits::default()
+        })))
     }
 
     /// The source for `SearchOptions::semantic`.
@@ -535,5 +558,215 @@ mod tests {
         assert!(err.contains("embeddinggemma-2-Q8_0.gguf"), "{err}");
         assert!(sem.reconfigure(&s, d.path()));
         sem.stop();
+    }
+
+    /// SEM-01..05, SEM-08 against the real model and a corpus (Windows VM):
+    /// `FENNEC_TEST_MODEL` (gguf), `FENNEC_SEM_DOCS` (documents, ~10k files with the target
+    /// files of `tools/sem-corpus.py`), `FENNEC_SEM_CODE` (source tree with a `src` folder).
+    #[test]
+    #[ignore = "needs the model and a corpus"]
+    fn sem_acceptance() {
+        use crate::indexer::{IndexEvent, IndexStatus, Indexer, IndexerConfig};
+        use fnc_exec::{EngineEvent, SearchEngine, SearchOptions, SearchRequest, SortColumn, SortSpec};
+        use std::time::Instant;
+        crate::i18n::init("en");
+        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} not set"));
+        let (model, docs, code) = (env("FENNEC_TEST_MODEL"), env("FENNEC_SEM_DOCS"), env("FENNEC_SEM_CODE"));
+        let shared = SharedIndex::default();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let engine = SearchEngine::spawn(shared.clone(), tx, Box::new(|| {}));
+        let (itx, irx) = crossbeam_channel::unbounded();
+        let handle = engine.handle();
+        let cfg = IndexerConfig {
+            folders: vec![PathBuf::from(&docs), PathBuf::from(&code)],
+            folder_watch: true,
+            ..IndexerConfig::default()
+        };
+        let indexer = Indexer::spawn(cfg, shared.clone(), Arc::new(move || handle.refresh()), itx, Arc::new(|| {}));
+        loop {
+            match irx.recv_timeout(Duration::from_secs(600)) {
+                Ok(IndexEvent::Status(IndexStatus::Ready { .. })) => break,
+                Ok(_) => {}
+                Err(e) => panic!("index never ready: {e}"),
+            }
+        }
+        let files = shared.snapshot().live_count();
+        eprintln!("file index ready: {files} entries");
+
+        // SEM-06 baseline: literal query time and memory before semantic search.
+        let mut next_id = 0;
+        let mut search = |text: &str, sem: Option<&SemanticSearch>| {
+            next_id += 1;
+            let options = SearchOptions { semantic: sem.map(SemanticSearch::source), ..SearchOptions::default() };
+            let sort = SortSpec::by(SortColumn::Relevance, false, fnc_core::settings::FoldersFirst::Never);
+            let t = Instant::now();
+            engine.search(SearchRequest {
+                id: next_id,
+                text: text.into(),
+                filter: None,
+                sort,
+                options: Arc::new(options),
+            });
+            loop {
+                let EngineEvent::Done(o) = rx.recv_timeout(Duration::from_secs(120)).unwrap();
+                if o.id == next_id {
+                    let snap = shared.snapshot();
+                    let mut path = String::new();
+                    let names: Vec<String> = o
+                        .results
+                        .ids
+                        .iter()
+                        .take(10)
+                        .map(|&id| {
+                            snap.full_path(id, &mut path);
+                            path.clone()
+                        })
+                        .collect();
+                    return (names, o.results.clone(), t.elapsed());
+                }
+            }
+        };
+        type Search<'a> =
+            dyn FnMut(&str, Option<&SemanticSearch>) -> (Vec<String>, Arc<fnc_exec::ResultSet>, Duration) + 'a;
+        let literal = |search: &mut Search<'_>| {
+            let mut times: Vec<Duration> =
+                (0..20).map(|i| search(if i % 2 == 0 { "report" } else { "budget" }, None).2).collect();
+            times.sort();
+            times[times.len() * 95 / 100]
+        };
+        let lit_before = literal(&mut search);
+        let mem_before = fnc_platform::process::private_bytes().unwrap_or(0);
+        eprintln!("SEM-06 baseline: literal p95 {lit_before:?}, private {} MiB", mem_before >> 20);
+
+        // SEM-01: background indexing with the CPU limit.
+        let data = tempfile::tempdir().unwrap();
+        let s = Settings {
+            semantic_enabled: true,
+            semantic_folders: vec![docs.clone(), code.clone()],
+            semantic_model_path: model.clone(),
+            semantic_idle_unload_min: 1,
+            ..Settings::default()
+        };
+        let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
+        let sem = SemanticSearch::start(&s, data.path(), shared.clone(), SemanticSearch::document_text()).unwrap();
+        let (t0, cpu0) = (Instant::now(), fnc_platform::process::cpu_time().unwrap_or_default());
+        let mut peak = 0.0f64;
+        let (mut last_t, mut last_cpu) = (t0, cpu0);
+        loop {
+            std::thread::sleep(Duration::from_secs(10));
+            let (now, cpu) = (Instant::now(), fnc_platform::process::cpu_time().unwrap_or_default());
+            let load = (cpu - last_cpu).as_secs_f64() / (now - last_t).as_secs_f64() / cores as f64 * 100.0;
+            peak = peak.max(load);
+            (last_t, last_cpu) = (now, cpu);
+            let st = sem.status();
+            eprintln!("  {:>5} s  {}  cpu {load:.0}% of all cores", t0.elapsed().as_secs(), sem.status_text());
+            if matches!(st, Status::Ready { docs, .. } if docs > 0) {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(4 * 3600), "semantic indexing too slow");
+        }
+        let (ndocs, nchunks, bytes) = sem.stats();
+        let avg = (fnc_platform::process::cpu_time().unwrap_or_default() - cpu0).as_secs_f64()
+            / t0.elapsed().as_secs_f64()
+            / cores as f64
+            * 100.0;
+        eprintln!(
+            "SEM-01: {ndocs} files, {nchunks} chunks in {:.0} s ({:.1} chunks/s), CPU avg {avg:.0}% peak {peak:.0}% (limit {}%), store {} MiB",
+            t0.elapsed().as_secs_f64(),
+            nchunks as f64 / t0.elapsed().as_secs_f64(),
+            s.semantic_cpu_limit,
+            bytes >> 20
+        );
+
+        // SEM-02..04.
+        let find = |names: &[String], needle: &str| {
+            names.iter().position(|n| n.to_lowercase().ends_with(&needle.to_lowercase()))
+        };
+        let (names, _, t) = search(r#"sem:"季度预算""#, Some(&sem));
+        eprintln!(
+            "SEM-02: rank {:?} in {t:?}; top: {:?}",
+            find(&names, "2026Q2_budget.xlsx"),
+            &names[..names.len().min(5)]
+        );
+        assert!(find(&names, "2026Q2_budget.xlsx").is_some_and(|r| r < 10));
+        let (names, rs, t) = search(r#"semcontent:"how to rotate api key""#, Some(&sem));
+        let rank = find(&names, "api-key-rotation.docx");
+        eprintln!(
+            "SEM-03: rank {rank:?} in {t:?}; chunk {:?}; top: {:?}",
+            rs.ids.first().and_then(|&id| rs.semantic_range(id)),
+            &names[..names.len().min(3)]
+        );
+        assert!(rank.is_some_and(|r| r < 10));
+        assert!(rs.semantic_range(rs.ids[rank.unwrap_or(0)]).is_some(), "content chunk range for the preview");
+        let (names, _, t) = search(r#"semcode:"read usn journal records" path:src\"#, Some(&sem));
+        let rank = names.iter().position(|n| n.ends_with("journal.rs") || n.ends_with("win.rs"));
+        eprintln!("SEM-04: rank {rank:?} in {t:?}; top: {:?}", &names[..names.len().min(5)]);
+        assert!(rank.is_some_and(|r| r < 5));
+        // Query latency (warm).
+        let mut lat: Vec<Duration> = [
+            "budget",
+            "travel plans",
+            "meeting notes about hiring",
+            "recipe with tomatoes",
+            "季度报告",
+            "invoice from supplier",
+            "project roadmap",
+            "holiday photos",
+            "rotate key",
+            "parse records",
+        ]
+        .iter()
+        .map(|q| search(&format!("sem:\"{q}\""), Some(&sem)).2)
+        .collect();
+        lat.sort();
+        eprintln!("sem: query p50 {:?} p95 {:?}", lat[lat.len() / 2], lat[lat.len() * 95 / 100]);
+
+        // SEM-05: a changed document is searchable by its new text within 15 s.
+        let changed = PathBuf::from(&docs).join("Notes").join("changing-note.txt");
+        std::fs::write(&changed, "The lighthouse keeper repaints the lamp room every spring before the storms.")
+            .unwrap();
+        let t = Instant::now();
+        let mut found = None;
+        while t.elapsed() < Duration::from_secs(40) {
+            let (names, _, _) = search(r#"semcontent:"lighthouse keeper painting the lamp room""#, Some(&sem));
+            if find(&names, "changing-note.txt").is_some_and(|r| r < 3) {
+                found = Some(t.elapsed());
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+        eprintln!("SEM-05: new content found after {found:?}");
+        assert!(found.is_some_and(|d| d <= Duration::from_secs(15)));
+        let (names, _, _) = search(r#"semcontent:>0.6 "grocery list with milk and eggs""#, Some(&sem));
+        assert!(find(&names, "changing-note.txt").is_none(), "old chunks removed");
+
+        // SEM-08: idle unload, transparent reload.
+        let t = Instant::now();
+        while sem.model_loaded() && t.elapsed() < Duration::from_secs(120) {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        let mem_unloaded = fnc_platform::process::private_bytes().unwrap_or(0);
+        eprintln!(
+            "SEM-08: model unloaded after {:?} idle (limit 60 s); private {} MiB",
+            t.elapsed(),
+            mem_unloaded >> 20
+        );
+        assert!(!sem.model_loaded());
+        // A text not in the query cache, so the model really loads again.
+        let (names, _, reload) = search(r#"sem:"预算 第二季度""#, Some(&sem));
+        eprintln!("SEM-08: first query after unload (model reload) {reload:?}; model loaded: {}", sem.model_loaded());
+        assert!(sem.model_loaded());
+        assert!(reload <= Duration::from_secs(2) && find(&names, "2026Q2_budget.xlsx").is_some());
+
+        // SEM-06: turned off, literal searches are as before.
+        sem.stop();
+        let lit_after = literal(&mut search);
+        let mem_after = fnc_platform::process::private_bytes().unwrap_or(0);
+        eprintln!(
+            "SEM-06: literal p95 {lit_before:?} -> {lit_after:?}; private {} -> {} MiB",
+            mem_before >> 20,
+            mem_after >> 20
+        );
+        drop(indexer);
     }
 }
