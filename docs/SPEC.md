@@ -896,6 +896,10 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | `junction:` / `symlink:` | 依据重解析标记 | 文件夹重解析点视为 junction、文件视为 symlink | 重解析标记未入索引（M3 属性索引补齐）|
 | NTFS 硬链接 | 每个文件名一个条目 | 每个名称一个条目：MFT 枚举得到一个名称，其余名称由大小/日期补齐阶段的目录列举（带文件 ID）补全；删除多链接文件的单个名称暂不检测（该别名保留到文件删除/重建）| `FSCTL_ENUM_USN_DATA` 每个文件只返回一个名称（ADR-010）|
 | ReFS 128 位文件 ID | 原样 | 折叠为 64 位（零扩展保持原值，否则 xxh3）| 索引 FRN 列为 u64 |
+| `.fnx` 加载 | — | 整文件读入后解码（不 mmap），全部列本就可变需拷贝 | ADR-012 |
+| 服务每连接鉴权 | 会话 ID 校验 | 管道 DACL 仅允许 SYSTEM/管理员/交互用户；会话 ID 校验列为加固项 | ADR-011 |
+| "类型"列排序 | 按类型描述 | 按扩展名排序（同类型相邻）| 类型描述来自 Shell，不在引擎内 |
+| 永久删除确认 | Shell 确认框 | Fennec 自己的确认框（关闭 Shell 的重复确认）| 避免两次确认 |
 | 命令行 `-filelist` / `-folder`，`fes -filelist` | 无 | 新增：挂载 EFU / 文件夹索引；`fes` 离线查询 | 便于脚本与测试 |
 | `type:` 类型描述 | 注册表 `HKCR\.ext` → ProgID 描述 | 前端注入的类型名提供者（Windows 注册表，`SearchOptions::type_names`），无提供者或无结果时回退 Explorer 风格 "`EXT` File"；文件夹 "File folder"、无扩展名 "File" | fnc-exec 禁止 unsafe，注册表访问在 fnc-platform（SPEC-GAP）|
 | `fileexists:` / `folderexists:` | 访问文件系统 | 只在**索引**中解析路径（相对路径以条目所在文件夹为基准，支持 `.`/`..`）；未索引的文件视为不存在 | 零 I/O、可预测；索引即真相 |
