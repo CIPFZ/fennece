@@ -575,4 +575,47 @@ mod tests {
         let q = e.embed(Lane::Query, &["file number 1400".into()]).unwrap().pop().unwrap();
         assert_eq!(s.search(&q, 1, ALL_KINDS, 0.0).unwrap()[0].path, "C:\\f1400.txt");
     }
+
+    /// SPEC ch.5 §4: ANN top-200 over 1M chunks (256 d, int8) within 10 ms.
+    /// `cargo test --release -p fnc-semantic ann_1m -- --ignored --nocapture`
+    #[test]
+    #[ignore = "builds a 1M-vector index (minutes)"]
+    fn ann_1m_latency() {
+        let n = 1_000_000usize;
+        let dim = 256;
+        let s = VectorStore::new("bench", dim).unwrap();
+        s.index.reserve(n).unwrap();
+        let mut seed = 7u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % 2001) as f32 / 1000.0 - 1.0
+        };
+        let t = std::time::Instant::now();
+        // Clustered data (topics) rather than uniform noise, like real embeddings.
+        let centers: Vec<Vec<f32>> = (0..256).map(|_| (0..dim).map(|_| rnd()).collect()).collect();
+        let mut queries = Vec::new();
+        for k in 0..n {
+            let c = &centers[k % centers.len()];
+            let v: Vec<f32> = c.iter().map(|x| x + 0.4 * rnd()).collect();
+            if k % 50_000 == 0 {
+                queries.push(v.clone());
+            }
+            s.index.add(k as u64 + 1, &crate::embed::fit(&v, dim)).unwrap();
+        }
+        eprintln!("built {n} vectors in {:.0} s, {} MiB", t.elapsed().as_secs_f64(), s.index.memory_usage() >> 20);
+        let mut times = Vec::new();
+        for q in queries.iter().cycle().take(200) {
+            let q = crate::embed::fit(q, dim);
+            let t = std::time::Instant::now();
+            let m = s.index.search(&q, 200).unwrap();
+            times.push(t.elapsed());
+            assert_eq!(m.keys.len(), 200);
+        }
+        times.sort();
+        let p95 = times[times.len() * 95 / 100];
+        eprintln!("ANN top-200 over {n}: p50 {:?} p95 {p95:?}", times[times.len() / 2]);
+        assert!(p95 <= std::time::Duration::from_millis(10), "p95 {p95:?}");
+    }
 }

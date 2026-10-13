@@ -151,6 +151,13 @@ impl Download {
     }
 }
 
+/// What the model loader was built from (a change restarts semantic search).
+type LoaderKey = (String, PathBuf, u32, u32);
+
+fn loader_key(s: &Settings, spec: &ModelSpec, path: &Path) -> LoaderKey {
+    (spec.id.clone(), path.to_path_buf(), s.semantic_cpu_limit, s.semantic_gpu_layers)
+}
+
 /// Settings that select the engine configuration (a change re-applies it).
 fn config_key(s: &Settings) -> String {
     format!(
@@ -191,6 +198,7 @@ pub struct SemanticSearch {
     source: Shared<dyn SemanticSource>,
     worker: Option<std::thread::JoinHandle<()>>,
     key: String,
+    loader: LoaderKey,
     spec: ModelSpec,
     model_path: PathBuf,
     models_dir: PathBuf,
@@ -248,12 +256,14 @@ impl SemanticSearch {
         let path = model_path(s, &spec, &models_dir);
         let cores = std::thread::available_parallelism().map_or(4, |n| n.get());
         let index_threads = (cores * s.semantic_cpu_limit.clamp(1, 100) as usize / 100).max(1) as i32;
+        let gpu_layers = s.semantic_gpu_layers;
         let loader: fnc_semantic::embed::Loader = {
             let (path, spec) = (path.clone(), spec.clone());
             Box::new(move || {
                 let mut o = fnc_semantic::llama::LlamaOptions::new(path.clone(), &spec.id);
                 o.prompts = spec.prompts.clone();
                 o.index_threads = index_threads;
+                o.gpu_layers = gpu_layers;
                 Ok(Arc::new(fnc_semantic::llama::LlamaEmbedder::load(o)?) as Arc<dyn fnc_semantic::Embedder>)
             })
         };
@@ -267,6 +277,7 @@ impl SemanticSearch {
             source: Shared::new(source),
             worker: Some(worker),
             key: config_key(s),
+            loader: loader_key(s, &spec, &path),
             spec,
             model_path: path,
             models_dir,
@@ -303,11 +314,7 @@ impl SemanticSearch {
         }
         let spec = spec_for(s, data_dir);
         let path = model_path(s, &spec, &self.models_dir);
-        let old_cpu = self.key.split('|').nth(9).map(str::to_string);
-        if spec.id != self.spec.id
-            || path != self.model_path
-            || old_cpu.as_deref() != Some(&s.semantic_cpu_limit.to_string())
-        {
+        if loader_key(s, &spec, &path) != self.loader {
             return false;
         }
         if let Err(e) = self.engine.set_config(engine_config(s, &spec, data_dir), path) {
