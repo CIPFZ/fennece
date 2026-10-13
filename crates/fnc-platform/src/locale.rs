@@ -155,4 +155,12 @@ mod tests {
         assert_eq!(order_of_pattern("yyyy'年'M'月'd'日'"), Some(DateFieldOrder::Ymd));
         assert_eq!(order_of_pattern("HH:mm"), None);
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn system_date_locale() {
+        let (o, w) = (date_order(), first_day_of_week());
+        eprintln!("date order {o:?}, first day of week {w:?}");
+        assert!(o.is_some() && w.is_some());
+    }
 }
