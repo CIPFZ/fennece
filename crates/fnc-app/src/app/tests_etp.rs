@@ -107,5 +107,14 @@ fn connect_search_refuse_download_disconnect() {
     h.state_mut().connect_etp(bad);
     wait_until(&mut h, "login refused", |a| !a.is_remote());
     assert!(h.state().message.as_ref().is_some_and(|m| m.0.contains("530")), "{:?}", h.state().message);
+    // Options → ETP/FTP Server lists the server and client settings.
+    let (keymap, settings) = (h.state().keymap.clone(), h.state().settings.clone());
+    h.state_mut().options_window = Some(super::options::OptionsState::new(&settings, &keymap).on_page("etp"));
+    h.run_steps(3);
+    // Page tree entry and heading.
+    assert!(h.query_all_by_label_contains(&t("options-page-etp")).count() >= 2);
+    assert!(h.query_by_label_contains("ETP/FTP server port").is_some());
+    assert!(h.query_by_label_contains("How remote results are opened").is_some());
+    h.state_mut().options_window = None;
     drop(server);
 }
