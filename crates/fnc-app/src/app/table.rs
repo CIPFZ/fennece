@@ -280,6 +280,10 @@ impl FennecApp {
         ui.style_mut().interaction.selectable_labels = false;
         // One short-lived snapshot for all visible rows; never wait more than 2 ms.
         let snap = self.shared.try_snapshot_for(Duration::from_millis(2));
+        // The indexer held the lock: draw what is cached and come back for the rest.
+        if snap.is_none() {
+            ui.ctx().request_repaint_after(Duration::from_millis(30));
+        }
         let cols = self.display_columns();
         let col_ids: Vec<ColumnId> = cols.iter().map(|c| c.id).collect();
         let wants_props = col_ids.iter().any(|c| matches!(c, ColumnId::Property(_)));
@@ -289,6 +293,9 @@ impl FennecApp {
         } else {
             None
         };
+        if wants_props && props.is_none() {
+            ui.ctx().request_repaint_after(Duration::from_millis(30));
+        }
         if let Some(s) = &snap {
             let generation = s.generation() ^ self.stores.generation().rotate_left(17);
             if generation != self.v.rows_generation {
