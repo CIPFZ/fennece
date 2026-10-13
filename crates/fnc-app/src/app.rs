@@ -1022,6 +1022,7 @@ impl FennecApp {
         let complete_open = self.complete.is_open();
         let mut complete_keys = Vec::new();
         let mut paste_seen = false;
+        let mut shift_dels = fnc_platform::shell::take_shift_delete();
         let type_to_search = self.settings.type_to_search;
         ctx.input_mut(|i| {
             let mut keep = Vec::with_capacity(i.events.len());
@@ -1062,16 +1063,16 @@ impl FennecApp {
                     egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)
                         if !modal && kctx == KeyCtx::Results =>
                     {
-                        // On Windows egui-winit also maps Shift+Del to Cut and
-                        // Shift+Insert to Paste.
-                        let shift_only = i.modifiers.shift && !i.modifiers.command;
+                        // On Windows egui-winit also maps Shift+Del to Cut (told apart
+                        // by the window subclass's count).
                         let key = |key| Chord { ctrl: true, shift: false, alt: false, key };
-                        let chord = match (&e, shift_only) {
-                            (egui::Event::Cut, true) => {
+                        let chord = match &e {
+                            egui::Event::Copy => key(Key::C),
+                            egui::Event::Cut if shift_dels > 0 => {
+                                shift_dels -= 1;
                                 Chord { ctrl: false, shift: true, alt: false, key: Key::Delete }
                             }
-                            (egui::Event::Copy, _) => key(Key::C),
-                            (egui::Event::Cut, _) => key(Key::X),
+                            egui::Event::Cut => key(Key::X),
                             _ => key(Key::V),
                         };
                         if chord.key == Key::V {

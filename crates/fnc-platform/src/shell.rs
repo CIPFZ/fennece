@@ -41,6 +41,11 @@ pub fn take_ctrl_v() -> u32 {
     imp::CTRL_V.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Shift+Delete presses since the last call (the toolkit reports them as "cut").
+pub fn take_shift_delete() -> u32 {
+    imp::SHIFT_DEL.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Mouse pointer position in screen pixels (Windows), for native popup menus.
 pub fn cursor_pos() -> Option<(i32, i32)> {
     imp::cursor_pos()
@@ -92,6 +97,7 @@ mod imp {
     }
 
     pub static CTRL_V: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    pub static SHIFT_DEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
     unsafe extern "system" fn key_proc(
         hwnd: windows::Win32::Foundation::HWND,
@@ -101,13 +107,17 @@ mod imp {
         _id: usize,
         _data: usize,
     ) -> windows::Win32::Foundation::LRESULT {
-        use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL};
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_DELETE, VK_SHIFT};
         use windows::Win32::UI::WindowsAndMessaging::WM_KEYDOWN;
         // Repeats (bit 30 of lParam) are not new presses.
-        if msg == WM_KEYDOWN && wparam.0 == usize::from(b'V') && lparam.0 & (1 << 30) == 0 {
-            // SAFETY: plain query of the keyboard state of this thread's message queue.
-            if unsafe { GetKeyState(i32::from(VK_CONTROL.0)) } < 0 {
+        if msg == WM_KEYDOWN && lparam.0 & (1 << 30) == 0 {
+            // SAFETY: plain queries of the keyboard state of this thread's message queue.
+            let held = |vk: u16| unsafe { GetKeyState(i32::from(vk)) } < 0;
+            let (ctrl, shift) = (held(VK_CONTROL.0), held(VK_SHIFT.0));
+            if wparam.0 == usize::from(b'V') && ctrl {
                 CTRL_V.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            } else if wparam.0 == usize::from(VK_DELETE.0) && shift && !ctrl {
+                SHIFT_DEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
         // SAFETY: standard chaining to the original window procedure.
@@ -199,6 +209,7 @@ mod imp {
     }
 
     pub static CTRL_V: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    pub static SHIFT_DEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
     pub fn watch_ctrl_v(_hwnd: isize) {}
 
@@ -233,6 +244,7 @@ mod imp {
     }
 
     pub static CTRL_V: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    pub static SHIFT_DEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
     pub fn watch_ctrl_v(_hwnd: isize) {}
 
