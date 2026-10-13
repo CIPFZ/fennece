@@ -1,18 +1,24 @@
 //! Plan compilation and per-entry evaluation.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
+use fnc_core::fold::{FoldOptions, fold_str_into};
 use fnc_core::{EntryFlags, EntryId, FileTime};
-use fnc_index::ext::{OVERFLOW_EXT, ext_of, stem_of};
+use fnc_index::ext::{NO_EXT, OVERFLOW_EXT, ext_of, stem_of};
 use fnc_index::{IndexStore, SIZE_UNKNOWN};
+use fnc_query::date::DateWild;
 use fnc_query::plan::{
-    ATTRIB_UNIVERSE, DateCol, KindClass, Node, NumPred, NumProp, PatternKind, Pred, ReparseKind, Target, TextPred,
+    ATTRIB_UNIVERSE, DateCol, EntryVar, KindClass, Node, NumPred, NumProp, PathPiece, PatternKind, Pred, ReparseKind,
+    SiblingScope, Target, TextPred,
 };
 use rayon::prelude::*;
 
 use crate::cache::{Caches, CancelToken, Cancelled, ChildCounts};
 use crate::matcher::{Pattern, SubjectMode, compile_pattern, name_subject, strip_chars, subject_mode};
 use crate::paths::DirPaths;
+use crate::tree::{LinkCounts, NameLookup, TreeAggregates, resolve_path, root_paths};
+use crate::types::{FOLDER_TYPE, NO_EXT_TYPE};
 
 /// Fixed-size bit set over rows or ids.
 #[derive(Clone, Debug)]
@@ -72,9 +78,27 @@ pub enum Leaf {
         prop: NumProp,
         /// Ranges.
         pred: NumPred,
-        /// Child counts (for child-count properties).
-        counts: Option<Arc<ChildCounts>>,
+        /// Precomputed column the property is read from.
+        aux: NumAux,
     },
+    /// Date column matches a wildcard date.
+    DateWild(DateCol, DateWild),
+    /// `type:`: matching extension ids, plus folders / extensionless files.
+    TypeIn {
+        /// Extension ids whose description matches.
+        ids: Bits,
+        /// "File folder" matches.
+        folder: bool,
+        /// "File" (no extension) matches.
+        no_ext: bool,
+        /// The pattern, for extensions that overflowed the dictionary (rare; matched
+        /// against the fallback description).
+        overflow: Box<TextLeaf>,
+    },
+    /// `filelist:`: whole names or resolved paths (boxed: keeps `Leaf` small).
+    NameSet(Box<NameSetLeaf>),
+    /// `fileexists:` / `folderexists:`.
+    Exists(Box<ExistsLeaf>),
     /// Attributes.
     Attrib {
         /// Required bits.
@@ -102,6 +126,34 @@ pub enum Leaf {
     Nothing,
 }
 
+/// Column behind a numeric leaf.
+pub enum NumAux {
+    /// Read directly from the index.
+    None,
+    /// Direct child counts.
+    Children(Arc<ChildCounts>),
+    /// Descendant counts / folder sizes.
+    Tree(Arc<TreeAggregates>),
+    /// Hard link counts.
+    Links(Arc<LinkCounts>),
+}
+
+/// Compiled `filelist:`.
+pub struct NameSetLeaf {
+    /// Folded whole names.
+    names: HashSet<Box<[u8]>>,
+    /// Entries resolved from full paths.
+    ids: Bits,
+}
+
+/// Compiled `fileexists:` / `folderexists:`.
+pub struct ExistsLeaf {
+    template: Vec<PathPiece>,
+    folder: bool,
+    roots: Vec<(Vec<u8>, EntryId)>,
+    lookup: Arc<NameLookup>,
+}
+
 /// Compiled node.
 pub enum CNode {
     /// Everything.
@@ -125,6 +177,7 @@ pub struct Scratch {
     b: Vec<u8>,
     s: String,
     t: String,
+    u: String,
 }
 
 /// A compiled query ready for evaluation against one snapshot.
@@ -142,6 +195,9 @@ fn needs_paths(n: &Node) -> bool {
         Node::Not(c) => needs_paths(c),
         Node::Leaf(Pred::Text(t)) => matches!(t.target, Target::FullPath | Target::PathPart),
         Node::Leaf(Pred::Parent(_) | Pred::Ancestor(_)) => true,
+        Node::Leaf(Pred::Child(t) | Pred::Descendant(t) | Pred::Sibling(_, t)) => {
+            matches!(t.target, Target::FullPath | Target::PathPart)
+        }
         Node::Leaf(Pred::Num(p, _)) => matches!(p, NumProp::PathLength | NumProp::FullPathLength),
         _ => false,
     }
@@ -199,6 +255,102 @@ impl Compiled {
         set
     }
 
+    /// Live non-root entries whose name matches `t` (parallel scan); `None` if the
+    /// pattern is invalid.
+    fn hits(&mut self, t: &TextPred, s: &IndexStore, cancel: &CancelToken) -> Result<Option<Vec<u32>>, Cancelled> {
+        let Some(leaf) = self.text_leaf(t, s) else { return Ok(None) };
+        let n = s.len();
+        let this = &*self;
+        let parts: Vec<Vec<u32>> = (0..n.div_ceil(CHUNK))
+            .into_par_iter()
+            .map_init(Scratch::default, |sc, k| {
+                let mut out = Vec::new();
+                if cancel.is_cancelled() {
+                    return out;
+                }
+                for i in k * CHUNK..((k + 1) * CHUNK).min(n) {
+                    let id = EntryId(i as u32);
+                    if s.is_live(id) && s.parent(id).is_some() && this.eval_text(&leaf, s, id, sc) {
+                        out.push(id.0);
+                    }
+                }
+                out
+            })
+            .collect();
+        if cancel.is_cancelled() {
+            return Err(Cancelled);
+        }
+        Ok(Some(parts.concat()))
+    }
+
+    /// Entries with at least one sibling (another live entry with the same parent)
+    /// among `hits`.
+    fn sibling_set(s: &IndexStore, hits: &[u32], cancel: &CancelToken) -> Result<Bits, Cancelled> {
+        let n = s.len();
+        let mut is_hit = Bits::new(n);
+        // Matching children per folder, saturated at 2 (all we need to know).
+        let mut per_dir = vec![0u8; n];
+        for &h in hits {
+            is_hit.set(h as usize);
+            let p = s.parent(EntryId(h));
+            if let Some(c) = per_dir.get_mut(p.idx()) {
+                *c = (*c + 1).min(2);
+            }
+        }
+        let mut out = Bits::new(n);
+        for i in 0..n {
+            if i % CHUNK == 0 && cancel.is_cancelled() {
+                return Err(Cancelled);
+            }
+            let id = EntryId(i as u32);
+            let p = s.parent(id);
+            if !s.is_live(id) || !p.is_some() {
+                continue;
+            }
+            let c = per_dir.get(p.idx()).copied().unwrap_or(0);
+            if c >= 2 || (c == 1 && !is_hit.get(i)) {
+                out.set(i);
+            }
+        }
+        Ok(out)
+    }
+
+    /// `type:` — descriptions are per extension, so the pattern is evaluated once per
+    /// dictionary entry here and per entry it is a bit lookup.
+    fn type_leaf(&mut self, t: &TextPred, s: &IndexStore, caches: &Caches) -> Leaf {
+        let Some(leaf) = self.text_leaf(t, s) else { return Leaf::Nothing };
+        let mut sc = Scratch::default();
+        let mut ids = Bits::new(65_536);
+        for (id, ext) in s.ext_dict().iter() {
+            if id != NO_EXT && id != OVERFLOW_EXT && Self::match_str(&leaf, &caches.type_description(ext), &mut sc) {
+                ids.set(id as usize);
+            }
+        }
+        let folder = Self::match_str(&leaf, FOLDER_TYPE, &mut sc);
+        let no_ext = Self::match_str(&leaf, NO_EXT_TYPE, &mut sc);
+        Leaf::TypeIn { ids, folder, no_ext, overflow: Box::new(leaf) }
+    }
+
+    /// Matches `l` against arbitrary text (folded like an entry name).
+    fn match_str(l: &TextLeaf, text: &str, sc: &mut Scratch) -> bool {
+        sc.u.clear();
+        match l.mode {
+            SubjectMode::StoredFold => fold_str_into(text, FoldOptions::DEFAULT, &mut sc.u),
+            SubjectMode::Refold(o) => fold_str_into(text, o, &mut sc.u),
+            SubjectMode::Original => sc.u.push_str(text),
+            SubjectMode::Ascii => {
+                sc.u.push_str(text);
+                sc.u.make_ascii_lowercase();
+            }
+        }
+        let t = &l.pred;
+        if t.ignore_punct || t.ignore_ws {
+            strip_chars(&sc.u, t.ignore_punct, t.ignore_ws, &mut sc.s);
+            return l.pattern.is_match(sc.s.as_bytes());
+        }
+        l.pattern.is_match(sc.u.as_bytes())
+    }
+
     fn compile(&mut self, n: &Node, s: &IndexStore, caches: &Caches, cancel: &CancelToken) -> Result<CNode, Cancelled> {
         if cancel.is_cancelled() {
             return Err(Cancelled);
@@ -240,9 +392,19 @@ impl Compiled {
             }
             Pred::IsDir(d) => Leaf::IsDir(*d),
             Pred::Num(prop, pred) => {
-                let counts = matches!(prop, NumProp::ChildCount | NumProp::ChildFileCount | NumProp::ChildFolderCount)
-                    .then(|| caches.child_counts(s));
-                Leaf::Num { prop: *prop, pred: pred.clone(), counts }
+                let aux = match prop {
+                    NumProp::ChildCount
+                    | NumProp::ChildFileCount
+                    | NumProp::ChildFolderCount
+                    | NumProp::SiblingCount => NumAux::Children(caches.child_counts(s)),
+                    NumProp::DescendantCount
+                    | NumProp::DescendantFileCount
+                    | NumProp::DescendantFolderCount
+                    | NumProp::FolderSize => NumAux::Tree(caches.tree_aggregates(s)),
+                    NumProp::HardlinkCount => NumAux::Links(caches.link_counts(s)),
+                    _ => NumAux::None,
+                };
+                Leaf::Num { prop: *prop, pred: pred.clone(), aux }
             }
             Pred::Attrib { mask, exact } => Leaf::Attrib { mask: *mask, exact: *exact },
             Pred::Root => Leaf::Root,
@@ -250,31 +412,66 @@ impl Compiled {
             Pred::Parent(t) => Leaf::ParentIn(self.folder_set(t, s)),
             Pred::Ancestor(t) => Leaf::AncestorIn(self.folder_set(t, s)),
             Pred::Child(t) => {
-                let Some(leaf) = self.text_leaf(t, s) else { return Ok(Leaf::Nothing) };
-                let n = s.len();
-                let parents: Vec<Vec<u32>> = (0..n.div_ceil(CHUNK))
-                    .into_par_iter()
-                    .map_init(Scratch::default, |sc, k| {
-                        let mut out = Vec::new();
-                        if cancel.is_cancelled() {
-                            return out;
-                        }
-                        for i in k * CHUNK..((k + 1) * CHUNK).min(n) {
-                            let id = EntryId(i as u32);
-                            if s.is_live(id) && s.parent(id).is_some() && self.eval_text(&leaf, s, id, sc) {
-                                out.push(s.parent(id).0);
-                            }
-                        }
-                        out
-                    })
-                    .collect();
-                if cancel.is_cancelled() {
-                    return Err(Cancelled);
+                let Some(hits) = self.hits(t, s, cancel)? else { return Ok(Leaf::Nothing) };
+                let mut set = Bits::new(s.len());
+                for &h in &hits {
+                    let p = s.parent(EntryId(h));
+                    if p.is_some() {
+                        set.set(p.idx());
+                    }
                 }
-                let mut set = Bits::new(n);
-                parents.iter().flatten().for_each(|&p| set.set(p as usize));
                 Leaf::In(set)
             }
+            Pred::Descendant(t) => {
+                let Some(hits) = self.hits(t, s, cancel)? else { return Ok(Leaf::Nothing) };
+                let mut set = Bits::new(s.len());
+                for &h in &hits {
+                    // Mark the ancestor chain; stop at the first folder already marked
+                    // (its own ancestors are marked too), so the total work is O(n).
+                    let mut p = s.parent(EntryId(h));
+                    let mut steps = 0;
+                    while p.is_some() && !set.get(p.idx()) && steps < fnc_index::store::MAX_DEPTH {
+                        set.set(p.idx());
+                        p = s.parent(p);
+                        steps += 1;
+                    }
+                }
+                Leaf::In(set)
+            }
+            Pred::Sibling(scope, t) => {
+                let Some(hits) = self.hits(t, s, cancel)? else { return Ok(Leaf::Nothing) };
+                let set = Self::sibling_set(s, &hits, cancel)?;
+                match scope {
+                    SiblingScope::Own => Leaf::In(set),
+                    SiblingScope::Parent => Leaf::ParentIn(set),
+                    SiblingScope::Ancestor => Leaf::AncestorIn(set),
+                }
+            }
+            Pred::Type(t) => self.type_leaf(t, s, caches),
+            Pred::FileList { names, paths } => {
+                let roots = root_paths(s);
+                let mut ids = Bits::new(s.len());
+                for p in paths {
+                    if let Some(id) = resolve_path(s, p.as_bytes(), None, &roots, |d, name| s.find_child(d, name)) {
+                        ids.set(id.idx());
+                    }
+                }
+                Leaf::NameSet(Box::new(NameSetLeaf { names: names.iter().map(|n| n.as_bytes().into()).collect(), ids }))
+            }
+            Pred::Exists { template, folder } => Leaf::Exists(Box::new(ExistsLeaf {
+                template: template.clone(),
+                folder: *folder,
+                roots: root_paths(s),
+                lookup: caches.name_lookup(s),
+            })),
+            Pred::Omitted(set) => {
+                let mut bits = Bits::new(s.len());
+                if set.instance == s.instance() {
+                    set.ids.iter().for_each(|id| bits.set(id.idx()));
+                }
+                Leaf::In(bits)
+            }
+            Pred::DateWild(col, w) => Leaf::DateWild(*col, *w),
             Pred::Volume(prefix) => {
                 // Match by drive/root name (`C:`), or by the volume's root path.
                 let mut roots = Bits::new(s.len());
@@ -377,14 +574,7 @@ impl Compiled {
         l.pattern.is_match(subject)
     }
 
-    fn num_value(
-        &self,
-        prop: NumProp,
-        s: &IndexStore,
-        id: EntryId,
-        counts: Option<&ChildCounts>,
-        sc: &mut Scratch,
-    ) -> Option<i64> {
+    fn num_value(&self, prop: NumProp, s: &IndexStore, id: EntryId, aux: &NumAux, sc: &mut Scratch) -> Option<i64> {
         let known = |t: FileTime| t.is_known().then_some(t.0);
         match prop {
             NumProp::Size => {
@@ -415,10 +605,10 @@ impl Compiled {
             NumProp::RunCount => Some(i64::from(s.run_info(id).count)),
             NumProp::Frn => Some(s.frn(id) as i64),
             NumProp::ChildCount | NumProp::ChildFileCount | NumProp::ChildFolderCount => {
+                let NumAux::Children(c) = aux else { return None };
                 if !s.is_dir(id) {
                     return None;
                 }
-                let c = counts?;
                 let (f, d) = (c.files[id.idx()], c.folders[id.idx()]);
                 Some(i64::from(match prop {
                     NumProp::ChildFileCount => f,
@@ -426,6 +616,39 @@ impl Compiled {
                     _ => f + d,
                 }))
             }
+            NumProp::SiblingCount => {
+                let NumAux::Children(c) = aux else { return None };
+                let p = s.parent(id);
+                if !p.is_some() {
+                    return None;
+                }
+                let total = i64::from(c.files[p.idx()]) + i64::from(c.folders[p.idx()]);
+                Some((total - 1).max(0))
+            }
+            NumProp::DescendantCount | NumProp::DescendantFileCount | NumProp::DescendantFolderCount => {
+                let NumAux::Tree(t) = aux else { return None };
+                if !s.is_dir(id) {
+                    return None;
+                }
+                let (f, d) = (i64::from(t.files[id.idx()]), i64::from(t.folders[id.idx()]));
+                Some(match prop {
+                    NumProp::DescendantFileCount => f,
+                    NumProp::DescendantFolderCount => d,
+                    _ => f + d,
+                })
+            }
+            NumProp::FolderSize => {
+                if !s.is_dir(id) {
+                    return self.num_value(NumProp::Size, s, id, aux, sc);
+                }
+                let NumAux::Tree(t) = aux else { return None };
+                Some(i64::try_from(t.bytes[id.idx()]).unwrap_or(i64::MAX))
+            }
+            NumProp::HardlinkCount => {
+                let NumAux::Links(l) = aux else { return None };
+                Some(i64::from(l.counts[id.idx()]))
+            }
+            NumProp::NameParts => Some(name_parts(s.fold(id), s.is_dir(id))),
         }
     }
 
@@ -443,6 +666,43 @@ impl Compiled {
         false
     }
 
+    /// `fileexists:` / `folderexists:` for entry `id`: expands the template with the
+    /// entry's properties and resolves it in the index (relative to the entry's folder).
+    fn exists(x: &ExistsLeaf, s: &IndexStore, id: EntryId, sc: &mut Scratch) -> bool {
+        let name = s.name(id);
+        let dot = if s.is_dir(id) { None } else { ext_dot(name) };
+        let parent = s.parent(id);
+        sc.t.clear();
+        for piece in &x.template {
+            match piece {
+                PathPiece::Lit(l) => sc.t.push_str(l),
+                PathPiece::Var(EntryVar::Name) => push_utf16(name, &mut sc.t),
+                PathPiece::Var(EntryVar::Stem) => push_utf16(&name[..dot.unwrap_or(name.len())], &mut sc.t),
+                PathPiece::Var(EntryVar::Ext) => {
+                    if let Some(d) = dot {
+                        push_utf16(&name[d + 1..], &mut sc.t);
+                    }
+                }
+                PathPiece::Var(EntryVar::Path) => {
+                    if parent.is_some() {
+                        s.write_path(parent, &mut sc.t);
+                    }
+                }
+                PathPiece::Var(EntryVar::Parent) => {
+                    if parent.is_some() {
+                        push_utf16(s.name(parent), &mut sc.t);
+                    }
+                }
+                PathPiece::Var(EntryVar::FullPath) => s.write_path(id, &mut sc.t),
+            }
+        }
+        sc.u.clear();
+        fold_str_into(&sc.t, FoldOptions::DEFAULT, &mut sc.u);
+        let base = parent.is_some().then_some(parent);
+        resolve_path(s, sc.u.as_bytes(), base, &x.roots, |d, n| x.lookup.child(s, d, n))
+            .is_some_and(|found| s.is_dir(found) == x.folder)
+    }
+
     fn eval_leaf(&self, l: &Leaf, s: &IndexStore, id: EntryId, sc: &mut Scratch) -> bool {
         match l {
             Leaf::Text(t) => self.eval_text(t, s, id, sc),
@@ -458,10 +718,36 @@ impl Compiled {
                 ids.get(e as usize)
             }
             Leaf::IsDir(d) => s.is_dir(id) == *d,
-            Leaf::Num { prop, pred, counts } => match self.num_value(*prop, s, id, counts.as_deref(), sc) {
+            Leaf::Num { prop, pred, aux } => match self.num_value(*prop, s, id, aux, sc) {
                 Some(v) => pred.matches(v),
                 None => pred.unknown,
             },
+            Leaf::DateWild(col, w) => {
+                self.num_value(NumProp::Date(*col), s, id, &NumAux::None, sc).is_some_and(|v| w.matches(v))
+            }
+            Leaf::TypeIn { ids, folder, no_ext, overflow } => {
+                if s.is_dir(id) {
+                    return *folder;
+                }
+                match s.ext_id(id) {
+                    NO_EXT => *no_ext,
+                    OVERFLOW_EXT => {
+                        // Outside the dictionary: fallback description only.
+                        let ext = ext_of(s.fold(id));
+                        sc.t.clear();
+                        sc.t.extend(String::from_utf8_lossy(ext).chars().flat_map(char::to_uppercase));
+                        sc.t.push_str(" File");
+                        let mut desc = std::mem::take(&mut sc.t);
+                        let hit = Self::match_str(overflow, &desc, sc);
+                        desc.clear();
+                        sc.t = desc;
+                        hit
+                    }
+                    e => ids.get(e as usize),
+                }
+            }
+            Leaf::NameSet(n) => n.ids.get(id.idx()) || (!n.names.is_empty() && n.names.contains(s.fold(id))),
+            Leaf::Exists(x) => Self::exists(x, s, id, sc),
             Leaf::Attrib { mask, exact } => {
                 let mut a = s.attributes(id);
                 if s.is_dir(id) {
@@ -515,6 +801,45 @@ impl Compiled {
     pub fn matches(&self, s: &IndexStore, id: EntryId, sc: &mut Scratch) -> bool {
         self.eval_node(&self.root, s, id, sc)
     }
+}
+
+/// Number of words (runs of letters/digits) in a folded name; the extension of files
+/// is not counted.
+fn name_parts(fold: &[u8], is_dir: bool) -> i64 {
+    let base = if is_dir { fold } else { stem_of(fold) };
+    let mut words = 0;
+    let mut in_word = false;
+    match std::str::from_utf8(base) {
+        Ok(text) => {
+            for c in text.chars() {
+                let w = c.is_alphanumeric();
+                if w && !in_word {
+                    words += 1;
+                }
+                in_word = w;
+            }
+        }
+        Err(_) => {
+            for &b in base {
+                let w = b.is_ascii_alphanumeric();
+                if w && !in_word {
+                    words += 1;
+                }
+                in_word = w;
+            }
+        }
+    }
+    words
+}
+
+/// Appends a UTF-16 name to `out`.
+fn push_utf16(units: &[u16], out: &mut String) {
+    out.extend(char::decode_utf16(units.iter().copied()).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)));
+}
+
+/// Position of the extension dot in a UTF-16 name (not a leading dot).
+fn ext_dot(units: &[u16]) -> Option<usize> {
+    units.iter().rposition(|&u| u == u16::from(b'.')).filter(|&i| i > 0)
 }
 
 /// Rows per parallel work unit (SPEC ch.1 §6.1: 64K entries per block).

@@ -15,10 +15,14 @@ pub mod cache;
 pub mod engine;
 pub mod eval;
 pub mod exec;
+pub mod fuzzy;
 pub mod highlight;
 pub mod matcher;
 pub mod paths;
+pub mod pinyin;
 pub mod sort;
+pub mod tree;
+pub mod types;
 
 pub use cache::{Caches, CancelToken, Cancelled};
 pub use engine::{
@@ -27,6 +31,7 @@ pub use engine::{
 pub use exec::{ExecCtx, ExecStats, ResultSet, execute};
 pub use highlight::Highlighter;
 pub use sort::{SortColumn, SortSpec, sort_ids};
+pub use types::{TypeNameFn, TypeNames};
 
 #[cfg(test)]
 mod tests;

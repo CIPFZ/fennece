@@ -5,9 +5,12 @@
 //! options fold the subject into a per-thread scratch buffer.
 
 use fnc_core::fold::{FoldOptions, fold_utf16_with};
-use fnc_query::plan::{PatternKind, Target, TextPred};
+use fnc_query::plan::{PatternKind, PinyinMode, Target, TextPred};
 use memchr::memmem;
 use regex::bytes::{Regex, RegexBuilder};
+
+use crate::fuzzy::FuzzyPattern;
+use crate::pinyin::PinyinPattern;
 
 /// Compilation error (invalid regex).
 #[derive(Debug, Clone, thiserror::Error)]
@@ -36,6 +39,10 @@ pub enum Pattern {
     Equals(Vec<u8>),
     /// General regex (wildcards are translated to a regex too).
     Regex(Regex),
+    /// Substring or pinyin (`pinyin:`).
+    Pinyin(Box<PinyinPattern>),
+    /// Substring within one edit (`fuzzy:`).
+    Fuzzy(Box<FuzzyPattern>),
 }
 
 impl Pattern {
@@ -49,6 +56,8 @@ impl Pattern {
             Pattern::Ends(p) => s.ends_with(p),
             Pattern::Equals(p) => s == p.as_slice(),
             Pattern::Regex(r) => r.is_match(s),
+            Pattern::Pinyin(p) => p.is_match(s),
+            Pattern::Fuzzy(f) => f.is_match(s),
         }
     }
 
@@ -61,6 +70,8 @@ impl Pattern {
             Pattern::Ends(p) => s.ends_with(p).then(|| (s.len() - p.len(), s.len())),
             Pattern::Equals(p) => (s == p.as_slice()).then_some((0, s.len())),
             Pattern::Regex(r) => r.find(s).map(|m| (m.start(), m.end())),
+            Pattern::Pinyin(p) => memmem::find(s, p.needle()).map(|i| (i, i + p.needle().len())),
+            Pattern::Fuzzy(f) => memmem::find(s, f.needle()).map(|i| (i, i + f.needle().len())),
         }
     }
 }
@@ -159,6 +170,12 @@ pub fn compile_pattern(t: &TextPred) -> Result<Pattern, PatternError> {
         }
         return RegexBuilder::new(&re).build().map(Pattern::Regex).map_err(err);
     }
+    if t.kind == PatternKind::Substring && t.pinyin != PinyinMode::Off {
+        return Ok(Pattern::Pinyin(Box::new(PinyinPattern::new(&folded, t.pinyin))));
+    }
+    if t.kind == PatternKind::Substring && t.fuzzy {
+        return Ok(Pattern::Fuzzy(Box::new(FuzzyPattern::new(&folded))));
+    }
     let bytes = folded.clone().into_bytes();
     Ok(match t.kind {
         PatternKind::Substring if bytes.is_empty() => Pattern::Any,
@@ -216,6 +233,8 @@ pub enum SubjectMode {
     StoredFold,
     /// Re-fold the UTF-16 name with these options.
     Refold(FoldOptions),
+    /// Original text with only ASCII letters lowercased (`ascii:`).
+    Ascii,
     /// Original text as UTF-8 (regex).
     Original,
 }
@@ -226,6 +245,8 @@ pub fn subject_mode(t: &TextPred) -> SubjectMode {
         SubjectMode::Original
     } else if t.case || t.diacritics {
         SubjectMode::Refold(t.fold_options())
+    } else if t.ascii_fold() {
+        SubjectMode::Ascii
     } else {
         SubjectMode::StoredFold
     }
@@ -237,10 +258,13 @@ pub fn name_subject(name: &[u16], mode: SubjectMode, out: &mut Vec<u8>) {
     match mode {
         SubjectMode::StoredFold => fold_utf16_with(name, FoldOptions::DEFAULT, out),
         SubjectMode::Refold(o) => fold_utf16_with(name, o, out),
-        SubjectMode::Original => {
+        SubjectMode::Original | SubjectMode::Ascii => {
             for c in char::decode_utf16(name.iter().copied()) {
                 let mut b = [0u8; 4];
                 out.extend_from_slice(c.unwrap_or(char::REPLACEMENT_CHARACTER).encode_utf8(&mut b).as_bytes());
+            }
+            if mode == SubjectMode::Ascii {
+                out.make_ascii_lowercase();
             }
         }
     }

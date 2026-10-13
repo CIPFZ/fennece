@@ -18,7 +18,7 @@ use std::ops::Range;
 use fnc_core::fold::is_query_space;
 use fnc_core::settings::Precedence;
 
-use crate::ast::{CmpOp, Expr, MacroRef, ModSet, Term, Value};
+use crate::ast::{CmpOp, Expr, MacroRef, ModSet, Modifier, Term, Value};
 use crate::funcs::{
     FuncId, MacroId, Switch, ValueKind, builtin_macro_exts, lookup_entity, lookup_function, lookup_macro,
     lookup_modifier, lookup_switch, normalize_name,
@@ -282,7 +282,8 @@ impl Lexer<'_, '_> {
 
     /// `true` if `<`/`>` at this point belongs to a function value's comparison
     /// operator (`size:>1mb`, `dm:<=2026`, `len:>20`): the term so far must end in a
-    /// known function or modifier name, a colon and only operator characters.
+    /// numeric function or a value-comparing modifier, a colon and only operator
+    /// characters. Elsewhere (`<folder:>`) the bracket is a group delimiter.
     fn operator_position(out: &[Ch]) -> bool {
         let Some(colon) = out.iter().rposition(|ch| ch.c == ':' && !ch.lit) else { return false };
         if !out[colon + 1..].iter().all(|ch| !ch.lit && matches!(ch.c, '<' | '>' | '=' | '!')) {
@@ -293,7 +294,20 @@ impl Lexer<'_, '_> {
         let ident: String = out[start..colon].iter().map(|ch| ch.c).filter(|&c| c != '*').collect();
         let mut norm = String::new();
         normalize_name(&ident, &mut norm);
-        !norm.is_empty() && (lookup_function(&norm).is_some() || lookup_modifier(&norm).is_some())
+        let numeric_fn = lookup_function(&norm).is_some_and(|f| {
+            matches!(f.kind(), ValueKind::Number | ValueKind::Size | ValueKind::Date | ValueKind::Duration)
+        });
+        let known = lookup_function(&norm).is_some() || lookup_modifier(&norm).is_some();
+        // A value-comparing modifier anywhere in the prefix chain (`len:>20`,
+        // `len:album:>20`, `count:tags:>2`).
+        let prefix: String = out[..colon].iter().filter(|ch| !ch.lit).map(|ch| ch.c).collect();
+        let mut seg_norm = String::new();
+        let cmp_mod = prefix.split(':').any(|seg| {
+            normalize_name(seg.trim_start_matches('?'), &mut seg_norm);
+            lookup_modifier(&seg_norm)
+                .is_some_and(|(m, _)| matches!(m, Modifier::Len | Modifier::Count | Modifier::Atoi | Modifier::Atof))
+        });
+        !norm.is_empty() && known && (numeric_fn || cmp_mod)
     }
 
     fn read_term(&mut self) -> Tok {

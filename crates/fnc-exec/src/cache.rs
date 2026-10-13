@@ -1,5 +1,6 @@
 //! Cancellation and shared caches.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -8,6 +9,8 @@ use fnc_index::IndexStore;
 use parking_lot::Mutex;
 
 use crate::paths::DirPaths;
+use crate::tree::{LinkCounts, NameLookup, TreeAggregates};
+use crate::types::{TypeNames, type_name};
 
 /// Cooperative cancellation flag shared by a query and its issuer.
 #[derive(Clone, Default, Debug)]
@@ -82,6 +85,11 @@ pub struct Caches {
     dir_paths: Mutex<Option<Arc<DirPaths>>>,
     child_counts: Mutex<Option<Arc<ChildCounts>>>,
     dir_rank: Mutex<Option<Arc<DirRank>>>,
+    tree: Mutex<Option<Arc<TreeAggregates>>>,
+    links: Mutex<Option<Arc<LinkCounts>>>,
+    names: Mutex<Option<Arc<NameLookup>>>,
+    type_names: Mutex<Option<TypeNames>>,
+    type_cache: Mutex<HashMap<Box<[u8]>, Arc<str>>>,
 }
 
 impl Caches {
@@ -141,10 +149,75 @@ impl Caches {
         r
     }
 
-    /// Drops everything (e.g. after compaction).
+    /// Descendant counts and folder sizes for `s`, rebuilt if stale.
+    pub fn tree_aggregates(&self, s: &IndexStore) -> Arc<TreeAggregates> {
+        let key = (s.instance(), s.generation());
+        if let Some(t) = self.tree.lock().as_ref().filter(|t| t.key == key) {
+            return t.clone();
+        }
+        let direct = self.child_counts(s);
+        let t = Arc::new(TreeAggregates::build(s, &direct));
+        *self.tree.lock() = Some(t.clone());
+        t
+    }
+
+    /// Hard link counts for `s`, rebuilt if stale.
+    pub fn link_counts(&self, s: &IndexStore) -> Arc<LinkCounts> {
+        let mut slot = self.links.lock();
+        let key = (s.instance(), s.generation());
+        match slot.as_ref() {
+            Some(l) if l.key == key => l.clone(),
+            _ => {
+                let l = Arc::new(LinkCounts::build(s));
+                *slot = Some(l.clone());
+                l
+            }
+        }
+    }
+
+    /// Name lookup index for `s`, rebuilt if stale.
+    pub fn name_lookup(&self, s: &IndexStore) -> Arc<NameLookup> {
+        let mut slot = self.names.lock();
+        let key = (s.instance(), s.generation());
+        match slot.as_ref() {
+            Some(l) if l.key == key => l.clone(),
+            _ => {
+                let l = Arc::new(NameLookup::build(s));
+                *slot = Some(l.clone());
+                l
+            }
+        }
+    }
+
+    /// Installs the type-name provider used by `type:` (`None` = fallback names
+    /// only). Cached descriptions are dropped when the provider changes.
+    pub fn set_type_names(&self, provider: Option<TypeNames>) {
+        let mut cur = self.type_names.lock();
+        if *cur != provider {
+            *cur = provider;
+            self.type_cache.lock().clear();
+        }
+    }
+
+    /// Type description of a file with folded extension `ext` (cached per extension).
+    pub fn type_description(&self, ext: &[u8]) -> Arc<str> {
+        if let Some(d) = self.type_cache.lock().get(ext) {
+            return d.clone();
+        }
+        let provider = self.type_names.lock().clone();
+        let d: Arc<str> = type_name(&String::from_utf8_lossy(ext), provider.as_ref()).into();
+        self.type_cache.lock().insert(ext.into(), d.clone());
+        d
+    }
+
+    /// Drops everything (e.g. after compaction). The type-name provider stays.
     pub fn clear(&self) {
         *self.dir_paths.lock() = None;
         *self.child_counts.lock() = None;
         *self.dir_rank.lock() = None;
+        *self.tree.lock() = None;
+        *self.links.lock() = None;
+        *self.names.lock() = None;
+        self.type_cache.lock().clear();
     }
 }

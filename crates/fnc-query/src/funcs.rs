@@ -77,6 +77,8 @@ funcs! {
     DescendantFolderCount: Number = ["descendantfoldercount"],
     Sibling: Text = ["sibling"],
     SiblingCount: Number = ["siblingcount"],
+    ParentSibling: Text = ["parentsibling"],
+    AncestorSibling: Text = ["ancestorsibling"],
     Depth: Number = ["depth", "parentscount"],
     Empty: Flag = ["empty"],
     Root: Flag = ["root"],
