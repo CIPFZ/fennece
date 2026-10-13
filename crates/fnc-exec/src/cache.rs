@@ -94,6 +94,8 @@ pub struct Caches {
     hashes: Mutex<Option<Arc<fnc_props::hash::HashCache>>>,
     /// Properties read on demand (across queries).
     on_demand: Mutex<Option<Arc<crate::ext::OnDemandCache>>>,
+    /// Link targets, signatures and recycle bin records read on demand (across queries).
+    file_texts: Mutex<Option<Arc<crate::ext::FileTextCache>>>,
 }
 
 impl Caches {
@@ -223,6 +225,12 @@ impl Caches {
     /// changes and compaction).
     pub fn on_demand_props(&self) -> Arc<crate::ext::OnDemandCache> {
         self.on_demand.lock().get_or_insert_with(Default::default).clone()
+    }
+
+    /// Cache of link targets, file signatures and recycle bin records read from files
+    /// (keyed by file identity).
+    pub fn file_texts(&self) -> Arc<crate::ext::FileTextCache> {
+        self.file_texts.lock().get_or_insert_with(Default::default).clone()
     }
 
     /// Drops everything (e.g. after compaction). The type-name provider stays.

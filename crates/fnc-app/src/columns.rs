@@ -7,7 +7,7 @@
 
 use fnc_core::settings::{DateFormat, SizeFormat};
 use fnc_core::{EntryFlags, EntryId, FileTime};
-use fnc_exec::{ResultSet, SortColumn, SortKey};
+use fnc_exec::{ResultSet, Shared, SortColumn, SortKey};
 use fnc_index::IndexSnapshot;
 use fnc_props::{PropType, PropertyId, PropertyStore};
 
@@ -103,6 +103,12 @@ pub fn set_custom_columns(spec: &[String]) {
 
 fn custom(i: u8) -> Option<CustomColumn> {
     CUSTOM.with(|c| c.borrow().get(usize::from(i)).cloned())
+}
+
+/// The custom columns' formulas for `SearchOptions::formulas` (the same `Arc`s until
+/// [`set_custom_columns`] runs again, so options compare equal).
+pub fn custom_formulas() -> Vec<Option<Shared<fnc_query::formula::Formula>>> {
+    CUSTOM.with(|c| c.borrow().iter().map(|(_, f)| f.clone().map(Shared::new)).collect())
 }
 
 impl ColumnId {
@@ -236,25 +242,25 @@ impl ColumnId {
         }
     }
 
-    /// Sort key of this column (`None`: not sortable). `Type` sorts by extension.
+    /// Sort key of this column (`None`: not sortable). Custom columns sort by their
+    /// formula's value (computed by the engine), `Type` by the type description.
     pub fn sort(self) -> Option<SortKey> {
         match self {
             ColumnId::Property(p) => Some(SortKey::Property(p)),
-            // SPEC-GAP: formula columns are not sortable (values are computed per row).
-            ColumnId::DupeGroup | ColumnId::Custom(_) => None,
+            ColumnId::Custom(i) => Some(SortKey::Custom(i)),
+            ColumnId::DupeGroup => None,
             c => Some(SortKey::Column(c.sort_column())),
         }
     }
 
-    // SPEC-GAP: sorting by the type *description* needs the registry names in the
-    // engine; extension order groups the same types together.
     fn sort_column(self) -> SortColumn {
         match self {
             ColumnId::Name | ColumnId::DupeGroup | ColumnId::Property(_) | ColumnId::Custom(_) => SortColumn::Name,
             ColumnId::Relevance => SortColumn::Relevance,
             ColumnId::Path => SortColumn::Path,
             ColumnId::Size => SortColumn::Size,
-            ColumnId::Extension | ColumnId::Type => SortColumn::Extension,
+            ColumnId::Extension => SortColumn::Extension,
+            ColumnId::Type => SortColumn::Type,
             ColumnId::DateModified => SortColumn::DateModified,
             ColumnId::DateCreated => SortColumn::DateCreated,
             ColumnId::DateAccessed => SortColumn::DateAccessed,
@@ -336,6 +342,7 @@ pub fn parse_sort(s: &str) -> Vec<(SortKey, bool)> {
             };
             SortColumn::parse(col)
                 .map(SortKey::Column)
+                .or_else(|| CUSTOM_KEYS.iter().position(|c| *c == col).map(|i| SortKey::Custom(i as u8)))
                 .or_else(|| PropertyId::lookup(col).map(SortKey::Property))
                 .map(|c| (c, asc))
         })
@@ -347,15 +354,9 @@ pub fn parse_sort(s: &str) -> Vec<(SortKey, bool)> {
 pub fn sort_spec(s: &str, folders_first: fnc_core::settings::FoldersFirst) -> Option<fnc_exec::SortSpec> {
     let keys = parse_sort(s);
     let (&(first, asc), rest) = keys.split_first()?;
-    let mut spec = match first {
-        SortKey::Column(c) => fnc_exec::SortSpec::by(c, asc, folders_first),
-        SortKey::Property(p) => fnc_exec::SortSpec::by_property(p, asc, folders_first),
-    };
+    let mut spec = fnc_exec::SortSpec::by_key(first, asc, folders_first);
     for &(k, asc) in rest {
-        match k {
-            SortKey::Column(c) => spec.push_key(c, asc),
-            SortKey::Property(p) => spec.push_property_key(p, asc),
-        }
+        spec.push_sort_key(k, asc);
     }
     Some(spec)
 }
@@ -367,6 +368,7 @@ pub fn sort_setting(spec: &fnc_exec::SortSpec) -> String {
             let name = match k {
                 SortKey::Column(c) => sort_key(c),
                 SortKey::Property(p) => p.name(),
+                SortKey::Custom(i) => ColumnId::Custom(i).key(),
             };
             format!("{name}-{}", if asc { "ascending" } else { "descending" })
         })
@@ -380,6 +382,7 @@ fn sort_key(c: SortColumn) -> &'static str {
         SortColumn::Path => "path",
         SortColumn::Size => "size",
         SortColumn::Extension => "extension",
+        SortColumn::Type => "type",
         SortColumn::DateModified => "date-modified",
         SortColumn::DateCreated => "date-created",
         SortColumn::DateAccessed => "date-accessed",
@@ -570,6 +573,9 @@ mod tests {
         assert_eq!(columns_setting(&cols)[2], "camera-maker:160");
         assert_eq!(ColumnId::Property(PropertyId::WIDTH).sort(), Some(SortKey::Property(PropertyId::WIDTH)));
         assert_eq!(ColumnId::DupeGroup.sort(), None);
+        assert_eq!(ColumnId::Custom(2).sort(), Some(SortKey::Custom(2)));
+        assert_eq!(ColumnId::Type.sort(), Some(SortKey::Column(SortColumn::Type)));
+        assert_eq!(ColumnId::Extension.sort(), Some(SortKey::Column(SortColumn::Extension)));
         assert!(
             ColumnId::Property(PropertyId::WIDTH).numeric()
                 && ColumnId::Property(PropertyId::WIDTH).sort_descending_first()
@@ -597,6 +603,28 @@ mod tests {
                 (SortKey::Property(PropertyId::DATE_TAKEN), false)
             ]
         );
+        // Custom formula columns and the type column round-trip too (session tabs).
+        let ff = fnc_core::settings::FoldersFirst::Ascending;
+        let mut spec = fnc_exec::SortSpec::by_custom(0, false, ff);
+        spec.push_key(SortColumn::Type, true);
+        spec.push_custom_key(8, true);
+        let text = sort_setting(&spec);
+        assert_eq!(text, "custom1-descending;type-ascending;custom9-ascending");
+        assert_eq!(sort_spec(&text, ff), Some(spec));
+        assert_eq!(parse_sort("custom3"), [(SortKey::Custom(2), true)]);
+        assert!(parse_sort("custom10").is_empty());
+    }
+
+    #[test]
+    fn custom_formulas_follow_the_setting() {
+        set_custom_columns(&["Len=LEN($name:)".to_string(), "$size:*2".to_string(), "bad=LEN(".to_string()]);
+        let a = custom_formulas();
+        assert_eq!(a.len(), 3);
+        assert!(a[0].is_some() && a[1].is_some() && a[2].is_none());
+        assert_eq!(a, custom_formulas(), "same Arcs while the setting is unchanged");
+        set_custom_columns(&["Len=LEN($name:)".to_string()]);
+        assert_ne!(custom_formulas(), a);
+        set_custom_columns(&[]);
     }
 
     #[test]

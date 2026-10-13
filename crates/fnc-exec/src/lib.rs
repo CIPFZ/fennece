@@ -16,6 +16,7 @@ pub mod engine;
 pub mod eval;
 pub mod exec;
 pub mod ext;
+pub mod files;
 pub mod formula;
 pub mod fuzzy;
 pub mod highlight;
@@ -38,12 +39,14 @@ pub use exec::{
 pub use ext::{ExecWarning, ExtCtx, Shared, SlowPolicy, content_highlights};
 pub use highlight::Highlighter;
 pub use semantic::{SemHit, SemanticSource};
-pub use sort::{SortColumn, SortKey, SortSpec, sort_ids, sort_ids_ext};
+pub use sort::{SortColumn, SortExt, SortKey, SortSpec, sort_ids, sort_ids_ext, sort_ids_with};
 pub use types::{TypeNameFn, TypeNames};
 
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_ext;
+#[cfg(test)]
+mod tests_files;
 #[cfg(test)]
 mod tests_sem;

@@ -349,6 +349,7 @@ msg-ini-imported = Imported { $count } settings from Everything.ini
 ## M3: property, content and duplicate UI
 index-extracting = Properties/content: { $done } / { $total }
 warn-not-indexed = { $name }: not indexed (enable the index in Options or use notindexed:{ $name }:)
+warn-no-file-access = { $name }: needs to read files, which this search cannot do
 warn-slow-limit = Slow search stopped after reading { $count } files; add filters to narrow it.
 warn-semantic = Semantic search: { $reason }
 value-yes = Yes

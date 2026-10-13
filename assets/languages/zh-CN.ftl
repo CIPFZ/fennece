@@ -337,6 +337,7 @@ msg-ini-imported = 已从 Everything.ini 导入 { $count } 项设置
 ## M3：属性、内容与查重界面
 index-extracting = 属性/内容索引：{ $done } / { $total }
 warn-not-indexed = { $name }：未建立索引（请在选项中启用索引，或使用 notindexed:{ $name }:）
+warn-no-file-access = { $name }：需要读取文件，此搜索无法读取
 warn-slow-limit = 慢速搜索已读取 { $count } 个文件后停止；请添加筛选条件缩小范围。
 warn-semantic = 语义搜索：{ $reason }
 value-yes = 是

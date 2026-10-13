@@ -665,7 +665,31 @@ impl Parser<'_> {
                 p += 1;
             }
             let ident_end = p;
-            let star = unq(p, '*') && unq(p + 1, ':');
+            // `parent+N:` — the `+N` belongs to the function name (N = 0–255; a larger
+            // N makes the whole term literal text, like any unknown name).
+            let mut parent_up = None;
+            if unq(p, '+') {
+                let mut q = p + 1;
+                while q < n && !chars[q].lit && chars[q].c.is_ascii_digit() {
+                    q += 1;
+                }
+                if q > p + 1 && unq(q, ':') {
+                    normalize_name(&text_of(&chars[s..ident_end]), &mut norm);
+                    if norm == "parent" {
+                        match text_of(&chars[p + 1..q]).parse::<u8>() {
+                            Ok(up) => {
+                                parent_up = Some(up);
+                                p = q;
+                            }
+                            Err(_) => {
+                                p = save;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            let star = parent_up.is_none() && unq(p, '*') && unq(p + 1, ':');
             if star {
                 p += 1;
             }
@@ -685,6 +709,16 @@ impl Parser<'_> {
             normalize_name(&ident, &mut norm);
             let span = chars[save].pos..char_end(chars, p + 1, range_end);
             p += 1; // colon
+            if let Some(up) = parent_up {
+                self.spans.push(Span { range: span, kind: SpanKind::Function });
+                return Prefix {
+                    mods,
+                    global,
+                    head: Head::Func(FuncId::ParentN(up)),
+                    value_start: p,
+                    literal_value: false,
+                };
+            }
             // `count:<digits>` is the Everything 1.5 result limit; `count:` before
             // anything else (`count:tags:>2`) is the comparison modifier.
             if !star && norm == "count" && p < n && chars[p..].iter().all(|ch| !ch.lit && ch.c.is_ascii_digit()) {

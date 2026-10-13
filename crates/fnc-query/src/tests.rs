@@ -188,6 +188,22 @@ const CASES: &[(&str, &str)] = &[
     ("artist:\"John Doe\"", "artist='John Doe'"),
     ("parent:c:\\windows", "parent='c:\\windows'"),
     ("infolder:\"c:\\program files\"", "parent='c:\\program files'"),
+    // --- parent+N: the `+N` is part of the function name ---
+    ("parent+1:c:\\windows", "parent+1='c:\\windows'"),
+    ("Parent+12:\"c:\\a b\"", "parent+12='c:\\a b'"),
+    ("parent+0:x", "parent+0='x'"),
+    ("parent+255:x", "parent+255='x'"),
+    ("parent+256:x", "'parent+256:x'"),
+    ("parent+:x", "'parent+:x'"),
+    ("parent+2", "'parent+2'"),
+    ("ancestor+2:x", "'ancestor+2:x'"),
+    ("!parent+1:x", "(not parent+1='x')"),
+    ("case:parent+1:X", "case:parent+1='X'"),
+    ("\"parent+1:x\"", "'parent+1:x'"),
+    ("filelistfilename:backup.efu", "filelistfilename='backup.efu'"),
+    ("fsi:jpg;png", "fsi={'jpg','png'}"),
+    ("recyclebinoriginalpath:c:\\x", "recycled='c:\\x'"),
+    ("linktarget:notepad.exe", "target='notepad.exe'"),
     ("child:*.jpg", "child='*.jpg'"),
     ("childcount:>5", "childcount=>'5'"),
     ("depth:3", "depth='3'"),
@@ -805,6 +821,12 @@ fn psexp(n: &Node) -> String {
             }
             Pred::DateWild(_, w) => format!("datewild({:b})", w.mask),
             Pred::Unsupported(f) => format!("unsupported({})", f.name()),
+            Pred::ParentUp(n, t) => format!("parentup{n}({})", tsexp(t)),
+            Pred::Parent(t) => format!("parent({})", tsexp(t)),
+            Pred::FileListName(t) => format!("filelistname({})", t.as_ref().map_or("*".into(), tsexp)),
+            Pred::LinkTarget(t) => format!("target({})", t.as_ref().map_or("*".into(), tsexp)),
+            Pred::Recycled(t) => format!("recycled({})", t.as_ref().map_or("*".into(), tsexp)),
+            Pred::Signature(names) => format!("fsi({})", names.join(",")),
             Pred::Invalid(_) => "invalid".into(),
             Pred::Prop(p) => {
                 use crate::plan::PropTest;
@@ -917,10 +939,31 @@ const PLAN_CASES: &[(&str, &str)] = &[
     ("startwith:abc", "sw:'abc'"),
     ("endwith:abc", "ew:'abc'"),
     ("child:*.jpg", "child(wild:'*.jpg')"),
-    ("target:x", "unsupported(target)"),
-    ("fsi:png", "unsupported(fsi)"),
-    ("recycled:", "unsupported(recycled)"),
-    ("filelistfilename:x.txt", "unsupported(filelistfilename)"),
+    // ---- file lists, parent+N, links, signatures, recycle bin ----
+    ("filelistfilename:x.txt", "filelistname(sub:'x.txt')"),
+    ("filelistfilename:", "filelistname(*)"),
+    ("filelistfilename:*.efu", "filelistname(wild:'*.efu')"),
+    ("filelistfilename:d:\\lists\\a.efu", "filelistname(sub:path'd:\\lists\\a.efu')"),
+    ("filelistfilename:a;b", "(or filelistname(sub:'a') filelistname(sub:'b'))"),
+    ("parent+0:c:\\x", "parent(eq:path'c:\\x')"),
+    ("parent+2:c:\\x\\", "parentup2(eq:path'c:\\x')"),
+    ("parent+1:c:\\a\\*", "parentup1(wild:path'c:\\a\\*')"),
+    ("target:notepad", "target(sub:path'notepad')"),
+    ("target:", "target(*)"),
+    ("target:*.exe", "target(wild:'*.exe')"),
+    ("target:c:\\windows\\*", "target(wild:path'c:\\windows\\*')"),
+    ("shortcuttarget:http*://*", "target(wild:path'http*://*')"),
+    ("linktarget:a;b", "(or target(sub:path'a') target(sub:path'b'))"),
+    ("case:target:X", "target(sub:path'X'+case)"),
+    ("fsi:png", "(and IsDir fsi(png))"),
+    ("fsi:JPEG;png;jpg", "(and IsDir fsi(jpg,png))"),
+    ("filesignature:", "(and IsDir fsi())"),
+    ("fsi:bogus", "invalid"),
+    ("fsi:zip !ext:zip", "(and (not Ext) (and IsDir fsi(zip)))"),
+    ("recycled:", "recycled(*)"),
+    ("recyclebinoriginalpath:", "recycled(*)"),
+    ("recycled:report", "recycled(sub:path'report')"),
+    ("recycled:c:/users/*", "recycled(wild:path'c:\\users\\*')"),
     // ---- M3: properties ----
     ("width:>4000", "width[4001..max]"),
     ("width:1920;3840", "width[1920..1921,3840..3841]"),
@@ -1138,6 +1181,8 @@ fn display_round_trips_new_syntax() {
         "<folder:> folder:",
         "type:\"Text Document\"",
         "nopinyin:a",
+        "parent+3:\"c:\\a b\" !parent+0:x",
+        "fsi:jpg;png target:*.exe recycled: filelistfilename:a.efu",
     ] {
         let a = parse(q, &ParseEnv::default()).ast;
         let s = to_query_string(&a, Precedence::Or);
@@ -1217,7 +1262,8 @@ fn plan_values() {
     }
     assert!(matches!(plan_of("size:banana"), Node::Leaf(Pred::Invalid(_))));
     assert!(matches!(plan_of("width:>100"), Node::Leaf(Pred::Prop(_))));
-    assert!(matches!(plan_of("target:x"), Node::Leaf(Pred::Unsupported(_))));
+    assert!(matches!(plan_of("target:x"), Node::Leaf(Pred::LinkTarget(Some(_)))));
+    assert!(matches!(plan_of("si:x"), Node::Leaf(Pred::Unsupported(_))));
     assert!(matches!(plan_of("audio:"), Node::Leaf(Pred::Ext { .. })));
 }
 

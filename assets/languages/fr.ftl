@@ -378,6 +378,7 @@ msg-ini-imported = { $count ->
 }
 index-extracting = Propriétés/contenu : { $done } / { $total }
 warn-not-indexed = { $name } : non indexé (activez l'index dans les options ou utilisez notindexed:{ $name }:)
+warn-no-file-access = { $name } : doit lire les fichiers, ce qui est impossible pour cette recherche
 warn-slow-limit = Recherche lente arrêtée après la lecture de { $count } fichiers ; ajoutez des filtres pour l'affiner.
 warn-semantic = Recherche sémantique : { $reason }
 value-yes = Oui

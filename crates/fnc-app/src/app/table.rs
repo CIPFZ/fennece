@@ -153,22 +153,15 @@ impl FennecApp {
             && let Some(col) = cols.get(i).map(|c| c.id)
             && let Some(key) = col.sort()
         {
-            use fnc_exec::SortKey;
             let first_asc = !col.sort_descending_first();
             let single = self.v.sort.then.iter().all(Option::is_none);
             let primary = self.v.sort.sort_keys().next().map(|(k, _)| k);
             if ctrl {
-                match key {
-                    SortKey::Column(c) => self.v.sort.push_key(c, first_asc),
-                    SortKey::Property(p) => self.v.sort.push_property_key(p, first_asc),
-                }
+                self.v.sort.push_sort_key(key, first_asc);
             } else if primary == Some(key) && single {
                 self.v.sort.ascending = !self.v.sort.ascending;
             } else {
-                self.v.sort = match key {
-                    SortKey::Column(c) => fnc_exec::SortSpec::by(c, first_asc, self.settings.folders_first),
-                    SortKey::Property(p) => fnc_exec::SortSpec::by_property(p, first_asc, self.settings.folders_first),
-                };
+                self.v.sort = fnc_exec::SortSpec::by_key(key, first_asc, self.settings.folders_first);
             }
             self.send_search();
             // Keep typing in the search box after sorting.

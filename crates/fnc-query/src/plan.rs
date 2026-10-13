@@ -295,6 +295,25 @@ pub enum Pred {
     Eval(crate::formula::EvalPred),
     /// Set function before hoisting (never present in a finished plan's tree).
     Set(SetOp),
+    /// `parent+N:` with N ≥ 1: the folder N levels above the entry's parent (so the entry
+    /// is exactly N+1 levels below it) has a matching full path.
+    ParentUp(u8, TextPred),
+    /// `filelistfilename:` — entries of mounted file lists (volume kind `filelist`) whose
+    /// list file matches: the pattern is matched against the list's file name, or its full
+    /// path when it contains a separator. `None` = any file list.
+    FileListName(Option<TextPred>),
+    /// `target:` / `linktarget:` / `shortcuttarget:` — the target of a symbolic link,
+    /// junction, `.lnk` shell link or `.url` internet shortcut matches (`None` = any link
+    /// whose target can be read). Wildcard patterns without a separator match the last
+    /// component of the target, everything else the whole target.
+    LinkTarget(Option<TextPred>),
+    /// `fsi:` / `filesignature:` — the file type detected from the content's magic bytes
+    /// is one of these canonical names; empty = the signature is unknown.
+    Signature(Vec<&'static str>),
+    /// `recycled:` / `recyclebinoriginalpath:` — deleted items in `\$Recycle.Bin\<SID>\`
+    /// (the `$R…` entries and everything below them); with a pattern, their original path
+    /// (from the `$I…` record) matches.
+    Recycled(Option<TextPred>),
     /// Function not implemented yet: matches nothing, reported in diagnostics.
     Unsupported(FuncId),
     /// Value could not be interpreted: matches nothing.
@@ -845,7 +864,18 @@ impl Cx<'_> {
             F::FullPath => self.text_items(t, Target::FullPath, Pred::Text),
             F::PathPart => self.text_items(t, Target::PathPart, Pred::Text),
             F::Ext => self.ext(t),
-            F::Parent => self.folder_items(t, Pred::Parent),
+            F::Parent | F::ParentN(0) => self.folder_items(t, Pred::Parent),
+            F::ParentN(up) => self.folder_items(t, |p| Pred::ParentUp(up, p)),
+            F::FileListFilename => match &t.value {
+                Value::Empty => leaf(Pred::FileListName(None)),
+                _ => self.text_items(t, Target::Name, |p| Pred::FileListName(Some(p))),
+            },
+            F::Target => self.link_target(t),
+            F::FileSignature => self.signature(t),
+            F::Recycled => match &t.value {
+                Value::Empty => leaf(Pred::Recycled(None)),
+                _ => self.text_items(t, Target::FullPath, |p| Pred::Recycled(Some(p))),
+            },
             F::Ancestor => self.folder_items(t, Pred::Ancestor),
             F::Child => self.text_items(t, Target::Name, Pred::Child),
             F::ChildCount => self.num_node(f, NumProp::ChildCount, &t.value),
@@ -1009,6 +1039,58 @@ impl Cx<'_> {
             alts.insert(0, Node::Leaf(Pred::Ext { exts, none: false }));
         }
         or_node(alts)
+    }
+
+    /// `target:` patterns: wildcards without a separator match the target's last
+    /// component (`target:*.exe`), everything else the whole target.
+    fn link_target(&mut self, t: &Term) -> Node {
+        let items: Vec<&str> = match &t.value {
+            Value::Empty => return Node::Leaf(Pred::LinkTarget(None)),
+            Value::Text(s) => vec![s.as_str()],
+            Value::List(v) => v.iter().filter_map(Value::as_text).collect(),
+            other => {
+                self.diags.push(PlanDiag::InvalidValue(FuncId::Target, format!("{other:?}")));
+                return Node::Nothing;
+            }
+        };
+        or_node(
+            items
+                .into_iter()
+                .map(|s| {
+                    let mut p = self.value_text_pred(t.mods, s);
+                    let whole = p.kind != PatternKind::Wildcard || p.pattern.contains(['\\', '/']);
+                    p.target = if whole { Target::FullPath } else { Target::Name };
+                    Node::Leaf(Pred::LinkTarget(Some(p)))
+                })
+                .collect(),
+        )
+    }
+
+    /// `fsi:jpg;png` (canonical names and aliases); `fsi:` = unknown signature. Only
+    /// files have a signature.
+    fn signature(&mut self, t: &Term) -> Node {
+        let items: Vec<&str> = match &t.value {
+            Value::Empty => Vec::new(),
+            Value::Text(s) => vec![s.as_str()],
+            Value::List(v) => v.iter().filter_map(Value::as_text).collect(),
+            other => {
+                self.diags.push(PlanDiag::InvalidValue(FuncId::FileSignature, format!("{other:?}")));
+                return Node::Nothing;
+            }
+        };
+        let mut names = Vec::new();
+        for item in items.iter().flat_map(|s| s.split([';', '|'])).map(str::trim).filter(|s| !s.is_empty()) {
+            match fnc_props::signature::canonical(item) {
+                Some(n) => names.push(n),
+                None => {
+                    self.diags.push(PlanDiag::InvalidValue(FuncId::FileSignature, item.to_string()));
+                    return Node::Leaf(Pred::Invalid(item.to_string()));
+                }
+            }
+        }
+        names.sort_unstable();
+        names.dedup();
+        and_node(vec![Node::Leaf(Pred::IsDir(false)), Node::Leaf(Pred::Signature(names))])
     }
 
     fn kind(&mut self, t: &Term) -> Node {
@@ -1328,7 +1410,14 @@ pub fn cost(n: &Node) -> u32 {
                 let fancy = if t.pinyin != PinyinMode::Off || t.fuzzy { 8 } else { 0 };
                 base + target + if options { 6 } else { 0 } + fancy
             }
-            Pred::Parent(_) | Pred::Ancestor(_) | Pred::Child(_) => 9,
+            Pred::Parent(_) | Pred::Ancestor(_) | Pred::Child(_) | Pred::ParentUp(..) => 9,
+            Pred::FileListName(_) => 2,
+            Pred::Recycled(None) => 3,
+            // File reads, but only for links / recycle bin items.
+            Pred::LinkTarget(_) => 120,
+            Pred::Recycled(Some(_)) => 110,
+            // Reads the head of every candidate file.
+            Pred::Signature(_) => 180,
             // Indexed properties: one bit lookup per entry after a column pass at compile
             // time; unindexed ones may read files (slow path), so they run last.
             Pred::Prop(p) => {

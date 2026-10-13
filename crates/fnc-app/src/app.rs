@@ -427,6 +427,7 @@ impl FennecApp {
         let mut o = SearchOptions::from_settings(&self.settings);
         o.macros.extend(self.filters.macros());
         o.type_names = Some(self.type_names.clone());
+        o.formulas = crate::columns::custom_formulas();
         self.stores.apply_options(&mut o);
         o.semantic = self.semantic_source();
         o.semantic_fuse = o.semantic.is_some() && self.settings.semantic_smart;
@@ -2030,6 +2031,7 @@ fn warning_text(w: &fnc_exec::ExecWarning) -> String {
             t_args("warn-slow-limit", &[("count", format::group_digits(*n as u64).into())])
         }
         fnc_exec::ExecWarning::Semantic(reason) => t_args("warn-semantic", &[("reason", reason.clone().into())]),
+        fnc_exec::ExecWarning::NoFileAccess(name) => t_args("warn-no-file-access", &[("name", (*name).into())]),
     }
 }
 
