@@ -4,8 +4,10 @@
 //! The caller prepares `FENNEC_WIN_FILES` (a folder with `notepad.lnk` → notepad.exe,
 //! `jdir` = junction and `sdir` = directory symlink to `target-dir`, `sfile` = file
 //! symlink to `target-dir\target.txt`, `site.url`, `photo.dat` = a JPEG, `exe.dat` = a PE
-//! executable, `lib.dat` = a DLL, `arch.dat` = a ZIP) and deletes one file to the recycle
-//! bin, passing its original path in `FENNEC_WIN_RECYCLED`; then
+//! executable, `lib.dat` = a DLL, `arch.dat` = a ZIP) and, as an interactive user (SYSTEM
+//! has no recycle bin: its deletes are permanent), deletes one file — and optionally a
+//! folder with `sub\inner.txt` — to the recycle bin on the same drive, passing the
+//! original paths in `FENNEC_WIN_RECYCLED` / `FENNEC_WIN_RECYCLED_DIR`; then
 //! `cargo test -p fnc-exec --test windows_files -- --ignored --nocapture`.
 
 #![cfg(windows)]
@@ -95,4 +97,12 @@ fn real_links_signatures_and_recycle_bin() {
     assert!(orig[0].starts_with("$R"));
     let file_name = Path::new(&recycled).file_name().unwrap().to_string_lossy().into_owned();
     assert_eq!(names(&format!("recycled:\"{file_name}\"")), orig);
+    // A deleted folder: its descendants carry the folder's original path + suffix.
+    if let Ok(folder) = std::env::var("FENNEC_WIN_RECYCLED_DIR") {
+        assert_eq!(names(&format!("wfn:recycled:\"{folder}\\sub\\inner.txt\"")), ["inner.txt"]);
+        let below = names(&format!("recycled:\"{folder}\\\""));
+        assert!(has(&below, "sub") && has(&below, "inner.txt"), "{below:?}");
+        let top = names(&format!("wfn:recycled:\"{folder}\""));
+        assert!(top.len() == 1 && top[0].starts_with("$R"), "{top:?}");
+    }
 }
