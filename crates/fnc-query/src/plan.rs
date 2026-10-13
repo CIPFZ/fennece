@@ -289,6 +289,8 @@ pub enum Pred {
     ContentHits(NumPred, Vec<ContentPred>),
     /// Hash function (`sha256:`).
     Hash(HashPred),
+    /// Semantic term (`sem:`, Fennec extension): nearest chunks of an embedding index.
+    Semantic(crate::semantic::SemPred),
     /// Set function before hoisting (never present in a finished plan's tree).
     Set(SetOp),
     /// Function not implemented yet: matches nothing, reported in diagnostics.
@@ -504,8 +506,19 @@ pub struct PlannedQuery {
 /// Plans `ast`. If `prev` is given and the new plan only narrows it, the result's input
 /// is [`InputSet::Previous`].
 pub fn plan(ast: &Expr, env: &PlanEnv, prev: Option<&PlannedQuery>) -> PlannedQuery {
-    let mut cx = Cx { env, diags: Vec::new() };
+    let mut cx = Cx { env, diags: Vec::new(), sem_min: None, sem_top: None };
+    let merged;
+    let ast = if expr_has_semantic(ast) {
+        merged = crate::semantic::merge_thresholds(ast);
+        &merged
+    } else {
+        ast
+    };
     let mut root = cx.node(ast);
+    let semantic = crate::semantic::contains_semantic(&root);
+    if semantic {
+        crate::semantic::apply_globals(&mut root, cx.sem_min, cx.sem_top);
+    }
     let mut post = Vec::new();
     if contains_set(&root) {
         root = ext::hoist_sets(root, &mut post, &mut cx.diags);
@@ -522,10 +535,22 @@ pub fn plan(ast: &Expr, env: &PlanEnv, prev: Option<&PlannedQuery>) -> PlannedQu
     }
     order_by_cost(&mut root);
     let input = match prev {
-        Some(p) if post.is_empty() && p.post.is_empty() && narrows(&root, &p.root) => InputSet::Previous,
+        // Nearest-neighbour results do not shrink monotonically as the text grows.
+        Some(p) if post.is_empty() && p.post.is_empty() && !semantic && narrows(&root, &p.root) => InputSet::Previous,
         _ => InputSet::All,
     };
     PlannedQuery { root, input, diagnostics: cx.diags, post }
+}
+
+fn expr_has_semantic(e: &Expr) -> bool {
+    match e {
+        Expr::And(v) | Expr::Or(v) => v.iter().any(expr_has_semantic),
+        Expr::Not(c) | Expr::Macro(_, c) => expr_has_semantic(c),
+        Expr::Term(t) => t.func.is_some_and(|f| {
+            crate::semantic::func_kinds(f).is_some() || matches!(f, FuncId::SemMinScore | FuncId::SemTop)
+        }),
+        Expr::All => false,
+    }
 }
 
 fn contains_set(n: &Node) -> bool {
@@ -558,6 +583,10 @@ fn mentions_omit(n: &Node) -> bool {
 struct Cx<'e> {
     env: &'e PlanEnv,
     diags: Vec<PlanDiag>,
+    /// Query-wide `sem-min-score:` / `sem:>0.6`.
+    sem_min: Option<u16>,
+    /// Query-wide `sem-top:`.
+    sem_top: Option<u32>,
 }
 
 fn and_node(mut v: Vec<Node>) -> Node {
@@ -909,6 +938,26 @@ impl Cx<'_> {
             | F::Unique
             | F::DupeCount
             | F::DupeMax => self.set(f, t),
+            F::Semantic | F::SemName | F::SemContent | F::SemCode | F::SemImage | F::SemMinScore | F::SemTop => {
+                use crate::semantic::Planned;
+                match crate::semantic::plan_term(f, t) {
+                    // Only files have vectors, so folders never match.
+                    Planned::Leaf(p) => leaf(Pred::Semantic(p)),
+                    Planned::MinScore(m) => {
+                        self.sem_min = Some(m);
+                        Node::All
+                    }
+                    Planned::Top(n) => {
+                        self.sem_top = Some(n);
+                        Node::All
+                    }
+                    Planned::Invalid => {
+                        let text = format!("{:?}", t.value);
+                        self.diags.push(PlanDiag::InvalidValue(f, text.clone()));
+                        leaf(Pred::Invalid(text))
+                    }
+                }
+            }
             other => {
                 self.diags.push(PlanDiag::Unsupported(other));
                 leaf(Pred::Unsupported(other))
@@ -1274,6 +1323,9 @@ pub fn cost(n: &Node) -> u32 {
             Pred::Content(_) => 200,
             Pred::ContentHits(..) => 250,
             Pred::Hash(_) => 300,
+            // Runs after every cheap filter (SPEC ch.5 §3.2): its candidates decide between
+            // an exact scan of their vectors and an ANN query.
+            Pred::Semantic(_) => 1000,
             Pred::Set(_) => 0,
         },
     }

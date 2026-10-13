@@ -93,6 +93,8 @@ pub enum ExecWarning {
     NotIndexed(&'static str),
     /// The slow path stopped after this many files.
     SlowLimit(usize),
+    /// Semantic terms could not be evaluated (model missing, semantic search off).
+    Semantic(String),
 }
 
 impl fmt::Display for ExecWarning {
@@ -104,6 +106,7 @@ impl fmt::Display for ExecWarning {
             ExecWarning::SlowLimit(n) => {
                 write!(f, "slow search stopped after reading {n} files; add filters to narrow it")
             }
+            ExecWarning::Semantic(why) => write!(f, "semantic search: {why}"),
         }
     }
 }
@@ -121,6 +124,8 @@ pub struct ExtCtx<'a> {
     pub on_demand: Option<&'a Arc<dyn OnDemand>>,
     /// Slow-path policy.
     pub policy: SlowPolicy,
+    /// Embedding index for `sem:` terms (`None` = semantic search off).
+    pub semantic: Option<&'a Arc<dyn crate::semantic::SemanticSource>>,
 }
 
 impl ExtCtx<'_> {
@@ -128,7 +133,8 @@ impl ExtCtx<'_> {
     pub fn generation(&self) -> u64 {
         let p = self.props.map_or(0, |p| p.generation().wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ p.instance());
         let c = self.content.map_or(0, |c| c.generation().wrapping_mul(0xC2B2_AE3D_27D4_EB4F) ^ c.instance());
-        p ^ c.rotate_left(17)
+        let v = self.semantic.map_or(0, |v| v.generation().wrapping_mul(0x1656_67B1_9E37_79F9));
+        p ^ c.rotate_left(17) ^ v.rotate_left(41)
     }
 }
 

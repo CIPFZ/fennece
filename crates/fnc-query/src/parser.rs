@@ -296,6 +296,8 @@ impl Lexer<'_, '_> {
         normalize_name(&ident, &mut norm);
         let numeric_fn = lookup_function(&norm).is_some_and(|f| {
             matches!(f.kind(), ValueKind::Number | ValueKind::Size | ValueKind::Date | ValueKind::Duration)
+                // `sem:>0.6 text` (similarity threshold, SPEC ch.5 §3.2).
+                || crate::semantic::func_kinds(f).is_some()
         });
         let known = lookup_function(&norm).is_some() || lookup_modifier(&norm).is_some();
         // A value-comparing modifier anywhere in the prefix chain (`len:>20`,

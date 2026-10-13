@@ -52,6 +52,9 @@ pub enum SortColumn {
     NameLength,
     /// File reference number.
     Frn,
+    /// Semantic relevance (best first). Only searches with semantic terms have it; the
+    /// engine orders by the stored similarities, plain sorts treat it as a tie.
+    Relevance,
 }
 
 impl SortColumn {
@@ -76,6 +79,7 @@ impl SortColumn {
             "depth" | "parentscount" => Self::Depth,
             "namelength" | "len" => Self::NameLength,
             "frn" => Self::Frn,
+            "relevance" | "score" => Self::Relevance,
             _ => return None,
         })
     }
@@ -292,6 +296,7 @@ pub fn sort_ids_ext(
             SortColumn::Depth => s.depth(a).cmp(&s.depth(b)),
             SortColumn::NameLength => s.name(a).len().cmp(&s.name(b).len()),
             SortColumn::Frn => s.frn(a).cmp(&s.frn(b)),
+            SortColumn::Relevance => Ordering::Equal,
         }
     };
     let pkey = |k: usize, a: EntryId, b: EntryId| -> Option<Ordering> {

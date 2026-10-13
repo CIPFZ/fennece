@@ -52,6 +52,10 @@ pub struct ResultExtra {
     pub content_hits: HashMap<u32, (u32, u32)>,
     /// Results before the set functions (re-sorted and re-filtered when the sort changes).
     pub base: Option<Vec<EntryId>>,
+    /// Cosine similarity per entry for searches with semantic terms (relevance column).
+    pub sem_scores: HashMap<u32, f32>,
+    /// Fused order (`?sem:`): position per entry for the relevance sort.
+    pub fused_rank: HashMap<u32, u32>,
 }
 
 /// Ordered result of a query.
@@ -92,6 +96,16 @@ impl ResultSet {
     /// Duplicate group number (1-based, by first appearance) of `id` in a `dupe:` search.
     pub fn dupe_group(&self, id: EntryId) -> Option<u32> {
         self.extra.as_ref()?.dupe_groups.get(&id.0).copied()
+    }
+
+    /// Similarity (0–1) of `id` in a search with semantic terms.
+    pub fn relevance(&self, id: EntryId) -> Option<f32> {
+        self.extra.as_ref()?.sem_scores.get(&id.0).copied()
+    }
+
+    /// `true` if the results carry similarities (show the relevance column).
+    pub fn has_relevance(&self) -> bool {
+        self.extra.as_ref().is_some_and(|e| !e.sem_scores.is_empty() || !e.fused_rank.is_empty())
     }
 
     /// First content match of `id` in a `content:` search.
@@ -155,18 +169,47 @@ pub fn execute_filter(
         }
         _ => None,
     };
-    let compiled = Compiled::with_ext(&plan.root, s, ctx.caches, ctx.cancel, ext)?;
     let cancel = ctx.cancel;
+    // Semantic terms: nested ones become fixed hit sets; top-level ones filter the
+    // result of the other terms (SPEC ch.5 §3.2).
+    let has_semantic = fnc_query::semantic::contains_semantic(&plan.root);
+    let (top_sem, root) = match has_semantic.then(|| crate::semantic::split_top(&plan.root)).flatten() {
+        Some((preds, rest)) => (preds, std::borrow::Cow::Owned(rest)),
+        None => (Vec::new(), std::borrow::Cow::Borrowed(&plan.root)),
+    };
+    let mut sem_scores = HashMap::new();
+    let mut sem_errors = Vec::new();
+    let compiled = if has_semantic {
+        let mut nested = Vec::new();
+        crate::semantic::collect(&root, &mut nested);
+        let sets = crate::semantic::nested_sets(&nested, ext.semantic, s, &mut sem_scores, &mut sem_errors);
+        Compiled::with_ext_semantic(&root, s, ctx.caches, cancel, ext, sets)?
+    } else {
+        Compiled::with_ext(&root, s, ctx.caches, cancel, ext)?
+    };
+    let rest_all = *root == Node::All;
     let (ids, examined) = match prev {
         Some(p) => {
             let ids = filter_ids(&p.ids, s, &compiled, cancel)?;
             (ids, p.ids.len())
         }
-        None => (scan_all(&plan.root, s, &compiled, cancel)?, s.len()),
+        // Only semantic terms: their hits are the candidates (no full scan).
+        None if rest_all && !top_sem.is_empty() => (Vec::new(), 0),
+        None => (scan_all(&root, s, &compiled, cancel)?, s.len()),
+    };
+    let ids = if top_sem.is_empty() {
+        ids
+    } else {
+        let candidates = (!rest_all || prev.is_some()).then_some(ids);
+        crate::semantic::filter_top(&top_sem, candidates, ext.semantic, s, &mut sem_scores, &mut sem_errors, cancel)?
     };
     let content_hits = compiled.content_hits();
-    let warnings = compiled.warnings();
-    let extra = (!content_hits.is_empty()).then(|| Arc::new(ResultExtra { content_hits, ..ResultExtra::default() }));
+    let mut warnings = compiled.warnings();
+    for e in sem_errors {
+        warnings.push(ExecWarning::Semantic(e));
+    }
+    let extra = (!content_hits.is_empty() || has_semantic)
+        .then(|| Arc::new(ResultExtra { content_hits, sem_scores, ..ResultExtra::default() }));
     Ok(ResultSet {
         ids,
         generation: s.generation(),

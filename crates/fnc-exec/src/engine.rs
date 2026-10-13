@@ -23,7 +23,8 @@ use fnc_props::store::PropertyIndex;
 use crate::cache::{Caches, CancelToken, Cancelled};
 use crate::exec::{ExecCtx, ResultSet, apply_post, base_ids_mut, execute_filter};
 use crate::ext::{ExtCtx, Shared, SlowPolicy};
-use crate::sort::{SortSpec, sort_ids_ext};
+use crate::semantic::SemanticSource;
+use crate::sort::{SortColumn, SortSpec, sort_ids_ext};
 use crate::types::TypeNames;
 
 /// Search-wide options (from settings).
@@ -61,6 +62,11 @@ pub struct SearchOptions {
     pub on_demand: Option<Shared<dyn OnDemand>>,
     /// Slow-path policy (file read budget per search).
     pub slow: SlowPolicy,
+    /// Embedding index for `sem:` terms; `None` = semantic search off (zero cost).
+    pub semantic: Option<Shared<dyn SemanticSource>>,
+    /// Smart mode: also send plain searches to the semantic channel and fuse the
+    /// rankings (as if every search started with `?sem:`).
+    pub semantic_fuse: bool,
 }
 
 impl Default for SearchOptions {
@@ -80,6 +86,8 @@ impl Default for SearchOptions {
             hashes: None,
             on_demand: None,
             slow: SlowPolicy::default(),
+            semantic: None,
+            semantic_fuse: false,
         }
     }
 }
@@ -210,15 +218,16 @@ pub fn request_ast(req: &SearchRequest) -> (Expr, Vec<Diag>) {
     let env = ParseEnv { precedence: req.options.precedence, user_macros: &req.options.macros, env_var: Some(&lookup) };
     let mut diags = Vec::new();
     let mut and_filter = None;
-    let text_ast = if req.options.regex_all && !req.text.is_empty() {
+    let (text, _) = fnc_query::semantic::take_switch(&req.text);
+    let text_ast = if req.options.regex_all && !text.is_empty() {
         Expr::Term(Term {
             mods: ModSet::EMPTY.with(Modifier::Regex, true),
             func: None,
-            value: Value::Text(req.text.clone()),
-            raw: 0..req.text.len(),
+            value: Value::Text(text.clone()),
+            raw: 0..text.len(),
         })
     } else {
-        let p = parse(&req.text, &env);
+        let p = parse(&text, &env);
         diags = p.diagnostics;
         and_filter = p.and_filter;
         p.ast
@@ -333,6 +342,26 @@ fn worker(index: SharedIndex, rx: Receiver<Cmd>, events: Sender<EngineEvent>, no
     }
 }
 
+/// Relevance order (the ids are sorted by name already, so ties stay in name order):
+/// the fused rank when `?sem:` produced one, else by similarity; entries without a
+/// score follow in their order. `best_first` is the descending direction.
+fn relevance_order(results: &mut ResultSet, best_first: bool) {
+    let Some(extra) = results.extra.clone() else { return };
+    if !extra.fused_rank.is_empty() {
+        let rank = &extra.fused_rank;
+        results.ids.sort_by_key(|id| rank.get(&id.0).copied().unwrap_or(u32::MAX));
+    } else {
+        let s = &extra.sem_scores;
+        results.ids.sort_by(|a, b| {
+            let (x, y) = (s.get(&a.0), s.get(&b.0));
+            y.is_some().cmp(&x.is_some()).then_with(|| y.copied().unwrap_or(0.0).total_cmp(&x.copied().unwrap_or(0.0)))
+        });
+    }
+    if !best_first {
+        results.ids.reverse();
+    }
+}
+
 fn run(
     index: &SharedIndex,
     caches: &Caches,
@@ -354,6 +383,7 @@ fn run(
         hashes: req.options.hashes.as_ref().map(|h| &h.0),
         on_demand: req.options.on_demand.as_ref().map(|o| &o.0),
         policy: req.options.slow,
+        semantic: req.options.semantic.as_ref().map(|v| &v.0),
     };
     let env = PlanEnv {
         defaults: req.options.defaults,
@@ -397,9 +427,53 @@ fn run(
             Some(base) => sort_ids_ext(base, &req.sort, &snap, caches, cancel, ext.props)?,
             None => sort_ids_ext(&mut results.ids, &req.sort, &snap, caches, cancel, ext.props)?,
         }
+        if req.sort.column == SortColumn::Relevance && results.has_relevance() {
+            relevance_order(&mut results, !req.sort.ascending);
+        }
         results.sort = Some(req.sort);
         results.stats.sort = ts.elapsed();
         resorted = true;
+    }
+    // `?sem:` / smart mode: the plain search also goes to the semantic channel; its
+    // hits are fused with the literal results in their current order (RRF).
+    let (fuse_text, switch) = fnc_query::semantic::take_switch(&req.text);
+    let fuse = (switch || req.options.semantic_fuse)
+        && !fuse_text.trim().is_empty()
+        && !fnc_query::semantic::contains_semantic(&plan.root)
+        && results.extra.as_ref().is_none_or(|e| e.fused_rank.is_empty());
+    if fuse {
+        let q = fnc_query::SemPred {
+            text: fuse_text.trim().to_string(),
+            kinds: fnc_query::semantic::kinds::ALL,
+            min_score: None,
+            top: None,
+        };
+        let hits = match ext.semantic {
+            Some(src) => src.search(&q, &snap, None, src.default_top()).map_err(crate::ext::ExecWarning::Semantic),
+            None => Err(crate::ext::ExecWarning::Semantic("semantic search is off".into())),
+        };
+        match hits {
+            Ok(h) => {
+                let hits: Vec<_> = h.into_iter().filter(|(id, _)| snap.is_live(*id)).collect();
+                let mut extra = results.extra.as_deref().cloned().unwrap_or_default();
+                let fused = crate::semantic::fuse(&results.ids, &hits);
+                extra.fused_rank = fused.iter().enumerate().map(|(r, id)| (id.0, r as u32)).collect();
+                extra.sem_scores.extend(hits.iter().map(|(id, score)| (id.0, *score)));
+                results.extra = Some(Arc::new(extra));
+                if req.sort.column == SortColumn::Relevance {
+                    results.ids = if req.sort.ascending { fused.into_iter().rev().collect() } else { fused };
+                } else {
+                    // Semantic-only hits join the results in the requested order.
+                    let known: std::collections::HashSet<u32> = results.ids.iter().map(|id| id.0).collect();
+                    results.ids.extend(hits.iter().map(|(id, _)| *id).filter(|id| !known.contains(&id.0)));
+                    sort_ids_ext(&mut results.ids, &req.sort, &snap, caches, cancel, ext.props)?;
+                }
+            }
+            Err(w) => {
+                results.stats.errors.push(w.to_string());
+                results.stats.warnings.push(w);
+            }
+        }
     }
     if resorted && !plan.post.is_empty() {
         apply_post(&plan, &mut results, &snap, caches, &ext, cancel)?;
