@@ -550,6 +550,10 @@ pub struct Settings {
     /// Extract the text of PDF documents.
     #[setting(key = "content_pdf", default = true, page = "content")]
     pub content_pdf: bool,
+    /// Extract the text of other formats (doc, xls, ppt, rtf, odt, …) with the installed
+    /// IFilters, in a separate low-priority process (Windows only; ADR-035).
+    #[setting(key = "content_ifilter", default = true, page = "content")]
+    pub content_ifilter: bool,
     /// Read the content of files that are not indexed when a search needs it (slow).
     #[setting(key = "content_read_unindexed", default = true, page = "content")]
     pub content_read_unindexed: bool,

@@ -189,6 +189,9 @@ pub struct ContentLimits {
     pub office: bool,
     /// Parse PDF documents.
     pub pdf: bool,
+    /// Use the injected IFilter provider ([`crate::content::ContentProvider`]) for formats
+    /// the built-in parsers do not read (setting `content_ifilter`; Windows only).
+    pub ifilter: bool,
 }
 
 impl Default for ContentLimits {
@@ -199,6 +202,7 @@ impl Default for ContentLimits {
             time_budget: Duration::from_secs(2),
             office: true,
             pdf: true,
+            ifilter: true,
         }
     }
 }

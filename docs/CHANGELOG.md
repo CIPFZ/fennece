@@ -104,3 +104,4 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 
 ## M3+
 - [M3+][fnc-props] property table completed to 305 entries (SPEC ch.2 appendix B): Windows shell properties with `System.*` names, types and units checked against the Windows Server 2022 schema, aliases, named values, titles in all nine languages; more EXIF/ID3/OOXML fields from the built-in parsers; column chooser filter box.
+- [M3+][fnc-platform][fnc-app] IFilter content extraction in a host process (`fennec.exe -ifilter-host`, ADR-035): per-file timeout with kill/respawn, job object, low priority; fallback of `content:` and the content index for formats without a built-in parser (setting `content_ifilter`).

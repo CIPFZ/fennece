@@ -5,7 +5,10 @@ pub mod extract;
 pub mod store;
 
 #[cfg(feature = "extract")]
-pub use extract::{ContentExtractor, TextEncoding, decode, decode_forced, encoding_for_code_page, strip_html};
+pub use extract::{
+    ContentExtractor, ContentProvider, TextEncoding, decode, decode_forced, encoding_for_code_page,
+    is_foreign_document, strip_html,
+};
 pub use store::{
     ContentHit, ContentIndex, ContentMatcher, ContentSnapshot, ContentStore, MatchScratch, TextStats, text_stats,
 };

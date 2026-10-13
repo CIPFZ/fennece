@@ -15,6 +15,7 @@ mod format;
 mod history;
 mod i18n;
 mod icon;
+mod ifilter;
 mod import;
 mod indexer;
 mod ipc_host;
@@ -53,6 +54,10 @@ fn main() -> ExitCode {
 
 fn run() -> anyhow::Result<()> {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    // Hidden mode: IFilter host process of the content extraction (ADR-035).
+    if ifilter::is_host_invocation(&raw_args) {
+        ifilter::run_host();
+    }
     let cli = cli::parse(raw_args.clone());
     if cli.help {
         eprintln!("{}", cli::USAGE);
