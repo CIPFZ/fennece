@@ -179,3 +179,20 @@ fn custom_formula_columns() {
     assert!(h.query_by_label("no").is_some(), "3 MB photo");
     assert!(!h.query_all_by_label("JPG").collect::<Vec<_>>().is_empty());
 }
+
+#[test]
+fn other_tabs_follow_index_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && !a.v.results.is_empty());
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Command::NewTab);
+    h.state_mut().set_query("ext:jpg".into());
+    wait_until(&mut h, "two pictures", |a| a.v.sent_query.as_deref() == Some("ext:jpg") && a.v.results.len() == 2);
+    // The indexer only notifies the first view's engine; this tab must still follow.
+    let victim = h.state().v.results.ids[0];
+    h.state().shared.write().apply(vec![fnc_index::Change::Delete(fnc_index::EntryRef::Id(victim))]);
+    wait_until(&mut h, "tab refreshed", |a| a.v.results.len() == 1);
+}

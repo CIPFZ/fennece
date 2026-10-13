@@ -62,6 +62,7 @@ impl FennecApp {
             rename: None,
             grid_cols: 1,
             preview: Default::default(),
+            stale_refresh: None,
             find: Default::default(),
             nav: Default::default(),
         }
@@ -93,6 +94,7 @@ impl FennecApp {
             std::mem::swap(&mut self.v, &mut w.view);
             std::mem::swap(&mut self.tabs, &mut w.tabs);
             self.drain_engine();
+            self.refresh_if_stale();
             let title = if self.v.query.is_empty() {
                 crate::i18n::t("app-title")
             } else {

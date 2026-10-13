@@ -192,6 +192,9 @@ pub(super) struct View {
     grid_cols: usize,
     /// Preview panel.
     preview: preview::PreviewState,
+    /// Last refresh requested because the index moved on (tabs and windows other than
+    /// the first view are not notified by the indexer).
+    stale_refresh: Option<Instant>,
     /// Find bar (Ctrl+F in find-bar mode).
     find: findbar::FindBar,
     /// Back/forward through the tab's searches.
@@ -384,6 +387,7 @@ impl FennecApp {
                 rename: None,
                 grid_cols: 1,
                 preview: preview::PreviewState::default(),
+                stale_refresh: None,
                 find: Default::default(),
                 nav: Default::default(),
             },
@@ -470,6 +474,22 @@ impl FennecApp {
         self.v.query = q;
         self.v.complete.close();
         self.send_search();
+    }
+
+    /// Re-runs the view's search when the index changed since its results were computed
+    /// and no search is in flight (at most every 250 ms).
+    pub(super) fn refresh_if_stale(&mut self) {
+        let in_flight = self.v.latest_shown + 1 < self.v.next_id;
+        if in_flight || self.v.stale_refresh.is_some_and(|t| t.elapsed() < Duration::from_millis(250)) {
+            return;
+        }
+        let Some(s) = self.shared.try_snapshot_for(Duration::ZERO) else { return };
+        let stale = s.generation() != self.v.results.generation || s.instance() != self.v.results.instance;
+        drop(s);
+        if stale && self.v.sent_query.is_some() {
+            self.v.stale_refresh = Some(Instant::now());
+            self.v.engine.refresh();
+        }
     }
 
     fn record_history(&mut self) {
@@ -2111,6 +2131,7 @@ const HISTORY_IDLE: Duration = Duration::from_secs(3);
 impl eframe::App for FennecApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_channels(ctx);
+        self.refresh_if_stale();
         self.semantic_tick(ctx);
         if ctx.input(|i| i.viewport().close_requested())
             && !self.quitting
