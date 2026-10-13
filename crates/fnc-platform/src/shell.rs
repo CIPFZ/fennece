@@ -29,10 +29,16 @@ pub fn type_name(ext: &str, is_dir: bool) -> Option<String> {
     imp::type_name(ext, is_dir)
 }
 
-/// Whether Ctrl and `key` (an ASCII letter) are physically held down (Windows). Used
-/// where the UI toolkit swallows a shortcut (Ctrl+V with only files on the clipboard).
-pub fn ctrl_key_down(key: char) -> bool {
-    imp::ctrl_key_down(key)
+/// Counts Ctrl+V presses delivered to window `hwnd` (Windows). The UI toolkit drops
+/// Ctrl+V when the clipboard holds files but no text; this sees the raw key message.
+/// Install once; [`take_ctrl_v`] returns the presses since the last call.
+pub fn watch_ctrl_v(hwnd: isize) {
+    imp::watch_ctrl_v(hwnd)
+}
+
+/// Ctrl+V presses since the last call (see [`watch_ctrl_v`]).
+pub fn take_ctrl_v() -> u32 {
+    imp::CTRL_V.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Mouse pointer position in screen pixels (Windows), for native popup menus.
@@ -85,13 +91,39 @@ mod imp {
         }
     }
 
-    pub fn ctrl_key_down(key: char) -> bool {
-        use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL};
-        let down = |vk: i32| {
-            // SAFETY: plain query of the asynchronous key state.
-            (unsafe { GetAsyncKeyState(vk) } as u16) & 0x8000 != 0
+    pub static CTRL_V: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    unsafe extern "system" fn key_proc(
+        hwnd: windows::Win32::Foundation::HWND,
+        msg: u32,
+        wparam: windows::Win32::Foundation::WPARAM,
+        lparam: windows::Win32::Foundation::LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> windows::Win32::Foundation::LRESULT {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL};
+        use windows::Win32::UI::WindowsAndMessaging::WM_KEYDOWN;
+        // Repeats (bit 30 of lParam) are not new presses.
+        if msg == WM_KEYDOWN && wparam.0 == usize::from(b'V') && lparam.0 & (1 << 30) == 0 {
+            // SAFETY: plain query of the keyboard state of this thread's message queue.
+            if unsafe { GetKeyState(i32::from(VK_CONTROL.0)) } < 0 {
+                CTRL_V.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        // SAFETY: standard chaining to the original window procedure.
+        unsafe { windows::Win32::UI::Shell::DefSubclassProc(hwnd, msg, wparam, lparam) }
+    }
+
+    pub fn watch_ctrl_v(hwnd: isize) {
+        use windows::Win32::Foundation::HWND;
+        // SAFETY: `hwnd` is the caller's live top-level window; the subclass procedure
+        // keeps no state besides a static counter and chains to the original procedure.
+        let ok = unsafe {
+            windows::Win32::UI::Shell::SetWindowSubclass(HWND(hwnd as *mut core::ffi::c_void), Some(key_proc), 0xF3C, 0)
         };
-        down(i32::from(VK_CONTROL.0)) && down(key.to_ascii_uppercase() as i32)
+        if !ok.as_bool() {
+            tracing::debug!("cannot subclass the main window for Ctrl+V");
+        }
     }
 
     pub fn cursor_pos() -> Option<(i32, i32)> {
@@ -166,9 +198,9 @@ mod imp {
         None
     }
 
-    pub fn ctrl_key_down(_key: char) -> bool {
-        false
-    }
+    pub static CTRL_V: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    pub fn watch_ctrl_v(_hwnd: isize) {}
 
     pub fn run_elevated(exe: &Path, args: &str) -> io::Result<()> {
         let _ = (exe, args);
@@ -200,9 +232,9 @@ mod imp {
         None
     }
 
-    pub fn ctrl_key_down(_key: char) -> bool {
-        false
-    }
+    pub static CTRL_V: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    pub fn watch_ctrl_v(_hwnd: isize) {}
 
     pub fn run_elevated(exe: &Path, args: &str) -> io::Result<()> {
         let _ = (exe, args);

@@ -193,8 +193,7 @@ pub struct FennecApp {
     hwnd: isize,
     /// Alt pressed while the menu bar is hidden: show it temporarily.
     menu_peek: bool,
-    /// Ctrl+V held at the last frame (edge detection, see `handle_keys`).
-    ctrl_v_down: bool,
+
     worker_tx: Sender<WorkerMsg>,
     worker_rx: Receiver<WorkerMsg>,
     /// Exiting for real (tray "Exit", `-exit`): skip close-to-tray.
@@ -290,7 +289,6 @@ impl FennecApp {
             after: Vec::new(),
             hwnd: 0,
             menu_peek: false,
-            ctrl_v_down: false,
             worker_tx,
             worker_rx,
             quitting: false,
@@ -1088,12 +1086,12 @@ impl FennecApp {
             }
             i.events = keep;
         });
-        // Ctrl+V with only files on the clipboard produces no egui event at all.
-        let ctrl_v = kctx == KeyCtx::Results && !modal && fnc_platform::shell::ctrl_key_down('V');
-        if ctrl_v && !self.ctrl_v_down && !paste_seen {
+        // Ctrl+V with only files on the clipboard produces no egui event at all; the
+        // window subclass counts the raw key presses.
+        let raw_presses = fnc_platform::shell::take_ctrl_v();
+        if raw_presses > 0 && !paste_seen && kctx == KeyCtx::Results && !modal {
             cmds.push(Command::Paste);
         }
-        self.ctrl_v_down = ctrl_v || paste_seen;
         for k in complete_keys {
             if k == Key::Delete {
                 // Del removes the highlighted history entry (SPEC ch.3 §2).
@@ -1666,7 +1664,11 @@ impl eframe::App for FennecApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        self.hwnd = native_handle(frame);
+        let hwnd = native_handle(frame);
+        if hwnd != self.hwnd && hwnd != 0 {
+            fnc_platform::shell::watch_ctrl_v(hwnd);
+        }
+        self.hwnd = hwnd;
         self.handle_keys(&ctx);
         let alt_only = ctx.input(|i| i.modifiers.alt && !i.modifiers.ctrl && !i.modifiers.shift);
         self.menu_peek =
