@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Sender;
 use fnc_core::fold::fold_utf16_into;
 use fnc_core::{EntryId, VolumeId};
-use fnc_index::{BulkLoader, Change, ChangeBatch, EntryRef, IndexOptions, IndexStore, Meta, SharedIndex};
+use fnc_index::{BulkLoader, Change, ChangeBatch, EntryRef, IndexOptions, IndexStore, Meta, SharedIndex, VolumeKind};
 use fnc_platform::walk::FolderSource;
 use fnc_platform::{ChangeSink, EntrySink, MetaSink, RawEntry, SourceError, StopFlag, VolumeSource};
 use xxhash_rust::xxh3::xxh3_64;
@@ -76,6 +76,12 @@ pub struct IndexerConfig {
     pub usn_poll: Duration,
     /// Keep date accessed.
     pub date_accessed: bool,
+    /// Database file (`None` = `-nodb`).
+    pub db_path: Option<PathBuf>,
+    /// Ignore the database (`-reindex`).
+    pub reindex: bool,
+    /// Periodic save interval (zero = only on exit).
+    pub save_interval: Duration,
 }
 
 type Callback = Arc<dyn Fn() + Send + Sync>;
@@ -83,6 +89,7 @@ type Callback = Arc<dyn Fn() + Send + Sync>;
 /// Handle to the indexing threads.
 pub struct Indexer {
     stop: StopFlag,
+    saver: Arc<Saver>,
 }
 
 impl Indexer {
@@ -95,14 +102,19 @@ impl Indexer {
         notify: Callback,
     ) -> Self {
         let stop = StopFlag::new();
-        let s = stop.clone();
-        let spawn = std::thread::Builder::new()
-            .name("fennec-indexer".into())
-            .spawn(move || run(cfg, shared, refresh, events, notify, s));
+        let saver = Arc::new(Saver {
+            path: cfg.db_path.clone(),
+            shared: shared.clone(),
+            interval: cfg.save_interval,
+            published: false.into(),
+            last: parking_lot::Mutex::new(u64::MAX),
+        });
+        let ctx = RunCtx { shared, refresh, events, notify, stop: stop.clone(), saver: saver.clone() };
+        let spawn = std::thread::Builder::new().name("fennec-indexer".into()).spawn(move || run(cfg, ctx));
         if let Err(e) = spawn {
             tracing::error!(error = %e, "cannot start indexer");
         }
-        Self { stop }
+        Self { stop, saver }
     }
 
     /// Stops all indexing threads (they exit at their next check).
@@ -110,10 +122,22 @@ impl Indexer {
         self.stop.stop();
     }
 
+    /// Saves the database now (exit, `-save-db`); no-op before the first build.
+    pub fn save(&self) {
+        self.saver.save();
+    }
+
     /// An indexer that does nothing (the index is provided by the caller).
     #[cfg(test)]
     pub fn idle() -> Self {
-        Self { stop: StopFlag::new() }
+        let saver = Arc::new(Saver {
+            path: None,
+            shared: SharedIndex::default(),
+            interval: Duration::ZERO,
+            published: false.into(),
+            last: parking_lot::Mutex::new(0),
+        });
+        Self { stop: StopFlag::new(), saver }
     }
 }
 
@@ -197,78 +221,200 @@ fn collect_sources(cfg: &IndexerConfig, emit: &Emitter) -> Vec<Box<dyn VolumeSou
     sources
 }
 
-fn run(
-    cfg: IndexerConfig,
-    shared: SharedIndex,
-    refresh: Callback,
-    events: Sender<IndexEvent>,
-    notify: Callback,
-    stop: StopFlag,
-) {
+/// Loads the database, if configured and readable. A damaged file is kept as
+/// `index.fnx.bad` and the index is rebuilt.
+fn load_db(cfg: &IndexerConfig, emit: &Emitter) -> Option<IndexStore> {
+    let path = cfg.db_path.as_ref().filter(|_| !cfg.reindex)?;
+    if !path.exists() {
+        return None;
+    }
+    let t = Instant::now();
+    match fnc_index::persist::load(path) {
+        Ok(s) => {
+            tracing::info!(entries = s.live_count(), elapsed = ?t.elapsed(), "database loaded");
+            Some(s)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "database unusable; rebuilding");
+            let _ = std::fs::rename(path, path.with_extension("fnx.bad"));
+            emit.message(crate::i18n::t_args("index-db-rebuild", &[("message", e.to_string().into())]));
+            None
+        }
+    }
+}
+
+/// Enumerates `src` into volume `vol` of `store`; `false` if stopped.
+fn enumerate_into(
+    store: &mut IndexStore,
+    vol: VolumeId,
+    src: &mut dyn VolumeSource,
+    emit: &Emitter,
+    stop: &StopFlag,
+) -> bool {
+    let t = Instant::now();
+    let name = src.info().display_name;
+    let mut sink = LoadSink { bulk: store.bulk_load(vol), volume: name.clone(), emit, last: Instant::now() };
+    let result = src.enumerate(&mut sink, stop);
+    let stats = sink.bulk.finish();
+    match (result, stats) {
+        (Ok(()), Ok(st)) => {
+            tracing::info!(volume = %name, entries = st.entries, orphans = st.orphans, elapsed = ?t.elapsed(), "volume indexed")
+        }
+        (Err(SourceError::Stopped), _) => return false,
+        (Err(e), _) => emit.message(crate::i18n::t_args("index-error", &[("message", e.to_string().into())])),
+        (_, Err(e)) => emit.message(crate::i18n::t_args("index-error", &[("message", e.to_string().into())])),
+    }
+    if let Some((jid, usn)) = src.journal_position() {
+        store.set_journal_position(vol, jid, usn);
+    }
+    if src.enumerates_metadata()
+        && let Some(v) = store.volume_mut(vol)
+    {
+        v.metadata_complete = true;
+    }
+    true
+}
+
+fn run(cfg: IndexerConfig, ctx: RunCtx) {
+    let RunCtx { shared, refresh, events, notify, stop, saver } = ctx;
     let emit = Emitter { tx: events, notify };
     let t0 = Instant::now();
     emit.status(IndexStatus::Starting);
-    let mut store = IndexStore::new(IndexOptions { date_accessed: cfg.date_accessed });
+    let mut store =
+        load_db(&cfg, &emit).unwrap_or_else(|| IndexStore::new(IndexOptions { date_accessed: cfg.date_accessed }));
+    let loaded = !store.is_empty();
 
+    // File lists and folder indexes are re-read on every start (their content can
+    // change while Fennec is not running); their old records are reused.
+    let stale: Vec<VolumeId> = store
+        .volumes()
+        .iter()
+        .filter(|v| !v.is_retired() && matches!(v.info.kind, VolumeKind::FileList | VolumeKind::Folder))
+        .map(|v| v.id)
+        .collect();
+    for v in stale {
+        store.drop_volume(v);
+    }
     for efu in &cfg.file_lists {
         emit.status(IndexStatus::Building { volume: efu.display().to_string(), done: 0 });
-        if let Err(e) = fnc_index::efu::load_efu_file(&mut store, efu) {
-            emit.message(crate::i18n::t_args("index-error", &[("message", e.to_string().into())]));
+        match fnc_index::efu::load_efu_file(&mut store, efu) {
+            Ok((vol, _)) => {
+                if let Some(v) = store.volume_mut(vol) {
+                    v.metadata_complete = true;
+                }
+            }
+            Err(e) => emit.message(crate::i18n::t_args("index-error", &[("message", e.to_string().into())])),
         }
     }
 
     let mut sources = collect_sources(&cfg, &emit);
     let mut volumes: Vec<(VolumeId, Box<dyn VolumeSource>)> = Vec::new();
+    let mut kept: std::collections::HashSet<VolumeId> = std::collections::HashSet::new();
     for mut src in sources.drain(..) {
         if stop.is_stopped() {
             return;
         }
         let info = src.info();
-        let name = info.display_name.clone();
-        let vol = match store.add_volume(info, Some(src.root_frn())) {
-            Ok(v) => v,
-            Err(e) => {
-                emit.message(crate::i18n::t_args("index-error", &[("message", e.to_string().into())]));
-                continue;
+        let journaled = matches!(info.kind, VolumeKind::Ntfs | VolumeKind::Refs);
+        let existing = store
+            .volumes()
+            .iter()
+            .find(|v| journaled && !v.is_retired() && v.info.kind == info.kind && v.info.guid == info.guid)
+            .map(|v| (v.id, v.usn_journal_id, v.next_usn));
+        let vol = match existing {
+            Some((vol, jid, usn)) => {
+                kept.insert(vol);
+                if let Some(v) = store.volume_mut(vol) {
+                    v.info = info.clone();
+                    v.online = true;
+                }
+                match src.resume(jid, usn) {
+                    Ok(()) => {
+                        tracing::info!(volume = %info.display_name, next_usn = usn, "resuming from the database");
+                        volumes.push((vol, src));
+                        continue;
+                    }
+                    Err(e) => {
+                        // IDX-05: journal deleted/recreated or wrapped → rebuild this volume only.
+                        tracing::info!(volume = %info.display_name, reason = %e, "rebuilding volume");
+                        emit.message(crate::i18n::t_args(
+                            "index-volume-rebuild",
+                            &[("volume", info.display_name.clone().into())],
+                        ));
+                        store.clear_volume(vol);
+                        if let Some(v) = store.volume_mut(vol) {
+                            v.metadata_complete = false;
+                        }
+                        vol
+                    }
+                }
             }
+            None => match store.add_volume(info, Some(src.root_frn())) {
+                Ok(v) => {
+                    kept.insert(v);
+                    v
+                }
+                Err(e) => {
+                    emit.message(crate::i18n::t_args("index-error", &[("message", e.to_string().into())]));
+                    continue;
+                }
+            },
         };
-        let t = Instant::now();
-        let mut sink = LoadSink { bulk: store.bulk_load(vol), volume: name.clone(), emit: &emit, last: Instant::now() };
-        let result = src.enumerate(&mut sink, &stop);
-        let stats = sink.bulk.finish();
-        match (result, stats) {
-            (Ok(()), Ok(st)) => {
-                tracing::info!(volume = %name, entries = st.entries, orphans = st.orphans, elapsed = ?t.elapsed(), "volume indexed")
-            }
-            (Err(SourceError::Stopped), _) => return,
-            (Err(e), _) => emit.message(crate::i18n::t_args("index-error", &[("message", e.to_string().into())])),
-            (_, Err(e)) => emit.message(crate::i18n::t_args("index-error", &[("message", e.to_string().into())])),
-        }
-        if let Some((jid, usn)) = src.journal_position() {
-            store.set_journal_position(vol, jid, usn);
+        if !enumerate_into(&mut store, vol, src.as_mut(), &emit, &stop) {
+            return;
         }
         volumes.push((vol, src));
     }
+    // Journaled volumes from the database that are gone or excluded now.
+    let gone: Vec<VolumeId> = store
+        .volumes()
+        .iter()
+        .filter(|v| {
+            matches!(v.info.kind, VolumeKind::Ntfs | VolumeKind::Refs) && !v.is_retired() && !kept.contains(&v.id)
+        })
+        .map(|v| v.id)
+        .collect();
+    for v in gone {
+        store.drop_volume(v);
+    }
+    if store.len() > 1024 && store.live_count() * 5 < store.len() * 4 {
+        store.compact();
+    }
     store.shrink_to_fit();
-    store.rebuild_name_order();
+    let order = store.name_order();
+    if order.covered() != store.len() || order.dirty_count() > 0 {
+        store.rebuild_name_order();
+    }
     let entries = store.live_count();
     shared.replace(store);
     refresh();
     let seconds = t0.elapsed().as_secs_f64();
-    tracing::info!(entries, seconds, "index published");
+    tracing::info!(entries, seconds, loaded, "index published");
+    saver.published();
+    saver.spawn_periodic(stop.clone());
 
     let refresher = Refresher::spawn(refresh);
-    let needs_meta: Vec<VolumeId> = volumes.iter().filter(|(_, s)| !s.enumerates_metadata()).map(|(v, _)| *v).collect();
+    let needs_meta: Vec<VolumeId> = {
+        let snap = shared.snapshot();
+        volumes
+            .iter()
+            .filter(|(v, s)| !s.enumerates_metadata() && !snap.volume_info(*v).is_some_and(|i| i.metadata_complete))
+            .map(|(v, _)| *v)
+            .collect()
+    };
     if needs_meta.is_empty() {
         emit.status(IndexStatus::Ready { entries, seconds });
     }
     let emit = Arc::new(emit);
     let total_meta = needs_meta.len();
     let done_meta = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    // Reports "ready" once the last volume's back-fill finished.
+    // Marks a volume's back-fill complete and reports "ready" after the last one.
     let meta_finished = {
         let (shared, emit, done_meta) = (shared.clone(), emit.clone(), done_meta.clone());
-        Arc::new(move || {
+        Arc::new(move |vol: VolumeId, complete: bool| {
+            if complete && let Some(v) = shared.write().volume_mut(vol) {
+                v.metadata_complete = true;
+            }
             let finished = done_meta.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             if finished == total_meta {
                 // Rows added by the back-fill (hard-link names) grew the columns
@@ -296,15 +442,15 @@ fn run(
         // back-fill).
         // SPEC-GAP: a folder listed by the back-fill after a USN-triggered refresh of one
         // of its files can overwrite that refresh with slightly older size/dates until
-        // the file changes again; M2 tags metadata with the index generation.
+        // the file changes again.
         let fetcher = if wants_meta { src.metadata_fetcher() } else { None };
         let inline_meta = wants_meta && fetcher.is_none();
         if let Some(fetcher) = fetcher {
             let (shared, stop, emit, refresher, done) =
                 (shared.clone(), stop.clone(), emit.clone(), refresher.clone(), meta_finished.clone());
             let r = std::thread::Builder::new().name(format!("fennec-meta-{}", vol.0)).spawn(move || {
-                fill_metadata(&|d, o, s| fetcher.fetch(d, o, s), vol, &shared, &stop, &emit, &refresher);
-                done();
+                let complete = fill_metadata(&|d, o, s| fetcher.fetch(d, o, s), vol, &shared, &stop, &emit, &refresher);
+                done(vol, complete);
             });
             if let Err(e) = r {
                 tracing::error!(error = %e, "cannot start metadata thread");
@@ -313,8 +459,9 @@ fn run(
         let done = meta_finished.clone();
         let r = std::thread::Builder::new().name(format!("fennec-volume-{}", vol.0)).spawn(move || {
             if inline_meta {
-                fill_metadata(&|d, o, s| src.fetch_metadata(d, o, s), vol, &shared, &stop, &emit, &refresher);
-                done();
+                let complete =
+                    fill_metadata(&|d, o, s| src.fetch_metadata(d, o, s), vol, &shared, &stop, &emit, &refresher);
+                done(vol, complete);
             }
             let name = src.info().display_name;
             let mut sink = WatchSink { shared: shared.clone(), refresher, vol };
@@ -333,6 +480,69 @@ fn run(
         if let Err(e) = r {
             tracing::error!(error = %e, "cannot start volume thread");
         }
+    }
+}
+
+struct RunCtx {
+    shared: SharedIndex,
+    refresh: Callback,
+    events: Sender<IndexEvent>,
+    notify: Callback,
+    stop: StopFlag,
+    saver: Arc<Saver>,
+}
+
+/// Writes the database: periodically, on demand and at exit (SPEC ch.1 §5.3).
+pub struct Saver {
+    path: Option<PathBuf>,
+    shared: SharedIndex,
+    interval: Duration,
+    published: std::sync::atomic::AtomicBool,
+    /// Generation of the last save (skip unchanged saves); serialises saves.
+    last: parking_lot::Mutex<u64>,
+}
+
+impl Saver {
+    fn published(&self) {
+        self.published.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Saves now if the index was built and changed since the last save.
+    pub fn save(&self) {
+        let Some(path) = &self.path else { return };
+        if !self.published.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        let mut last = self.last.lock();
+        let snap = self.shared.snapshot();
+        if snap.generation() == *last {
+            return;
+        }
+        let t = Instant::now();
+        match fnc_index::persist::save(&snap, path) {
+            Ok(st) => {
+                *last = snap.generation();
+                tracing::info!(rows = st.rows, mib = st.bytes >> 20, elapsed = ?t.elapsed(), "database saved");
+            }
+            Err(e) => tracing::warn!(error = %e, "cannot save the database"),
+        }
+    }
+
+    fn spawn_periodic(self: &Arc<Self>, stop: StopFlag) {
+        if self.path.is_none() || self.interval.is_zero() {
+            return;
+        }
+        let me = self.clone();
+        let _ = std::thread::Builder::new().name("fennec-db-save".into()).spawn(move || {
+            let mut next = Instant::now() + me.interval;
+            while !stop.is_stopped() {
+                std::thread::sleep(Duration::from_millis(500));
+                if Instant::now() >= next {
+                    me.save();
+                    next = Instant::now() + me.interval;
+                }
+            }
+        });
     }
 }
 
@@ -427,7 +637,7 @@ fn fill_metadata(
     stop: &StopFlag,
     emit: &Emitter,
     refresher: &Refresher,
-) {
+) -> bool {
     let t = Instant::now();
     let dirs: Vec<(EntryId, String)> = {
         let snap = shared.snapshot();
@@ -448,7 +658,7 @@ fn fill_metadata(
     let mut last_report = Instant::now();
     for (k, chunk) in dirs.chunks(1024).enumerate() {
         if stop.is_stopped() {
-            return;
+            return false;
         }
         let mut collector = MetaCollector { vol, children: HashMap::new(), out: Vec::new(), fold: Vec::new() };
         {
@@ -460,7 +670,7 @@ fn fill_metadata(
             }
         }
         if fetch(chunk, &mut collector, stop).is_err() {
-            return;
+            return false;
         }
         let mut batch = std::mem::take(&mut collector.out);
         while !batch.is_empty() {
@@ -476,6 +686,7 @@ fn fill_metadata(
         }
     }
     tracing::info!(volume = vol.0, folders = dirs.len(), elapsed = ?t.elapsed(), "sizes and dates filled");
+    true
 }
 
 #[cfg(test)]
@@ -608,6 +819,158 @@ mod tests {
         let (_, _) = wait_for(&name, &|n| n == 0, Duration::from_secs(10));
         eprintln!("delete -> gone {:?}", deleted_at.elapsed());
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// A live indexer + engine for the Windows real-volume tests.
+    #[cfg(windows)]
+    struct Live {
+        engine: fnc_exec::SearchEngine,
+        rx: crossbeam_channel::Receiver<fnc_exec::EngineEvent>,
+        irx: crossbeam_channel::Receiver<IndexEvent>,
+        indexer: Indexer,
+        shared: SharedIndex,
+        next_id: u64,
+        started: Instant,
+    }
+
+    #[cfg(windows)]
+    impl Live {
+        fn start(db: &std::path::Path, reindex: bool) -> Self {
+            let shared = SharedIndex::default();
+            let (tx, rx) = crossbeam_channel::unbounded();
+            let engine = fnc_exec::SearchEngine::spawn(shared.clone(), tx, Box::new(|| {}));
+            let (itx, irx) = crossbeam_channel::unbounded();
+            let handle = engine.handle();
+            let cfg = IndexerConfig {
+                ntfs: true,
+                usn_create: true,
+                usn_max_size: 32 << 20,
+                usn_delta: 4 << 20,
+                usn_poll: Duration::from_millis(1000),
+                db_path: Some(db.to_path_buf()),
+                reindex,
+                ..IndexerConfig::default()
+            };
+            let started = Instant::now();
+            let indexer = Indexer::spawn(cfg, shared.clone(), Arc::new(move || handle.refresh()), itx, Arc::new(|| {}));
+            Self { engine, rx, irx, indexer, shared, next_id: 0, started }
+        }
+
+        /// Waits for `IndexStatus::Ready`, collecting indexer messages.
+        fn ready(&self) -> (Duration, Vec<String>) {
+            let mut msgs = Vec::new();
+            loop {
+                match self.irx.recv_timeout(Duration::from_secs(600)) {
+                    Ok(IndexEvent::Status(IndexStatus::Ready { .. })) => return (self.started.elapsed(), msgs),
+                    Ok(IndexEvent::Message(m)) => msgs.push(m),
+                    Ok(_) => {}
+                    Err(e) => panic!("indexer never became ready: {e}"),
+                }
+            }
+        }
+
+        fn count(&mut self, text: &str, ok: &dyn Fn(usize) -> bool, limit: Duration) -> usize {
+            use fnc_exec::{EngineEvent, SearchOptions, SearchRequest, SortSpec};
+            let start = Instant::now();
+            self.next_id += 1;
+            let id = self.next_id;
+            self.engine.search(SearchRequest {
+                id,
+                text: text.into(),
+                filter: None,
+                sort: SortSpec::default(),
+                options: Arc::new(SearchOptions::default()),
+            });
+            let mut last = 0;
+            while start.elapsed() < limit {
+                if let Ok(EngineEvent::Done(o)) = self.rx.recv_timeout(Duration::from_millis(100))
+                    && o.id == id
+                {
+                    last = o.results.len();
+                    if ok(last) {
+                        return last;
+                    }
+                }
+            }
+            panic!("timed out waiting for `{text}` (last count {last})");
+        }
+
+        fn stop(self) {
+            self.indexer.stop();
+            self.indexer.save();
+            // Let the volume threads observe the stop flag.
+            std::thread::sleep(Duration::from_millis(1500));
+            drop(self.shared);
+        }
+    }
+
+    /// IDX-04 / IDX-05 on real volumes (Windows, elevated): build and save; make 100
+    /// changes while "not running", restart and expect the database to be searchable
+    /// within 2 s with the changes replayed; delete D:'s USN journal, restart and
+    /// expect D: to be rebuilt while C: is still resumed.
+    ///
+    /// `cargo test -p fnc-app --release -- --ignored --nocapture ntfs_persistence`
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "needs Windows, administrator rights, NTFS C: and D:"]
+    fn ntfs_persistence() {
+        crate::i18n::init("en");
+        assert!(fnc_platform::privilege::is_elevated(), "run elevated");
+        let base = std::path::PathBuf::from(std::env::var("FENNEC_IT_DIR").unwrap_or_else(|_| r"D:\fennec-it".into()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let db = std::env::temp_dir().join(format!("fennec-it-{}.fnx", std::process::id()));
+        let _ = std::fs::remove_file(&db);
+
+        // 1. Initial build.
+        let live = Live::start(&db, false);
+        let (t, _) = live.ready();
+        eprintln!("initial build ready after {t:?}");
+        live.stop();
+        let size = std::fs::metadata(&db).unwrap().len();
+        eprintln!("database: {} MiB", size >> 20);
+
+        // 2. 100 changes while Fennec is not running.
+        for i in 0..60 {
+            std::fs::write(base.join(format!("offline-new-{i:03}.txt")), b"x").unwrap();
+        }
+        for i in 0..20 {
+            std::fs::rename(
+                base.join(format!("offline-new-{i:03}.txt")),
+                base.join(format!("offline-renamed-{i:03}.txt")),
+            )
+            .unwrap();
+        }
+        for i in 20..40 {
+            std::fs::remove_file(base.join(format!("offline-new-{i:03}.txt"))).unwrap();
+        }
+        let mut live = Live::start(&db, false);
+        let q = format!("{}\\ offline-", base.display());
+        let n = live.count(&q, &|n| n == 40, Duration::from_secs(10));
+        let t = live.started.elapsed();
+        let resumed = live.count("kernel32.dll", &|n| n > 0, Duration::from_secs(5));
+        eprintln!("IDX-04: restart -> {n} replayed entries searchable after {t:?} (kernel32.dll: {resumed})");
+        assert!(t < Duration::from_secs(2), "IDX-04 budget is 2 s");
+        assert_eq!(live.count(&format!("{q}renamed"), &|_| true, Duration::from_secs(5)), 20);
+        let (t, msgs) = live.ready();
+        eprintln!("ready after {t:?}; messages: {msgs:?}");
+        assert!(msgs.is_empty());
+        live.stop();
+
+        // 3. IDX-05: delete D:'s journal; D: must be rebuilt, C: resumed.
+        let out = std::process::Command::new("fsutil").args(["usn", "deletejournal", "/d", "D:"]).output().unwrap();
+        assert!(out.status.success(), "fsutil: {}", String::from_utf8_lossy(&out.stderr));
+        std::thread::sleep(Duration::from_secs(3));
+        let mut live = Live::start(&db, false);
+        let (t, msgs) = live.ready();
+        eprintln!("IDX-05: ready after {t:?}; messages: {msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("D:")), "D: was rebuilt");
+        assert!(!msgs.iter().any(|m| m.contains("C:")), "C: was not rebuilt");
+        assert_eq!(live.count(&format!("{q}renamed"), &|n| n == 20, Duration::from_secs(10)), 20);
+        assert!(live.count("wfn:kernel32.dll parent:C:\\Windows\\System32", &|n| n == 1, Duration::from_secs(10)) == 1);
+        live.stop();
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_file(&db);
     }
 
     /// IDX-02 (pipeline part): a change delivered by a watcher becomes visible in the

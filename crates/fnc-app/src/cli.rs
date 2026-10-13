@@ -29,6 +29,12 @@ pub struct Cli {
     pub help: bool,
     /// `-version`.
     pub version: bool,
+    /// `-reindex`: ignore the saved database and rebuild.
+    pub reindex: bool,
+    /// `-nodb`: neither load nor save the database.
+    pub no_db: bool,
+    /// `-db <file>`: database file.
+    pub db: Option<String>,
     /// Search modifiers from `-case`, `-ww`, `-path`, `-diacritics`, `-regex`.
     pub modifiers: Vec<&'static str>,
     /// Unknown switches (reported as warnings).
@@ -53,6 +59,9 @@ fennec [options] [search text]
   -newwindow              open a new window
   -startup, -minimized    start hidden in the tray
   -exit, -quit            exit the running instance
+  -reindex                rebuild the index (ignore the database)
+  -nodb                   do not load or save the database
+  -db <file.fnx>          use another database file
   -first-instance         do not forward to a running instance
   -console, -verbose      log to the console / verbose logging
   -help, -version";
@@ -128,6 +137,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Cli {
             "verbose" | "debug" => cli.verbose = true,
             "first-instance" => cli.first_instance = true,
             "exit" | "quit" => cli.exit = true,
+            "reindex" => cli.reindex = true,
+            "nodb" | "no-db" => cli.no_db = true,
+            "db" => cli.db = value(&mut it),
             "help" | "h" | "?" => cli.help = true,
             "version" | "v" => cli.version = true,
             _ => cli.unknown.push(a),

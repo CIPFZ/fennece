@@ -87,6 +87,17 @@ impl NameOrder {
         out
     }
 
+    /// The rank column if it covers all `len` rows and nothing is dirty (persisted).
+    pub fn complete_ranks(&self, len: usize) -> Option<&[u32]> {
+        (self.rank.len() == len && self.dirty_count == 0).then_some(&self.rank[..])
+    }
+
+    /// Restores a persisted rank column (see [`NameOrder::complete_ranks`]).
+    pub fn from_ranks(rank: Vec<u32>) -> Self {
+        let words = rank.len().div_ceil(64);
+        Self { rank, dirty: vec![0; words], dirty_count: 0 }
+    }
+
     /// Heap bytes.
     pub fn heap_bytes(&self) -> usize {
         self.rank.capacity() * 4 + self.dirty.capacity() * 8

@@ -847,6 +847,7 @@ impl eframe::App for FennecApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.indexer.stop();
+        self.indexer.save();
         if let Err(e) = self.settings.save(&self.settings_path) {
             tracing::warn!(error = %e, "cannot save settings");
         }

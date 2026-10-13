@@ -246,6 +246,10 @@ impl VolumeSource for NtfsSource {
     fn journal_position(&self) -> Option<(u64, i64)> {
         Some((self.journal.id, self.resume_usn))
     }
+
+    fn resume(&mut self, journal_id: u64, next_usn: i64) -> Result<(), SourceError> {
+        self.resume_from(journal_id, next_usn)
+    }
 }
 
 impl NtfsSource {

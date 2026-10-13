@@ -130,6 +130,9 @@ fn run() -> anyhow::Result<()> {
         usn_delta: u64::from(settings.usn_allocation_delta_mb) << 20,
         usn_poll: Duration::from_millis(u64::from(settings.usn_poll_interval.max(100))),
         date_accessed: settings.index_date_accessed,
+        db_path: if cli.no_db { None } else { Some(cli.db.as_ref().map_or_else(|| paths.index_file(), Into::into)) },
+        reindex: cli.reindex,
+        save_interval: Duration::from_secs(u64::from(settings.db_save_interval) * 60),
     };
     let (index_tx, index_rx) = crossbeam_channel::unbounded();
     let handle = engine.handle();

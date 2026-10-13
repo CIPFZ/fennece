@@ -17,6 +17,7 @@ pub mod error;
 pub mod ext;
 pub mod frnmap;
 pub mod order;
+pub mod persist;
 pub mod shared;
 pub mod store;
 pub mod volume;

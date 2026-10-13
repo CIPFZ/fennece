@@ -80,4 +80,14 @@ pub struct Volume {
     pub online: bool,
     /// Whether the volume takes part in searches.
     pub include_in_index: bool,
+    /// Sizes and dates have been filled for every entry (no back-fill needed).
+    pub metadata_complete: bool,
+}
+
+impl Volume {
+    /// A volume record whose content was dropped; [`crate::IndexStore::add_volume`]
+    /// reuses such records.
+    pub fn is_retired(&self) -> bool {
+        self.roots.is_empty() && !self.include_in_index
+    }
 }

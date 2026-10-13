@@ -140,4 +140,10 @@ pub trait VolumeSource: Send {
     fn journal_position(&self) -> Option<(u64, i64)> {
         None
     }
+    /// Continues from a saved journal position instead of enumerating (database
+    /// load). Fails if the journal was recreated or no longer holds `next_usn`; the
+    /// caller then rebuilds the volume.
+    fn resume(&mut self, _journal_id: u64, _next_usn: i64) -> Result<(), SourceError> {
+        Err(SourceError::Unsupported("resume"))
+    }
 }

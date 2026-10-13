@@ -226,9 +226,10 @@ impl IndexStore {
     /// `root_path`, e.g. `C:`) is created with that FRN (`5` on NTFS); file lists pass
     /// `None` and add one root per drive with [`IndexStore::add_root`].
     pub fn add_volume(&mut self, info: VolumeInfo, root_frn: Option<u64>) -> Result<VolumeId> {
-        let id = VolumeId(u16::try_from(self.volumes.len()).map_err(|_| IndexError::TooManyVolumes)?);
         let root_name = root_display_name(&info.root_path, info.separator);
-        self.volumes.push(Volume {
+        let reuse = self.volumes.iter().position(Volume::is_retired);
+        let id = VolumeId(u16::try_from(reuse.unwrap_or(self.volumes.len())).map_err(|_| IndexError::TooManyVolumes)?);
+        let v = Volume {
             id,
             info,
             roots: Vec::new(),
@@ -236,9 +237,20 @@ impl IndexStore {
             next_usn: 0,
             online: true,
             include_in_index: true,
-        });
-        self.frn_maps.push(FrnMap::default());
-        self.orphans.push(None);
+            metadata_complete: false,
+        };
+        match reuse {
+            Some(i) => {
+                self.volumes[i] = v;
+                self.frn_maps[i] = FrnMap::default();
+                self.orphans[i] = None;
+            }
+            None => {
+                self.volumes.push(v);
+                self.frn_maps.push(FrnMap::default());
+                self.orphans.push(None);
+            }
+        }
         if let Some(frn) = root_frn {
             self.add_root(id, frn, &root_name)?;
         }
@@ -1095,26 +1107,106 @@ impl IndexStore {
             v.roots = v.roots.iter().map(|&r| map_id(r)).filter(|r| r.is_some()).collect();
         }
         self.orphans = self.orphans.iter().map(|o| o.map(map_id).filter(|e| e.is_some())).collect();
-        for (vi, m) in self.frn_maps.iter_mut().enumerate() {
-            // The `$Orphans` folder's synthetic FRN would force the hash-map
-            // representation; it is inserted afterwards (into the overflow map).
-            let in_vol = |n: &usize| self.volume[*n].idx() == vi;
-            let pairs: Vec<(u64, EntryId)> = (0..order.len())
-                .filter(in_vol)
-                .filter(|&n| self.frn[n] != ORPHANS_FRN && !self.flags[n].contains(EntryFlags::HARDLINK_ALIAS))
-                .map(|n| (self.frn[n], EntryId(n as u32)))
-                .collect();
-            let ntfs_like = matches!(self.volumes[vi].info.kind, VolumeKind::Ntfs);
-            *m = FrnMap::build(&pairs, ntfs_like);
-            for n in (0..order.len()).filter(in_vol).filter(|&n| self.frn[n] == ORPHANS_FRN) {
-                m.insert(ORPHANS_FRN, EntryId(n as u32));
-            }
-        }
+        self.rebuild_frn_maps();
         self.rebuild_children();
         self.name_order = self.name_order.remapped(&remap, order.len());
         self.instance = next_instance();
         self.bump(true);
         remap
+    }
+
+    /// Rebuilds every volume's FRN map from the columns (live primary rows only).
+    fn rebuild_frn_maps(&mut self) {
+        let mut per_vol: Vec<Vec<(u64, EntryId)>> = vec![Vec::new(); self.volumes.len()];
+        let mut orphans: Vec<(usize, EntryId)> = Vec::new();
+        for n in 0..self.len() {
+            let f = self.flags[n];
+            if f.contains(EntryFlags::DELETED) || f.contains(EntryFlags::HARDLINK_ALIAS) {
+                continue;
+            }
+            let v = self.volume[n].idx();
+            // The `$Orphans` folder's synthetic FRN would force the hash-map
+            // representation; it is inserted afterwards (into the overflow map).
+            if self.frn[n] == ORPHANS_FRN {
+                orphans.push((v, EntryId(n as u32)));
+            } else {
+                per_vol[v].push((self.frn[n], EntryId(n as u32)));
+            }
+        }
+        self.frn_maps = per_vol
+            .iter()
+            .enumerate()
+            .map(|(vi, pairs)| FrnMap::build(pairs, matches!(self.volumes[vi].info.kind, VolumeKind::Ntfs)))
+            .collect();
+        for (v, id) in orphans {
+            self.frn_maps[v].insert(ORPHANS_FRN, id);
+        }
+    }
+
+    /// Completes a store whose columns were filled directly (database load): derived
+    /// maps, counters and the name order (`ranks` if persisted, else rebuilt).
+    pub(crate) fn finish_load(&mut self, ranks: Option<NameOrder>) {
+        self.live = self.flags.iter().filter(|f| !f.contains(EntryFlags::DELETED)).count();
+        self.folders =
+            self.flags.iter().filter(|f| !f.contains(EntryFlags::DELETED) && f.contains(EntryFlags::IS_DIR)).count();
+        self.rebuild_frn_maps();
+        self.rebuild_children();
+        match ranks {
+            Some(r) => self.name_order = r,
+            None => self.rebuild_name_order(),
+        }
+        self.bump(true);
+    }
+
+    /// Deletes every entry of `vol` except its roots (before re-enumerating it); the
+    /// FRN map keeps only the roots. Returns the number of entries removed.
+    pub fn clear_volume(&mut self, vol: VolumeId) -> usize {
+        let Some(v) = self.volumes.get(vol.idx()) else { return 0 };
+        let roots = v.roots.clone();
+        let now = FileTime::now();
+        let mut removed = 0;
+        for root in &roots {
+            let kids: Vec<EntryId> = self.children(*root).collect();
+            for k in kids {
+                if self.is_live(k) {
+                    removed += self.delete_subtree(k, now);
+                }
+            }
+        }
+        // Rows the tree walk could not reach (corrupt parents) go as well.
+        for n in 0..self.len() {
+            if self.volume[n] == vol
+                && !self.flags[n].contains(EntryFlags::DELETED)
+                && !roots.contains(&EntryId(n as u32))
+            {
+                removed += self.delete_subtree(EntryId(n as u32), now);
+            }
+        }
+        self.recent.retain(|k, _| self.volume[k.idx()] != vol);
+        self.orphans[vol.idx()] = None;
+        if removed > 0 {
+            self.bump(true);
+        }
+        removed
+    }
+
+    /// Removes a volume's content and marks it unusable (no longer present). Ids stay
+    /// valid; the volume record remains (ids are positions).
+    pub fn drop_volume(&mut self, vol: VolumeId) {
+        self.clear_volume(vol);
+        let roots = self.volumes.get(vol.idx()).map(|v| v.roots.clone()).unwrap_or_default();
+        let now = FileTime::now();
+        for r in roots {
+            if self.is_live(r) {
+                self.delete_subtree(r, now);
+            }
+        }
+        if let Some(v) = self.volumes.get_mut(vol.idx()) {
+            v.roots.clear();
+            v.online = false;
+            v.include_in_index = false;
+        }
+        self.bump(true);
     }
 
     fn orphans_dir(&mut self, vol: VolumeId) -> Result<EntryId> {
