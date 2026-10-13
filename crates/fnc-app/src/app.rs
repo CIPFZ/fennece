@@ -193,6 +193,8 @@ pub struct FennecApp {
     hwnd: isize,
     /// Alt pressed while the menu bar is hidden: show it temporarily.
     menu_peek: bool,
+    /// Last known window rectangle (outer position, inner size) and maximised state.
+    window_geometry: Option<(egui::Rect, bool)>,
 
     worker_tx: Sender<WorkerMsg>,
     worker_rx: Receiver<WorkerMsg>,
@@ -289,6 +291,7 @@ impl FennecApp {
             after: Vec::new(),
             hwnd: 0,
             menu_peek: false,
+            window_geometry: None,
             worker_tx,
             worker_rx,
             quitting: false,
@@ -1677,6 +1680,19 @@ impl eframe::App for FennecApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // Track the geometry while visible (hidden/minimised windows report nonsense).
+        let geometry = ctx.input(|i| {
+            let v = i.viewport();
+            match (v.outer_rect, v.inner_rect, v.minimized, v.maximized) {
+                (Some(outer), Some(inner), Some(false) | None, maximized) => {
+                    Some((egui::Rect::from_min_size(outer.min, inner.size()), maximized.unwrap_or(false)))
+                }
+                _ => None,
+            }
+        });
+        if !self.hidden && geometry.is_some() {
+            self.window_geometry = geometry;
+        }
         let hwnd = native_handle(frame);
         if hwnd != self.hwnd && hwnd != 0 {
             fnc_platform::shell::watch_ctrl_v(hwnd);
@@ -1710,6 +1726,13 @@ impl eframe::App for FennecApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some((rect, maximized)) = self.window_geometry {
+            self.settings.window_maximized = maximized;
+            if !maximized {
+                self.settings.window_rect =
+                    format!("{:.0},{:.0},{:.0},{:.0}", rect.min.x, rect.min.y, rect.width(), rect.height());
+            }
+        }
         self.indexer.stop();
         self.indexer.save();
         self.history.save();
@@ -1718,6 +1741,15 @@ impl eframe::App for FennecApp {
             tracing::warn!(error = %e, "cannot save settings");
         }
     }
+}
+
+/// Parses the `window_rect` setting (`x,y,width,height`); `None` if empty or unusable.
+pub fn parse_window_rect(s: &str) -> Option<[f32; 4]> {
+    let v: Vec<f32> = s.split(',').map(|p| p.trim().parse::<f32>()).collect::<Result<_, _>>().ok()?;
+    let r: [f32; 4] = v.try_into().ok()?;
+    // Ignore off-screen leftovers (e.g. a disconnected monitor) and absurd sizes.
+    (r[2] >= 400.0 && r[3] >= 200.0 && r[2] < 20_000.0 && r[3] < 20_000.0 && r[0] > -2000.0 && r[1] > -200.0)
+        .then_some(r)
 }
 
 /// The window's native handle (`HWND`), 0 if unavailable.

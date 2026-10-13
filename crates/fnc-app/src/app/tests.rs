@@ -283,3 +283,12 @@ fn ui03_size_header_sorts_one_million_within_300ms() {
 fn t_title(key: &str) -> String {
     crate::columns::ColumnId::from_key(key).map(|c| c.title()).unwrap_or_default()
 }
+
+#[test]
+fn window_rect_setting() {
+    assert_eq!(super::parse_window_rect("10,20,1000,600"), Some([10.0, 20.0, 1000.0, 600.0]));
+    assert_eq!(super::parse_window_rect(""), None);
+    assert_eq!(super::parse_window_rect("1,2,3"), None);
+    assert_eq!(super::parse_window_rect("-30000,0,1000,600"), None, "off screen");
+    assert_eq!(super::parse_window_rect("0,0,10,10"), None, "too small");
+}

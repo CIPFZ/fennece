@@ -153,13 +153,18 @@ fn run() -> anyhow::Result<()> {
         Arc::new(wake.clone()),
     );
 
-    let viewport = egui::ViewportBuilder::default()
+    let mut viewport = egui::ViewportBuilder::default()
         .with_title(i18n::t("app-title"))
         .with_inner_size([1000.0, 600.0])
         .with_min_inner_size([400.0, 200.0])
         .with_app_id("fennec")
+        .with_maximized(settings.window_maximized)
         // `-startup` / `-minimized`: create the window hidden (no flash).
         .with_visible(!cli.start_hidden);
+    // Remembered geometry (SPEC ch.3 §1).
+    if let Some([x, y, w, h]) = app::parse_window_rect(&settings.window_rect) {
+        viewport = viewport.with_position([x, y]).with_inner_size([w, h]);
+    }
     let viewport = match icon::app_icon() {
         Some(i) => viewport.with_icon(Arc::new(i)),
         None => viewport,
