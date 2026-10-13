@@ -939,7 +939,7 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | PDF | IFilter / Windows 属性 | 自带最小解析器：`/Info`、页数、文本（FlateDecode、ToUnicode、对象流）；不支持加密、OCR、无 ToUnicode 的自定义编码字体 | ADR-014 |
 | Windows 属性系统兜底 | 任意 `System.*` | 由应用通过 `PropertyProvider` 注入；未注入时仅内置提取器 | fnc-props 禁止 unsafe/COM |
 | 属性列排序 | 列排序 | `SortSpec::props`（每个排序键可指定属性列），未知值排在最前 | 与应用并行开发，暂不扩展 `SortColumn` 枚举（ADR-015）|
-| `count:<max>`（结果数上限）| 搜索函数，限制结果数 | IPC/HTTP/fes/兼容层的查询后端在排序后截断（es 1.1.0.38 的 `-n` 以 `< count:N >` 发送）；UI 引擎尚未支持 | `count:` 在 fnc-query 中是比较修饰符；待 fnc-query 接管（SPEC-GAP）|
+| `count:<max>`（结果数上限）| 搜索函数，限制结果数 | `count:` 后紧跟纯数字时为结果上限（`FuncId::Count` → `SetKind::Limit`），作为最后一个集合函数在排序后截断，UI 与 IPC/HTTP/fes/兼容层一致（es 1.1.0.38 的 `-n` 以 `< count:N >` 发送）；只能在顶层；其余情况（`count:tags:>2`）仍是比较修饰符 | 同名的修饰符与函数按值区分 |
 | Everything IPC 报告版本 | Everything 自身版本 | `1.4.1.<Fennec 版本>`（0.1.0 → `1.4.1.100`），`Host::everything_version` 可改 | 客户端按 ≥ 1.4.1 启用 QUERY2/IS_DB_LOADED（ADR-031）|
 | IPC `A` 变体字符串 | ANSI 代码页 | UTF-8（失败回退 Latin-1）| 无 Win32 代码页转换（SPEC-GAP）|
 | Everything 1.5 IPC3 管道 | `\\.\pipe\Everything IPC` | 不实现；es 回退 IPC2 | 原生协议另见 ADR-030 |
@@ -948,6 +948,9 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | M3U 编码 / 空 JSON 导出 | ANSI 代码页 / 不输出 | UTF-8 / `[]` | 无代码页依赖；合法 JSON |
 | HTTP JSON 未知值 | 未说明 | 未知大小（文件夹）/日期不输出该字段 | 避免空字符串数值（ADR-032）|
 | HTTP 文件夹链接 | 浏览文件夹 | 链接为该文件夹路径的搜索，不做目录列举 | SPEC 第 4 章 §4 防护要求 |
+| IPC 重建数据库（`REBUILD_DB` / `Op::Rebuild`）| 重建索引 | 运行中的应用拒绝（返回失败）；需以 `-reindex` 重启 | 索引源在启动时固定，索引器不能原地重启（ADR-034，SPEC-GAP）|
+| IPC 管理命令鉴权 | — | 原生管道客户端须与 Fennec 同会话且完整性 ≥ Medium（Linux：同 uid）；Everything 兼容窗口的客户端不额外校验（窗口消息不跨会话，受 UIPI 约束，`EVERYTHING_WM_IPC` 不带发送者）；HTTP 不执行管理命令 | SPEC 第 4 章 §3.1（ADR-034）|
+| `-instance` 与服务 | — | 每个实例连接自己的服务管道 `Fennec.<instance>.svc`；安装包只为默认实例安装服务，其他实例以非管理员运行时退回文件夹索引 | SPEC 第 4 章 §8：服务管道按实例命名 |
 
 ---
 

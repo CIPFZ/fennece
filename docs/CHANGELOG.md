@@ -66,3 +66,10 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 - [M4][fnc-http] HTTP server: search page, Everything JSON, index-resolved downloads, `/api/v1/status|volumes`; Basic auth, limits, timeouts, CSP, static root (ADR-032, INT-04).
 - [M4][fnc-sdk] `fennec_sdk` Rust builder API and Everything-SDK style C ABI with `include/fennec_sdk.h`.
 - [M4][docs] ADR-030…033; SPEC ch.2 §9 rows for fes/compat/HTTP differences.
+- [M4][fnc-query][fnc-exec] `count:<max>` result limit (`FuncId::Count` → `SetKind::Limit`, applied last after sorting) in every front end; `count:` before anything but digits stays the comparison modifier; the IPC backend's `extract_count_limit` is gone.
+- [M4][fnc-platform] `compat`: hidden Everything-compatible window on its own thread (`CompatHandler`, query worker sending the reply `WM_COPYDATA`, conflict detection, `EVERYTHING_IPC_CREATED`, client `WM_CLOSE` = exit); `session`: session id / integrity level of IPC clients (ADR-034).
+- [M4][fnc-core] settings page `server`: `ipc_server`, `everything_ipc`, `http_enabled` `http_bind` `http_port` `http_username` `http_password` `http_allow_downloads` `http_page_size` `http_max_results` `http_max_concurrency` `http_timeout_ms` `http_static_root` `http_access_log`.
+- [M4][fnc-app] `ipc_host::AppHost` (filters, bookmarks, options, status, run counts, `DeleteRunHistory`, same-session authorization) and `servers` (IPC pipe, Everything window, HTTP started/stopped from the settings on `fennec-servers`); HTTP address/error in the status bar (ADR-034, INT-02/03/04/05).
+- [M4][fnc-app] File → Export and Copy as CSV/EFU through `fnc_ipc::export` (EFU/CSV/TSV/JSON/M3U/M3U8/TXT by extension, visible columns) (INT-07).
+- [M4][fnc-app] Enter runs a `/key=value` inline command instead of opening the selection; passwords are masked in Options and never echoed.
+- [M4][docs] ADR-034, `docs/reports/M4.md`.

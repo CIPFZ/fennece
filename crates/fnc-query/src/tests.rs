@@ -478,6 +478,9 @@ const MORE_CASES: &[(&str, &str)] = &[
     ("distinct:ext", "distinct='ext'"),
     ("unique:name", "unique='name'"),
     ("dupecount:>2", "dupecount=>'2'"),
+    ("count:5", "count='5'"),
+    ("< count:10 > < test >", "(and count='10' 'test')"),
+    ("count:>5", "count:'>5'"),
     ("filelist:\"a.txt|b.txt\"", "filelist='a.txt|b.txt'"),
     ("filelist:a;b", "filelist={'a','b'}"),
     ("filelist*:a|b", "filelist='a|b'"),
@@ -666,6 +669,14 @@ fn set_functions_are_hoisted_with_keys() {
     assert!(!p("dupe:bogus").diagnostics.is_empty());
     assert!(!p("dupe-max:x").diagnostics.is_empty());
     assert!(!p("<dupe:|a>").diagnostics.is_empty(), "nested set function reported");
+    // `count:<max>` (result limit) runs after every other set function.
+    let q = p("count:3 dupe:size *.jpg");
+    assert_eq!(q.post.len(), 2);
+    assert_eq!(q.post[0].kind, SetKind::Dupe);
+    assert_eq!(q.post[1].kind, SetKind::Limit(3));
+    assert_eq!(p("dupe-max:1 count:2").post[0].keys.as_deref(), Some(&[DupeKey::Name][..]));
+    assert_eq!(p("< count:10 > < test >").post[0].kind, SetKind::Limit(10));
+    assert!(p("count:tags:>2").post.is_empty(), "count: before a function is the modifier");
     // Plans with set functions never filter the previous result set.
     let a = p("abc dupe:");
     let b = plan(&parse("abcd dupe:", &ParseEnv::default()).ast, &PlanEnv::default(), Some(&a));

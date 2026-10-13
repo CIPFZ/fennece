@@ -939,7 +939,8 @@ impl Cx<'_> {
             | F::Distinct
             | F::Unique
             | F::DupeCount
-            | F::DupeMax => self.set(f, t),
+            | F::DupeMax
+            | F::Count => self.set(f, t),
             F::Eval => {
                 // `;` separates arguments too, which the term parser turned into a list.
                 let src = match &t.value {

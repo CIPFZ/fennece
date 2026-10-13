@@ -67,6 +67,13 @@ impl OptionsState {
         }
     }
 
+    /// Opens on `page` (tests).
+    #[cfg(test)]
+    pub(super) fn on_page(mut self, page: &'static str) -> Self {
+        self.page = page;
+        self
+    }
+
     /// Opens on the Advanced page with `filter` (tests, `/options advanced`).
     #[cfg(test)]
     pub(super) fn advanced(mut self, filter: &str) -> Self {
@@ -98,7 +105,9 @@ impl OptionsState {
             SettingKind::Int | SettingKind::Float | SettingKind::Text | SettingKind::List => {
                 let text = self.edits.entry(d.key).or_insert_with(|| current.clone());
                 let width = if matches!(d.kind, SettingKind::Int | SettingKind::Float) { 90.0 } else { 320.0 };
-                let resp = ui.add(egui::TextEdit::singleline(text).desired_width(width));
+                // Passwords (`http_password`) are masked.
+                let secret = d.key.ends_with("password");
+                let resp = ui.add(egui::TextEdit::singleline(text).desired_width(width).password(secret));
                 if resp.changed() {
                     match self.draft.set(d.key, text) {
                         Ok(()) => self.error = None,

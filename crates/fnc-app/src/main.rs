@@ -8,6 +8,7 @@ mod cli;
 mod columns;
 mod commands;
 mod exclude;
+mod export;
 mod filters;
 mod fonts;
 mod format;
@@ -16,12 +17,14 @@ mod i18n;
 mod icon;
 mod import;
 mod indexer;
+mod ipc_host;
 mod journal;
 // The advanced rename dialog uses it (M6 UI).
 #[cfg_attr(not(test), allow(dead_code))]
 mod rename;
 #[cfg(feature = "semantic")]
 mod semantic;
+mod servers;
 mod thumbs;
 #[cfg(windows)]
 mod tray;
@@ -239,6 +242,7 @@ fn run() -> anyhow::Result<()> {
         initial_search: cli.search.clone(),
         initial_cli: Some(cli.clone()),
         start_hidden: cli.start_hidden,
+        servers: Some(servers::ServersContext { instance: cli.instance.clone(), portable: paths.portable }),
     };
     eframe::run_native(
         "Fennec",

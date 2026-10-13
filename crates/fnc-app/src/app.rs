@@ -10,6 +10,7 @@
 mod complete;
 mod dialogs;
 mod grid;
+mod integration;
 mod menus;
 mod options;
 mod preview;
@@ -77,6 +78,8 @@ pub struct AppDeps {
     pub initial_cli: Option<crate::cli::Cli>,
     /// Start hidden (tray).
     pub start_hidden: bool,
+    /// Run the IPC/Everything/HTTP servers for this instance (`None`: no servers).
+    pub servers: Option<crate::servers::ServersContext>,
 }
 
 #[derive(Clone)]
@@ -243,6 +246,8 @@ pub struct FennecApp {
     new_engine: Arc<dyn Fn() -> (SearchEngine, Receiver<EngineEvent>) + Send + Sync>,
     /// Semantic search (SPEC ch.5).
     sem: semantic_ui::SemanticUi,
+    /// IPC, Everything-compatible and HTTP servers.
+    servers: Option<integration::AppServers>,
 }
 
 impl FennecApp {
@@ -287,6 +292,7 @@ impl FennecApp {
             deps.indexer.set_paused(true);
         }
         let new_engine = deps.new_engine;
+        let servers = deps.servers;
         let mut app = Self {
             shared: deps.shared,
             index_rx: deps.index_rx,
@@ -362,9 +368,11 @@ impl FennecApp {
             new_engine,
             ctx: ctx.clone(),
             sem: Default::default(),
+            servers: None,
         };
         app.semantic_init();
         app.rebuild_search_options();
+        app.start_servers(servers);
         app.send_search();
         if let Some(cli) = deps.initial_cli {
             app.apply_cli(ctx, cli, false);
@@ -387,6 +395,7 @@ impl FennecApp {
             o.omit = Some(fnc_query::plan::OmitSet { instance, ids: self.v.omit.iter().copied().collect() });
         }
         self.v.search_opts = Arc::new(o);
+        self.sync_host();
     }
 
     /// The active filters with their own match options (SPEC ch.2 §7).
@@ -497,6 +506,7 @@ impl FennecApp {
             };
             self.message = Some((text, Instant::now()));
         }
+        self.drain_host_events(ctx);
         let forwarded: Vec<Vec<String>> =
             self.instance.as_ref().map(|p| p.commands().try_iter().collect()).unwrap_or_default();
         for args in forwarded {
@@ -1141,11 +1151,17 @@ impl FennecApp {
         if targets.is_empty() {
             return;
         }
+        if matches!(kind, TextKind::Csv | TextKind::Efu) {
+            // Same writers as File → Export and fes.
+            let Some(snap) = self.shared.try_snapshot_for(Duration::from_millis(50)) else { return };
+            let ids: Vec<EntryId> = targets.iter().map(|(id, _)| *id).collect();
+            let format = if kind == TextKind::Efu { fnc_ipc::Format::Efu } else { fnc_ipc::Format::Csv };
+            ctx.copy_text(crate::export::to_text(format, &snap, &ids, Some(self.type_names.clone())));
+            self.say(t("msg-copied"));
+            return;
+        }
         let snap = self.shared.try_snapshot_for(Duration::from_millis(50));
         let mut out = String::new();
-        if matches!(kind, TextKind::Csv | TextKind::Efu) {
-            out.push_str("Filename,Size,Date Modified,Date Created,Attributes\r\n");
-        }
         for (id, p) in &targets {
             let full = p.display().to_string();
             let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| full.clone());
@@ -1156,24 +1172,18 @@ impl FennecApp {
                 TextKind::Name => name,
                 TextKind::Folder => folder,
                 TextKind::Tsv | TextKind::Csv | TextKind::Efu => {
-                    let (size, dm, dc, attr) = snap.as_ref().map_or((String::new(), 0, 0, 0), |s| {
-                        (
-                            s.size(*id).filter(|_| !s.is_dir(*id)).map(|v| v.to_string()).unwrap_or_default(),
-                            s.date_modified(*id).0,
-                            s.date_created(*id).0,
-                            s.attributes(*id),
-                        )
-                    });
-                    match kind {
-                        TextKind::Tsv => format!("{name}\t{folder}\t{size}"),
-                        _ => format!("\"{}\",{size},{dm},{dc},{attr}", full.replace('"', "\"\"")),
-                    }
+                    let size = snap
+                        .as_ref()
+                        .and_then(|s| s.size(*id).filter(|_| !s.is_dir(*id)))
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    format!("{name}\t{folder}\t{size}")
                 }
             };
             out.push_str(&line);
             out.push_str("\r\n");
         }
-        if targets.len() == 1 && !matches!(kind, TextKind::Csv | TextKind::Efu) {
+        if targets.len() == 1 {
             out.truncate(out.trim_end().len());
         }
         ctx.copy_text(out);
@@ -1258,6 +1268,8 @@ impl FennecApp {
         let mut paste_seen = false;
         let mut shift_dels = fnc_platform::shell::take_shift_delete();
         let type_to_search = self.settings.type_to_search;
+        // Enter runs a `/key=value` inline command (SPEC ch.3 §13) instead of opening.
+        let inline_command = kctx == KeyCtx::Search && self.v.query.starts_with('/');
         ctx.input_mut(|i| {
             let mut keep = Vec::with_capacity(i.events.len());
             for e in std::mem::take(&mut i.events) {
@@ -1280,6 +1292,10 @@ impl FennecApp {
                         }
                         if *key == Key::Tab && !modifiers.ctrl && !modifiers.alt {
                             tab = true;
+                            continue;
+                        }
+                        if inline_command && *key == Key::Enter && !modifiers.any() {
+                            keep.push(e);
                             continue;
                         }
                         let chord = Chord::from_event(*key, *modifiers);
@@ -1496,9 +1512,11 @@ impl FennecApp {
             match s.set(key.trim(), value.trim()) {
                 Ok(()) => {
                     self.apply_settings(ctx, s);
+                    // Never echo passwords (`http_password`).
+                    let shown = if key.trim().ends_with("password") { "••••" } else { value.trim() };
                     self.say(t_args(
                         "msg-setting-changed",
-                        &[("key", key.trim().to_string().into()), ("value", value.trim().to_string().into())],
+                        &[("key", key.trim().to_string().into()), ("value", shown.to_string().into())],
                     ));
                 }
                 Err(e) => self.say(e.to_string()),
@@ -1511,6 +1529,7 @@ impl FennecApp {
         } else if let Some(cmd) = Command::from_id(body) {
             self.run(ctx, cmd);
         } else if let Some(v) = self.settings.get(body) {
+            let v = if body.ends_with("password") { "••••".to_string() } else { v };
             self.say(format!("{body} = {v}"));
         } else {
             self.say(t_args("msg-unknown-command", &[("command", body.to_string().into())]));
@@ -1643,6 +1662,7 @@ impl FennecApp {
                         self.semantic_open_setup();
                     }
                 }
+                self.server_status_ui(ui);
             });
         });
     }
@@ -1699,6 +1719,7 @@ impl FennecApp {
             self.say(t("msg-restart-required"));
         }
         self.semantic_apply(&old);
+        self.apply_server_settings();
         self.rebuild_search_options();
         self.send_search();
         if let Err(e) = self.settings.save(&self.settings_path) {
@@ -2000,6 +2021,7 @@ impl eframe::App for FennecApp {
             }
         }
         self.semantic_stop();
+        self.stop_servers();
         self.indexer.stop();
         self.indexer.save();
         self.history.save();

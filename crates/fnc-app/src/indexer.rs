@@ -167,6 +167,11 @@ impl Indexer {
         self.saver.save();
     }
 
+    /// A handle for other threads (IPC admin commands): save and rescan.
+    pub fn control(&self) -> IndexerControl {
+        IndexerControl { saver: self.saver.clone(), rescan_epoch: self.rescan_epoch.clone() }
+    }
+
     /// An indexer that does nothing (the index is provided by the caller).
     #[cfg(test)]
     pub fn idle() -> Self {
@@ -758,6 +763,25 @@ struct RunCtx {
     stop: StopFlag,
     saver: Arc<Saver>,
     paused: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Thread-safe part of [`Indexer`]: database saves and folder rescans.
+#[derive(Clone)]
+pub struct IndexerControl {
+    saver: Arc<Saver>,
+    rescan_epoch: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl IndexerControl {
+    /// Saves the database now (blocks for the write; call off the UI thread).
+    pub fn save(&self) {
+        self.saver.save();
+    }
+
+    /// Rescans every folder index.
+    pub fn rescan_folders(&self) {
+        self.rescan_epoch.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 /// Writes the database: periodically, on demand and at exit (SPEC ch.1 §5.3).

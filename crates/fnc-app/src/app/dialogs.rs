@@ -656,6 +656,7 @@ impl FennecApp {
         if let Err(e) = self.bookmarks.save() {
             self.say(t_args("msg-op-failed", &[("error", e.to_string().into())]));
         }
+        self.sync_host();
     }
 
     /// Imports `Filters.csv` / `Bookmarks.csv` from the data folder or the Everything
@@ -677,39 +678,16 @@ impl FennecApp {
         self.say(t_args("msg-imported", &[("count", n.into()), ("file", path.display().to_string().into())]));
     }
 
-    /// Writes the current results as EFU (`.efu`), CSV (`.csv`) or a path list.
+    /// Writes the current results in the format of the file extension (EFU, CSV, TSV,
+    /// JSON, M3U/M3U8, otherwise one path per line) with the visible columns.
     fn export(&mut self, path: PathBuf) {
         let ids = self.v.results.ids.clone();
         let shared = self.shared.clone();
-        let format = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let columns: Vec<crate::columns::ColumnId> = self.columns.iter().map(|c| c.id).collect();
+        let types = self.type_names.clone();
         let done = t_args("msg-exported", &[("count", ids.len().into()), ("path", path.display().to_string().into())]);
         self.spawn_op(done, move || {
-            let snap = shared.snapshot();
-            let file = std::fs::File::create(&path)?;
-            let mut w = std::io::BufWriter::new(file);
-            let mut buf = String::new();
-            use std::io::Write;
-            match format.as_str() {
-                "efu" | "csv" => {
-                    let mut ew = fnc_index::efu::EfuWriter::new(w)?;
-                    for id in ids {
-                        if snap.is_live(id) {
-                            ew.write_entry(&snap, id, &mut buf)?;
-                        }
-                    }
-                    ew.finish()?.flush()?;
-                }
-                _ => {
-                    for id in ids {
-                        if snap.is_live(id) {
-                            snap.full_path(id, &mut buf);
-                            writeln!(w, "{buf}")?;
-                        }
-                    }
-                    w.flush()?;
-                }
-            }
-            Ok(())
+            crate::export::write_file(&path, &columns, &shared.snapshot(), &ids, Some(types)).map(|_| ())
         });
     }
 }
