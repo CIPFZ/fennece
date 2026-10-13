@@ -155,7 +155,8 @@ fn files_fixture() -> Fixture {
         efu.push_str(&format!("\"{}\",,,,16\n", root.join(d).display()));
     }
     for (name, bytes) in &files {
-        let p = root.join(name);
+        // Native separators: EFU paths on Windows split at `\`.
+        let p = name.split('/').fold(root.clone(), |p, c| p.join(c));
         std::fs::write(&p, bytes).unwrap();
         efu.push_str(&format!("\"{}\",{},7,,32\n", p.display(), bytes.len()));
     }
