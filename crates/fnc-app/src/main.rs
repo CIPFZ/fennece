@@ -17,6 +17,9 @@ mod icon;
 mod import;
 mod indexer;
 mod journal;
+// The advanced rename dialog uses it (M6 UI).
+#[cfg_attr(not(test), allow(dead_code))]
+mod rename;
 #[cfg(feature = "semantic")]
 mod semantic;
 mod thumbs;

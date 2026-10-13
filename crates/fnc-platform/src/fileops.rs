@@ -81,6 +81,32 @@ pub fn delete(owner: Owner, paths: &[PathBuf], permanent: bool) -> io::Result<bo
     imp::delete(owner, paths, permanent)
 }
 
+/// An item moved to the recycle bin: where it was and where the bin keeps it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Recycled {
+    /// Path before deletion.
+    pub original: PathBuf,
+    /// The item inside the recycle bin (Windows: `…\$Recycle.Bin\<SID>\$R…`).
+    pub bin_item: PathBuf,
+}
+
+/// Moves `paths` to the recycle bin and reports where each went (for undo). Items the
+/// shell did not recycle (cancelled, too large) are missing from the result.
+pub fn delete_to_recycle_bin(owner: Owner, paths: &[PathBuf]) -> io::Result<Vec<Recycled>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    imp::delete_to_recycle_bin(owner, paths)
+}
+
+/// Restores recycled items to their original places (undo of a delete).
+pub fn restore_from_recycle_bin(owner: Owner, items: &[Recycled]) -> io::Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    imp::restore_from_recycle_bin(owner, items)
+}
+
 /// Renames `path` to `new_name` (a name, not a path).
 pub fn rename(owner: Owner, path: &Path, new_name: &str) -> io::Result<()> {
     if new_name.is_empty() || new_name.contains(['\\', '/']) {
@@ -501,6 +527,193 @@ mod imp {
         perform(&op)
     }
 
+    /// Records where deleted items went (`PostDeleteItem`'s newly created item).
+    #[implement(windows::Win32::UI::Shell::IFileOperationProgressSink)]
+    struct DeleteSink {
+        recycled: std::rc::Rc<std::cell::RefCell<Vec<Recycled>>>,
+    }
+
+    fn item_path(item: &IShellItem) -> Option<PathBuf> {
+        // SAFETY: valid item; the returned string is CoTaskMem-allocated and freed here.
+        unsafe {
+            let p = item.GetDisplayName(windows::Win32::UI::Shell::SIGDN_FILESYSPATH).ok()?;
+            let s = p.to_string().ok();
+            windows::Win32::System::Com::CoTaskMemFree(Some(p.0 as *const core::ffi::c_void));
+            s.map(PathBuf::from)
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    impl windows::Win32::UI::Shell::IFileOperationProgressSink_Impl for DeleteSink_Impl {
+        fn StartOperations(&self) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn FinishOperations(&self, _hr: HRESULT) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PreRenameItem(&self, _f: u32, _i: windows::core::Ref<IShellItem>, _n: &PCWSTR) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PostRenameItem(
+            &self,
+            _f: u32,
+            _i: windows::core::Ref<IShellItem>,
+            _n: &PCWSTR,
+            _hr: HRESULT,
+            _new: windows::core::Ref<IShellItem>,
+        ) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PreMoveItem(
+            &self,
+            _f: u32,
+            _i: windows::core::Ref<IShellItem>,
+            _d: windows::core::Ref<IShellItem>,
+            _n: &PCWSTR,
+        ) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PostMoveItem(
+            &self,
+            _f: u32,
+            _i: windows::core::Ref<IShellItem>,
+            _d: windows::core::Ref<IShellItem>,
+            _n: &PCWSTR,
+            _hr: HRESULT,
+            _new: windows::core::Ref<IShellItem>,
+        ) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PreCopyItem(
+            &self,
+            _f: u32,
+            _i: windows::core::Ref<IShellItem>,
+            _d: windows::core::Ref<IShellItem>,
+            _n: &PCWSTR,
+        ) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PostCopyItem(
+            &self,
+            _f: u32,
+            _i: windows::core::Ref<IShellItem>,
+            _d: windows::core::Ref<IShellItem>,
+            _n: &PCWSTR,
+            _hr: HRESULT,
+            _new: windows::core::Ref<IShellItem>,
+        ) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PreDeleteItem(&self, _f: u32, _i: windows::core::Ref<IShellItem>) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PostDeleteItem(
+            &self,
+            _f: u32,
+            item: windows::core::Ref<IShellItem>,
+            hr: HRESULT,
+            new: windows::core::Ref<IShellItem>,
+        ) -> windows::core::Result<()> {
+            if hr.is_ok()
+                && let (Some(item), Some(new)) = (item.as_ref(), new.as_ref())
+                && let (Some(original), Some(bin_item)) = (item_path(item), item_path(new))
+            {
+                self.recycled.borrow_mut().push(Recycled { original, bin_item });
+            }
+            Ok(())
+        }
+        fn PreNewItem(&self, _f: u32, _d: windows::core::Ref<IShellItem>, _n: &PCWSTR) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PostNewItem(
+            &self,
+            _f: u32,
+            _d: windows::core::Ref<IShellItem>,
+            _n: &PCWSTR,
+            _t: &PCWSTR,
+            _a: u32,
+            _hr: HRESULT,
+            _new: windows::core::Ref<IShellItem>,
+        ) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn UpdateProgress(&self, _total: u32, _done: u32) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn ResetTimer(&self) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn PauseTimer(&self) -> windows::core::Result<()> {
+            Ok(())
+        }
+        fn ResumeTimer(&self) -> windows::core::Result<()> {
+            Ok(())
+        }
+    }
+
+    pub fn delete_to_recycle_bin(owner: Owner, paths: &[PathBuf]) -> io::Result<Vec<Recycled>> {
+        let _com = Com::init();
+        let op = file_operation(owner, FOF_ALLOWUNDO.0 | FOFX_RECYCLEONDELETE.0 | FOFX_ADDUNDORECORD.0)?;
+        let recycled = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink: windows::Win32::UI::Shell::IFileOperationProgressSink =
+            DeleteSink { recycled: recycled.clone() }.into();
+        let items = item_array(paths)?;
+        // SAFETY: valid operation, sink and items; the sink is unadvised before it drops.
+        let cookie = unsafe { op.Advise(&sink) }.map_err(to_io)?;
+        // SAFETY: as above.
+        let r = unsafe { op.DeleteItems(&items) }.map_err(to_io).and_then(|()| perform(&op));
+        // SAFETY: `cookie` came from `Advise` on this operation.
+        let _ = unsafe { op.Unadvise(cookie) };
+        r?;
+        Ok(recycled.borrow().clone())
+    }
+
+    pub fn restore_from_recycle_bin(owner: Owner, items: &[Recycled]) -> io::Result<()> {
+        use windows::Win32::UI::Shell::{
+            BHID_EnumItems, FOLDERID_RecycleBinFolder, IEnumShellItems, KF_FLAG_DEFAULT, SHGetKnownFolderItem,
+        };
+        let _com = Com::init();
+        let want: std::collections::HashSet<String> =
+            items.iter().map(|r| r.bin_item.to_string_lossy().to_lowercase()).collect();
+        // SAFETY: known-folder lookup without a token (current user).
+        let bin: IShellItem =
+            unsafe { SHGetKnownFolderItem(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, None) }.map_err(to_io)?;
+        // SAFETY: valid item; enumerator of its children.
+        let en: IEnumShellItems = unsafe { bin.BindToHandler(None, &BHID_EnumItems) }.map_err(to_io)?;
+        let mut found = Vec::new();
+        loop {
+            let mut got = [None];
+            let mut n = 0u32;
+            // SAFETY: one slot, `n` receives the count.
+            if unsafe { en.Next(&mut got, Some(&mut n)) }.is_err() || n == 0 {
+                break;
+            }
+            if let Some(item) = got[0].take()
+                && item_path(&item).is_some_and(|p| want.contains(&p.to_string_lossy().to_lowercase()))
+            {
+                found.push(item);
+            }
+        }
+        if found.len() < want.len() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "items are no longer in the recycle bin"));
+        }
+        for item in found {
+            // SAFETY: valid recycle-bin item; its shell context menu implements "undelete".
+            let cm: IContextMenu = unsafe { item.BindToHandler(None, &BHID_SFUIObject) }.map_err(to_io)?;
+            let verb = c"undelete";
+            let info = CMINVOKECOMMANDINFO {
+                cbSize: std::mem::size_of::<CMINVOKECOMMANDINFO>() as u32,
+                hwnd: hwnd(owner),
+                lpVerb: PCSTR(verb.as_ptr().cast()),
+                nShow: SW_SHOWNORMAL.0,
+                ..Default::default()
+            };
+            // SAFETY: valid menu; `info` and the verb outlive the call.
+            unsafe { cm.InvokeCommand(&info) }.map_err(to_io)?;
+        }
+        Ok(())
+    }
+
     pub fn rename(owner: Owner, path: &Path, new_name: &str) -> io::Result<()> {
         let _com = Com::init();
         let op = file_operation(owner, FOF_ALLOWUNDO.0 | FOFX_ADDUNDORECORD.0)?;
@@ -602,7 +815,33 @@ mod imp {
         Ok(true)
     }
 
-    fn trash(p: &Path) -> io::Result<()> {
+    pub fn delete_to_recycle_bin(_o: Owner, paths: &[PathBuf]) -> io::Result<Vec<Recycled>> {
+        let mut out = Vec::new();
+        for p in paths {
+            let original = std::fs::canonicalize(p)?;
+            let bin_item = trash(p)?;
+            out.push(Recycled { original, bin_item });
+        }
+        Ok(out)
+    }
+
+    pub fn restore_from_recycle_bin(_o: Owner, items: &[Recycled]) -> io::Result<()> {
+        for r in items {
+            if r.original.exists() {
+                return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{} exists", r.original.display())));
+            }
+            std::fs::rename(&r.bin_item, &r.original)?;
+            // `Trash/files/x` ↔ `Trash/info/x.trashinfo`.
+            if let (Some(files), Some(name)) = (r.bin_item.parent(), r.bin_item.file_name())
+                && let Some(base) = files.parent()
+            {
+                let _ = std::fs::remove_file(base.join("info").join(format!("{}.trashinfo", name.to_string_lossy())));
+            }
+        }
+        Ok(())
+    }
+
+    fn trash(p: &Path) -> io::Result<PathBuf> {
         let base = std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
@@ -624,7 +863,8 @@ mod imp {
         let info_file =
             info.join(format!("{}.trashinfo", target.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
         std::fs::write(info_file, format!("[Trash Info]\nPath={}\nDeletionDate={stamp}\n", abs.display()))?;
-        std::fs::rename(p, target)
+        std::fs::rename(p, &target)?;
+        Ok(target)
     }
 
     fn chrono_like_now() -> String {
