@@ -5,10 +5,13 @@
 //! cheap, selective column predicates run before string matching, and decides whether
 //! the previous result set can be reused as input (SPEC ch.1 §6.1).
 
+use std::sync::Arc;
+
+use fnc_core::EntryId;
 use fnc_core::fold::{FoldOptions, fold_str_into};
 
 use crate::ast::{CmpOp, Expr, ModSet, Modifier, Term, Value};
-use crate::date::{DateEnv, parse_date};
+use crate::date::{DateEnv, DateWild, parse_date};
 use crate::funcs::{FuncId, MacroId, builtin_macro_exts};
 use crate::size::parse_size;
 
@@ -44,6 +47,21 @@ pub enum Target {
     Ext,
 }
 
+/// Pinyin matching of Chinese names (`pinyin:` / `pinyinquan:` / `pinyinjian:`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
+pub enum PinyinMode {
+    /// Literal matching only.
+    #[default]
+    Off,
+    /// Per character: full pinyin, initials or any prefix of a reading
+    /// (`py:jdbg`, `py:jidubaogao`, `py:jidubg` all match 季度报告).
+    Any,
+    /// Full pinyin syllables only (`pinyinquan:`).
+    Full,
+    /// Initials only (`pinyinjian:`; `zh` `ch` `sh` count as initials too).
+    Initials,
+}
+
 /// Text predicate options resolved from modifiers.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TextPred {
@@ -75,6 +93,14 @@ pub struct TextPred {
     pub regex_flags: (bool, bool),
     /// Participates in highlighting.
     pub highlight: bool,
+    /// Pinyin matching (substring patterns only; [`PinyinMode::Off`] otherwise).
+    pub pinyin: PinyinMode,
+    /// `ascii:` — only ASCII letters are case-folded; every other character must match
+    /// exactly (no Unicode case folding, no diacritic or compatibility folding).
+    pub ascii: bool,
+    /// `fuzzy:` — substring match with edit distance ≤ 1 (substring patterns of at
+    /// least 3 characters; shorter patterns match exactly).
+    pub fuzzy: bool,
 }
 
 impl TextPred {
@@ -83,8 +109,18 @@ impl TextPred {
         FoldOptions { fold_case: !self.case, strip_diacritics: !self.diacritics }
     }
 
-    /// Pattern folded with [`TextPred::fold_options`].
+    /// `true` if the subject is the original text with only ASCII letters lowercased
+    /// (`ascii:` without `case:`/`diacritics:`/`regex:`).
+    pub fn ascii_fold(&self) -> bool {
+        self.ascii && !self.case && !self.diacritics && self.kind != PatternKind::Regex
+    }
+
+    /// Pattern folded like the subject: [`TextPred::fold_options`], or ASCII-only
+    /// lowercasing for `ascii:`.
     pub fn folded_pattern(&self) -> String {
+        if self.ascii_fold() {
+            return self.pattern.to_ascii_lowercase();
+        }
         let mut s = String::with_capacity(self.pattern.len());
         fold_str_into(&self.pattern, self.fold_options(), &mut s);
         s
@@ -148,6 +184,20 @@ pub enum NumProp {
     ChildFileCount,
     /// Direct child folders.
     ChildFolderCount,
+    /// Entries at any depth below a folder.
+    DescendantCount,
+    /// Files at any depth below a folder.
+    DescendantFileCount,
+    /// Folders at any depth below a folder.
+    DescendantFolderCount,
+    /// Other entries in the same folder.
+    SiblingCount,
+    /// Aggregate size of all files below a folder (files: their own size).
+    FolderSize,
+    /// Number of names (hard links) of a file.
+    HardlinkCount,
+    /// Number of words in the name (extension excluded).
+    NameParts,
 }
 
 /// Leaf predicate.
@@ -184,6 +234,33 @@ pub enum Pred {
     Ancestor(TextPred),
     /// Folder has a direct child whose name matches.
     Child(TextPred),
+    /// Folder has a descendant (any depth) whose name matches.
+    Descendant(TextPred),
+    /// The entry (or its parent / some ancestor, per scope) has a sibling — another
+    /// entry in the same folder — whose name matches.
+    Sibling(SiblingScope, TextPred),
+    /// Type description (`type:`): "File folder", "File", the registered description
+    /// of the extension or "<EXT> File".
+    Type(TextPred),
+    /// Explicit list (`filelist:`): whole file names and full paths, folded.
+    FileList {
+        /// Folded whole names.
+        names: Vec<String>,
+        /// Folded full paths (`\` separators, no trailing separator).
+        paths: Vec<String>,
+    },
+    /// A path built from the candidate exists in the index (`fileexists:` /
+    /// `folderexists:`).
+    Exists {
+        /// Path template; relative paths are resolved against the entry's folder.
+        template: Vec<PathPiece>,
+        /// Require a folder (`true`) or a file.
+        folder: bool,
+    },
+    /// Entry is in the omit set (`omit:`).
+    Omitted(OmitSet),
+    /// Date with wildcard fields (`dm:*-02`, `dm:*-*-*T9:00..*-*-*T17:00`).
+    DateWild(DateCol, DateWild),
     /// Volume root path starts with (folded) text.
     Volume(String),
     /// Volume kind name (`ntfs`, `folder`, ...).
@@ -198,6 +275,106 @@ pub enum Pred {
     Unsupported(FuncId),
     /// Value could not be interpreted: matches nothing.
     Invalid(String),
+}
+
+/// Whose siblings the `sibling:` family looks at.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SiblingScope {
+    /// The entry itself (`sibling:`).
+    Own,
+    /// Its parent folder (`parent-sibling:`).
+    Parent,
+    /// Any ancestor folder (`ancestor-sibling:`).
+    Ancestor,
+}
+
+/// Candidate property substituted into a path template (SPEC ch.2 §5.2).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum EntryVar {
+    /// `$name:` — file name.
+    Name,
+    /// `$stem:` — name without extension.
+    Stem,
+    /// `$ext:` — extension without the dot.
+    Ext,
+    /// `$path:` — full path of the containing folder.
+    Path,
+    /// `$parent:` — name of the containing folder.
+    Parent,
+    /// `$fullpath:` — full path of the entry.
+    FullPath,
+}
+
+impl EntryVar {
+    /// Looks up a variable by normalised name (without `$` and `:`).
+    pub fn lookup(norm: &str) -> Option<EntryVar> {
+        Some(match norm {
+            "name" | "filename" => EntryVar::Name,
+            "stem" | "nameextstripped" | "namepart" => EntryVar::Stem,
+            "ext" | "extension" => EntryVar::Ext,
+            "path" | "location" => EntryVar::Path,
+            "parent" | "parentname" => EntryVar::Parent,
+            "fullpath" | "fp" => EntryVar::FullPath,
+            _ => return None,
+        })
+    }
+}
+
+/// Piece of a path template.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum PathPiece {
+    /// Literal text.
+    Lit(String),
+    /// Substituted property of the candidate.
+    Var(EntryVar),
+}
+
+/// Splits `$var:` substitutions out of `text`; unknown variables stay literal.
+pub fn parse_template(text: &str) -> Vec<PathPiece> {
+    let mut out = Vec::new();
+    let mut lit = String::new();
+    let mut rest = text;
+    let mut norm = String::new();
+    while let Some(i) = rest.find('$') {
+        lit.push_str(&rest[..i]);
+        let after = &rest[i + 1..];
+        let var = after.find(':').and_then(|j| {
+            let name = &after[..j];
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                return None;
+            }
+            crate::funcs::normalize_name(name, &mut norm);
+            EntryVar::lookup(&norm).map(|v| (v, j))
+        });
+        match var {
+            Some((v, j)) => {
+                if !lit.is_empty() {
+                    out.push(PathPiece::Lit(std::mem::take(&mut lit)));
+                }
+                out.push(PathPiece::Var(v));
+                rest = &after[j + 1..];
+            }
+            None => {
+                lit.push('$');
+                rest = after;
+            }
+        }
+    }
+    lit.push_str(rest);
+    if !lit.is_empty() {
+        out.push(PathPiece::Lit(lit));
+    }
+    out
+}
+
+/// Entries hidden with "Omit result" in the UI. Ids are only meaningful for the index
+/// instance they were taken from; for any other instance the set is empty.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct OmitSet {
+    /// `IndexStore::instance()` the ids belong to.
+    pub instance: u64,
+    /// Omitted entries.
+    pub ids: Arc<[EntryId]>,
 }
 
 /// Reparse point flavour.
@@ -266,11 +443,17 @@ pub struct PlanEnv {
     pub star_all: bool,
     /// Date context.
     pub date: DateEnv,
+    /// Also match plain search terms by pinyin (as if `pinyin:` were given);
+    /// `nopinyin:` turns it off per term. Off by default (zero overhead).
+    pub pinyin_default: bool,
+    /// Omitted results: excluded from every result set unless the search contains
+    /// `omit:` (which then matches exactly the omitted entries).
+    pub omit: Option<OmitSet>,
 }
 
 impl Default for PlanEnv {
     fn default() -> Self {
-        Self { defaults: ModSet::EMPTY, star_all: false, date: DateEnv::now() }
+        Self { defaults: ModSet::EMPTY, star_all: false, date: DateEnv::now(), pinyin_default: false, omit: None }
     }
 }
 
@@ -290,12 +473,26 @@ pub struct PlannedQuery {
 pub fn plan(ast: &Expr, env: &PlanEnv, prev: Option<&PlannedQuery>) -> PlannedQuery {
     let mut cx = Cx { env, diags: Vec::new() };
     let mut root = cx.node(ast);
+    if let Some(omit) = &env.omit
+        && !mentions_omit(&root)
+    {
+        root = and_node(vec![root, Node::Not(Box::new(Node::Leaf(Pred::Omitted(omit.clone()))))]);
+    }
     order_by_cost(&mut root);
     let input = match prev {
         Some(p) if narrows(&root, &p.root) => InputSet::Previous,
         _ => InputSet::All,
     };
     PlannedQuery { root, input, diagnostics: cx.diags }
+}
+
+fn mentions_omit(n: &Node) -> bool {
+    match n {
+        Node::And(v) | Node::Or(v) => v.iter().any(mentions_omit),
+        Node::Not(c) => mentions_omit(c),
+        Node::Leaf(Pred::Omitted(_)) => true,
+        _ => false,
+    }
 }
 
 struct Cx<'e> {
@@ -410,6 +607,29 @@ impl Cx<'_> {
         if target == Target::Name && self.on(mods, Modifier::Path) {
             target = Target::FullPath;
         }
+        // Pinyin and fuzzy matching only refine plain substring searches (not
+        // whole-word / prefix / suffix / punctuation-insensitive ones).
+        let substring = kind == PatternKind::Substring
+            && ![
+                Modifier::WholeWord,
+                Modifier::Prefix,
+                Modifier::Suffix,
+                Modifier::IgnorePunctuation,
+                Modifier::IgnoreWhitespace,
+            ]
+            .into_iter()
+            .any(|m| self.on(mods, m));
+        let pinyin = if !substring {
+            PinyinMode::Off
+        } else if self.on(mods, Modifier::PinyinJian) {
+            PinyinMode::Initials
+        } else if self.on(mods, Modifier::PinyinQuan) {
+            PinyinMode::Full
+        } else if self.on(mods, Modifier::Pinyin) {
+            PinyinMode::Any
+        } else {
+            PinyinMode::Off
+        };
         TextPred {
             pattern,
             kind,
@@ -425,6 +645,9 @@ impl Cx<'_> {
             wildcard_sets,
             regex_flags: (self.on(mods, Modifier::DotAll), self.on(mods, Modifier::Multiline)),
             highlight: mods.get(Modifier::Highlight).unwrap_or(true),
+            pinyin,
+            ascii: self.on(mods, Modifier::Ascii),
+            fuzzy: substring && self.on(mods, Modifier::Fuzzy),
         }
     }
 
@@ -462,7 +685,16 @@ impl Cx<'_> {
         if text.is_empty() {
             return Node::All;
         }
-        Node::Leaf(Pred::Text(self.text_pred(t.mods, text, Target::Name)))
+        let mut p = self.text_pred(t.mods, text, Target::Name);
+        if self.env.pinyin_default
+            && p.pinyin == PinyinMode::Off
+            && p.kind == PatternKind::Substring
+            && !(p.whole_word || p.prefix || p.suffix || p.ignore_punct || p.ignore_ws)
+            && t.mods.get(Modifier::Pinyin) != Some(false)
+        {
+            p.pinyin = PinyinMode::Any;
+        }
+        Node::Leaf(Pred::Text(p))
     }
 
     /// Text predicates for every list item of a text function, OR-ed.
@@ -526,6 +758,31 @@ impl Cx<'_> {
             F::ChildCount => self.num_node(f, NumProp::ChildCount, &t.value),
             F::ChildFileCount => self.num_node(f, NumProp::ChildFileCount, &t.value),
             F::ChildFolderCount => self.num_node(f, NumProp::ChildFolderCount, &t.value),
+            F::Descendant => self.text_items(t, Target::Name, Pred::Descendant),
+            F::DescendantCount => self.num_node(f, NumProp::DescendantCount, &t.value),
+            F::DescendantFileCount => self.num_node(f, NumProp::DescendantFileCount, &t.value),
+            F::DescendantFolderCount => self.num_node(f, NumProp::DescendantFolderCount, &t.value),
+            F::Sibling => self.text_items(t, Target::Name, |p| Pred::Sibling(SiblingScope::Own, p)),
+            F::ParentSibling => self.text_items(t, Target::Name, |p| Pred::Sibling(SiblingScope::Parent, p)),
+            F::AncestorSibling => self.text_items(t, Target::Name, |p| Pred::Sibling(SiblingScope::Ancestor, p)),
+            F::SiblingCount => self.num_node(f, NumProp::SiblingCount, &t.value),
+            F::FolderSize => self.num_node(f, NumProp::FolderSize, &t.value),
+            F::HardlinkCount => self.num_node(f, NumProp::HardlinkCount, &t.value),
+            F::NameParts => self.num_node(f, NumProp::NameParts, &t.value),
+            F::Type => match &t.value {
+                Value::Empty => Node::All,
+                _ => self.text_items(t, Target::Name, Pred::Type),
+            },
+            F::FileListFn => self.file_list(t),
+            F::FileExists | F::FolderExists => self.exists(t, f == F::FolderExists),
+            F::Omit => match &self.env.omit {
+                Some(set) => leaf(Pred::Omitted(set.clone())),
+                // No omit set: nothing is omitted, so the flag changes nothing.
+                None => Node::All,
+            },
+            // SPEC-GAP: search weights (`weight:N`) only affect Everything's
+            // relevance ordering, which Fennec does not implement; parsed and ignored.
+            F::Weight => Node::All,
             F::Depth => self.num_node(f, NumProp::Depth, &t.value),
             F::Empty => leaf(Pred::Empty),
             F::Root => leaf(Pred::Root),
@@ -533,11 +790,11 @@ impl Cx<'_> {
             F::PathLength => self.num_node(f, NumProp::PathLength, &t.value),
             F::FullPathLength => self.num_node(f, NumProp::FullPathLength, &t.value),
             F::Size => self.num_node(f, NumProp::Size, &t.value),
-            F::DateModified => self.num_node(f, NumProp::Date(DateCol::Modified), &t.value),
-            F::DateCreated => self.num_node(f, NumProp::Date(DateCol::Created), &t.value),
-            F::DateAccessed => self.num_node(f, NumProp::Date(DateCol::Accessed), &t.value),
-            F::DateRun => self.num_node(f, NumProp::Date(DateCol::Run), &t.value),
-            F::DateRecentlyChanged => self.num_node(f, NumProp::Date(DateCol::RecentlyChanged), &t.value),
+            F::DateModified => self.date_node(f, DateCol::Modified, &t.value),
+            F::DateCreated => self.date_node(f, DateCol::Created, &t.value),
+            F::DateAccessed => self.date_node(f, DateCol::Accessed, &t.value),
+            F::DateRun => self.date_node(f, DateCol::Run, &t.value),
+            F::DateRecentlyChanged => self.date_node(f, DateCol::RecentlyChanged, &t.value),
             F::RunCount => self.num_node(f, NumProp::RunCount, &t.value),
             F::Frn => self.num_node(f, NumProp::Frn, &t.value),
             F::Attrib => self.attrib(t),
@@ -616,6 +873,104 @@ impl Cx<'_> {
         Node::Leaf(Pred::Kind(KindClass::Exts(exts)))
     }
 
+    /// `filelist:a|b|c:\x\y.txt` (also `;`-separated): whole names, or full paths when
+    /// an item contains a separator. Matching is case- and diacritic-insensitive.
+    fn file_list(&mut self, t: &Term) -> Node {
+        let items: Vec<&str> = match &t.value {
+            Value::Text(s) => vec![s.as_str()],
+            Value::List(v) => v.iter().filter_map(Value::as_text).collect(),
+            Value::Empty => return Node::Nothing,
+            other => {
+                self.diags.push(PlanDiag::InvalidValue(FuncId::FileListFn, format!("{other:?}")));
+                return Node::Nothing;
+            }
+        };
+        let (mut names, mut paths) = (Vec::new(), Vec::new());
+        for item in items.iter().flat_map(|s| s.split('|')) {
+            let item = item.trim();
+            if item.is_empty() {
+                continue;
+            }
+            let mut f = String::new();
+            fold_str_into(item, FoldOptions::DEFAULT, &mut f);
+            if f.contains(['\\', '/']) {
+                let p = f.replace('/', "\\");
+                let trimmed = p.trim_end_matches('\\');
+                paths.push(if trimmed.is_empty() { p.clone() } else { trimmed.to_string() });
+            } else {
+                names.push(f);
+            }
+        }
+        names.sort();
+        names.dedup();
+        paths.sort();
+        paths.dedup();
+        if names.is_empty() && paths.is_empty() {
+            return Node::Nothing;
+        }
+        Node::Leaf(Pred::FileList { names, paths })
+    }
+
+    /// `fileexists:` / `folderexists:` with `$var:` substitution; `;` lists are OR-ed.
+    fn exists(&mut self, t: &Term, folder: bool) -> Node {
+        let items: Vec<&str> = match &t.value {
+            Value::Text(s) => vec![s.as_str()],
+            Value::List(v) => v.iter().filter_map(Value::as_text).collect(),
+            _ => return Node::Nothing,
+        };
+        or_node(
+            items
+                .into_iter()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| Node::Leaf(Pred::Exists { template: parse_template(s.trim()), folder }))
+                .collect(),
+        )
+    }
+
+    /// Date functions: wildcard dates (`*-02`) become [`Pred::DateWild`], everything
+    /// else a FILETIME range.
+    fn date_node(&mut self, f: FuncId, col: DateCol, v: &Value) -> Node {
+        fn has_star(v: &Value) -> bool {
+            match v {
+                Value::Text(s) => s.contains('*'),
+                Value::List(items) => items.iter().any(has_star),
+                Value::Range(a, b) => has_star(a) || has_star(b),
+                Value::Cmp(_, inner) => has_star(inner),
+                Value::Empty => false,
+            }
+        }
+        if !has_star(v) {
+            return self.num_node(f, NumProp::Date(col), v);
+        }
+        let env = &self.env.date;
+        let wild = match v {
+            Value::List(items) => return or_node(items.iter().map(|i| self.date_node(f, col, i)).collect()),
+            Value::Text(s) => DateWild::parse(s, env).map(|w| (w, false)),
+            Value::Range(a, b) => match (a.as_text(), b.as_text()) {
+                (Some(a), Some(b)) => DateWild::parse_range(a, b, env).map(|w| (w, false)),
+                _ => None,
+            },
+            Value::Cmp(op, inner) => inner.as_text().and_then(|s| DateWild::parse(s, env)).map(|w| match op {
+                CmpOp::Eq => (w, false),
+                CmpOp::Ne => (w, true),
+                CmpOp::Gt => (w.after(), false),
+                CmpOp::Ge => (w.from_start(), false),
+                CmpOp::Lt => (w.before(), false),
+                CmpOp::Le => (w.until_end(), false),
+            }),
+            Value::Empty => None,
+        };
+        match wild {
+            Some((w, false)) => Node::Leaf(Pred::DateWild(col, w)),
+            Some((w, true)) => Node::Not(Box::new(Node::Leaf(Pred::DateWild(col, w)))),
+            None => {
+                let text = format!("{v:?}");
+                self.diags.push(PlanDiag::InvalidValue(f, text.clone()));
+                Node::Leaf(Pred::Invalid(text))
+            }
+        }
+    }
+
     fn attrib(&mut self, t: &Term) -> Node {
         let Some(letters) = t.value.as_text() else {
             return match t.value {
@@ -639,7 +994,7 @@ impl Cx<'_> {
     /// Span of a scalar value for numeric property `prop`.
     fn span(&self, prop: NumProp, text: &str) -> Option<(i64, i64)> {
         match prop {
-            NumProp::Size => parse_size(text).map(|s| (clamp_u64(s.lo), clamp_u64(s.hi))),
+            NumProp::Size | NumProp::FolderSize => parse_size(text).map(|s| (clamp_u64(s.lo), clamp_u64(s.hi))),
             NumProp::Date(_) => parse_date(text, &self.env.date).map(|s| (s.lo, s.hi)),
             _ => {
                 let t = text.trim();
@@ -702,7 +1057,11 @@ impl Cx<'_> {
                 let Some((lo, hi)) = self.span(prop, text) else { return false };
                 // SPEC-GAP: sizes compare against the exact value (`size:>1mb` is
                 // > 1048576 bytes); dates and counts compare against the whole span.
-                let (lo, hi) = if prop == NumProp::Size { (lo, lo.saturating_add(1)) } else { (lo, hi) };
+                let (lo, hi) = if matches!(prop, NumProp::Size | NumProp::FolderSize) {
+                    (lo, lo.saturating_add(1))
+                } else {
+                    (lo, hi)
+                };
                 match op {
                     CmpOp::Eq => out.ranges.push((lo, hi)),
                     CmpOp::Ne => {
@@ -744,10 +1103,30 @@ pub fn cost(n: &Node) -> u32 {
         Node::Not(c) => cost(c),
         Node::Leaf(p) => match p {
             Pred::IsDir(_) | Pred::Root | Pred::Unsupported(_) | Pred::Invalid(_) => 1,
-            Pred::Ext { .. } | Pred::Attrib { .. } | Pred::Kind(_) | Pred::Online(_) | Pred::VolumeKind(_) => 2,
-            Pred::Reparse(_) | Pred::Volume(_) | Pred::Empty => 3,
+            Pred::Ext { .. }
+            | Pred::Attrib { .. }
+            | Pred::Kind(_)
+            | Pred::Online(_)
+            | Pred::VolumeKind(_)
+            | Pred::Type(_)
+            | Pred::Omitted(_) => 2,
+            // Folder sets are precomputed at compile time; per entry a bit lookup.
+            Pred::Reparse(_) | Pred::Volume(_) | Pred::Empty | Pred::Descendant(_) => 3,
+            Pred::Sibling(scope, _) => match scope {
+                SiblingScope::Own | SiblingScope::Parent => 3,
+                SiblingScope::Ancestor => 9,
+            },
+            Pred::FileList { .. } => 4,
+            Pred::DateWild(..) => 8,
+            Pred::Exists { .. } => 30,
             Pred::Num(prop, _) => match prop {
                 NumProp::Size | NumProp::Date(_) | NumProp::Frn | NumProp::NameLength => 3,
+                NumProp::FolderSize | NumProp::HardlinkCount => 4,
+                NumProp::DescendantCount
+                | NumProp::DescendantFileCount
+                | NumProp::DescendantFolderCount
+                | NumProp::SiblingCount
+                | NumProp::NameParts => 5,
                 NumProp::RunCount | NumProp::ChildCount | NumProp::ChildFileCount | NumProp::ChildFolderCount => 6,
                 NumProp::Depth | NumProp::PathLength | NumProp::FullPathLength => 12,
             },
@@ -762,7 +1141,9 @@ pub fn cost(n: &Node) -> u32 {
                     Target::Name | Target::Stem | Target::Ext => 0,
                     Target::FullPath | Target::PathPart => 10,
                 };
-                base + target + if t.case || t.diacritics || t.ignore_punct || t.ignore_ws { 6 } else { 0 }
+                let options = t.case || t.diacritics || t.ignore_punct || t.ignore_ws || t.ascii;
+                let fancy = if t.pinyin != PinyinMode::Off || t.fuzzy { 8 } else { 0 };
+                base + target + if options { 6 } else { 0 } + fancy
             }
             Pred::Parent(_) | Pred::Ancestor(_) | Pred::Child(_) => 9,
         },
@@ -809,6 +1190,12 @@ fn implies(a: &Node, b: &Node) -> bool {
                 && !x.suffix
                 && x.ignore_punct == y.ignore_punct
                 && x.ignore_ws == y.ignore_ws
+                && x.ascii == y.ascii
+                // Pinyin and fuzzy matches are not monotonic under extension.
+                && x.pinyin == PinyinMode::Off
+                && y.pinyin == PinyinMode::Off
+                && !x.fuzzy
+                && !y.fuzzy
                 && x.folded_pattern().contains(&y.folded_pattern())
         }
         (Node::Leaf(Pred::Ext { exts: xa, none: na }), Node::Leaf(Pred::Ext { exts: xb, none: nb })) => {

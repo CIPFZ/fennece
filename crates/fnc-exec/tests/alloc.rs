@@ -20,7 +20,11 @@ fn sample() -> IndexStore {
     for d in 0..50 {
         text.push_str(&format!("\"C:\\Dir{d}\\Sub Folder\",,,,16\n"));
         for f in 0..40 {
-            text.push_str(&format!("\"C:\\Dir{d}\\Sub Folder\\IMG_{f:04}.JPG\",{},,,32\n", f * 1000));
+            text.push_str(&format!(
+                "\"C:\\Dir{d}\\Sub Folder\\IMG_{f:04}.JPG\",{},{},,32\n",
+                f * 1000,
+                134_000_000_000_000_000u64 + f as u64 * 864_000_000_000
+            ));
             text.push_str(&format!("\"C:\\Dir{d}\\report-{f}.txt\",10,,,32\n"));
             text.push_str(&format!("\"C:\\Dir{d}\\Café 季度 {f}.docx\",10,,,32\n"));
         }
@@ -42,7 +46,31 @@ fn hot_paths_do_not_allocate() {
     let mut path = String::with_capacity(1024);
     let mut hits = 0usize;
 
-    for q in ["img", "*.jpg", "ext:jpg size:>1kb", "dir1\\sub", "café", "季度", "report !txt", "folder:"] {
+    for q in [
+        "img",
+        "*.jpg",
+        "ext:jpg size:>1kb",
+        "dir1\\sub",
+        "café",
+        "季度",
+        "report !txt",
+        "folder:",
+        // M2: modifiers and functions evaluated per entry.
+        "py:jidu",
+        "pinyinjian:jd",
+        "fuzzy:reprot",
+        "ascii:img",
+        "descendantcount:>1",
+        "foldersize:>1kb",
+        "siblingcount:>2",
+        "nameparts:2",
+        "type:jpg",
+        "sibling:img",
+        "hardlinkcount:1",
+        "fileexists:$stem:.txt",
+        "filelist:\"img_0001.jpg|c:\\dir1\\report-1.txt\"",
+        "dm:*-02",
+    ] {
         let p = plan(&parse(q, &ParseEnv::default()).ast, &PlanEnv::default(), None);
         let c = Compiled::new(&p.root, &s, &caches, &cancel).unwrap();
         // Warm-up pass grows the scratch buffers once.

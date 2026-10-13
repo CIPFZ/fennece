@@ -16,6 +16,7 @@ pub mod ast;
 pub mod date;
 pub mod display;
 pub mod duration;
+pub mod filter;
 pub mod funcs;
 pub mod parser;
 pub mod plan;
@@ -23,9 +24,10 @@ pub mod size;
 
 pub use ast::{CmpOp, Expr, MacroRef, ModSet, Modifier, Term, Value};
 pub use display::to_query_string;
+pub use filter::{Filter, FilterSet, combine_filter};
 pub use funcs::{FuncId, MacroId, ValueKind};
 pub use parser::{Diag, DiagKind, ParseEnv, Parsed, Span, SpanKind, UserMacro, parse};
-pub use plan::{InputSet, Node, PlanEnv, PlannedQuery, Pred, TextPred, plan};
+pub use plan::{InputSet, Node, OmitSet, PinyinMode, PlanEnv, PlannedQuery, Pred, TextPred, plan};
 
 #[cfg(test)]
 mod tests;

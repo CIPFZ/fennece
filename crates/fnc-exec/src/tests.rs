@@ -345,3 +345,221 @@ fn engine_filter_and_regex_all() {
     let EngineEvent::Done(o) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(o.results.len(), 2);
 }
+
+// ------------------------------------------------------------------ M2 functions
+
+fn names_on(s: &IndexStore, q: &str, env: &PlanEnv, caches: &Caches) -> BTreeSet<String> {
+    let p = plan(&parse(q, &ParseEnv::default()).ast, env, None);
+    let cancel = CancelToken::new();
+    let rs = execute(&p, s, &ExecCtx { cancel: &cancel, prev: None, caches }).unwrap();
+    rs.ids.iter().map(|&id| s.name_string(id)).collect()
+}
+
+fn names_with(q: &str, env: &PlanEnv, caches: &Caches) -> BTreeSet<String> {
+    names_on(&store(), q, env, caches)
+}
+
+const PHOTOS: &[&str] = &["IMG_0001.JPG", "IMG_0002.jpg", "holiday.png"];
+const BOB_CHILDREN: &[&str] = &["Photos", "Documents", "Empty", "file2.txt", "file10.txt", "README"];
+
+#[test]
+fn descendants() {
+    assert_eq!(names("descendant:*.jpg"), set(&["C:", "Users", "bob", "Photos"]));
+    assert_eq!(names("descendant:cmd"), set(&["C:", "Windows", "System32"]));
+    assert_eq!(names("descendant:nothing-like-this"), set(&[]));
+    assert_eq!(names("descendantcount:19"), set(&["C:"]));
+    assert_eq!(names("descendantcount:0 folder:"), set(&["drivers", "Empty"]));
+    assert_eq!(names("descendantfilecount:>5"), set(&["C:", "Users", "bob"]));
+    assert_eq!(names("descendantfoldercount:2"), set(&["Windows"]));
+    assert_eq!(names("descendantfoldercount:8"), set(&["C:"]));
+    // Files have no descendants (unknown), unless asked for.
+    assert_eq!(names("descendantcount:unknown ext:flac"), set(&["track.flac"]));
+}
+
+#[test]
+fn folder_sizes() {
+    assert_eq!(names("foldersize:7000500"), set(&["Photos"]));
+    assert_eq!(names("fs:1060576"), set(&["Documents"]));
+    assert_eq!(names("folder: foldersize:>8mb"), set(&["C:", "D:", "Music"]));
+    // Files: their own size.
+    assert_eq!(names("foldersize:9000000"), set(&["D:", "Music", "track.flac"]));
+    assert_eq!(names("folder-size:0"), set(&["drivers", "Empty", "café menu.txt"]));
+}
+
+#[test]
+fn siblings() {
+    assert_eq!(names("sibling:readme"), set(&BOB_CHILDREN[..5]));
+    assert_eq!(names("sibling:*.png"), set(&["IMG_0001.JPG", "IMG_0002.jpg"]));
+    assert_eq!(names("sibling:img"), set(PHOTOS));
+    assert_eq!(
+        names("siblingcount:2"),
+        set(&[PHOTOS, &["Report Q3.docx", "café menu.txt", "季度预算表.xlsx"]].concat())
+    );
+    assert_eq!(names("siblingcount:5"), set(BOB_CHILDREN));
+    assert_eq!(names("parent-sibling:documents"), set(PHOTOS));
+    assert_eq!(names("ancestor-sibling:users"), set(&["notepad.exe", "System32", "cmd.exe", "drivers"]));
+    assert_eq!(names("sibling:"), names(""));
+}
+
+#[test]
+fn hardlinks_and_name_parts() {
+    assert_eq!(names("hardlinkcount:1 ext:flac"), set(&["track.flac"]));
+    assert_eq!(names("hardlinks:>1"), set(&[]));
+    assert_eq!(names("nameparts:2"), set(&["IMG_0001.JPG", "IMG_0002.jpg", "Report Q3.docx", "café menu.txt"]));
+    assert_eq!(names("nameparts:0"), set(&[]));
+}
+
+#[test]
+fn type_descriptions() {
+    assert_eq!(names("type:\"jpg file\""), set(&["IMG_0001.JPG", "IMG_0002.jpg"]));
+    assert_eq!(names("type:\"txt file\""), set(&["café menu.txt", "file2.txt", "file10.txt"]));
+    assert_eq!(names("type:folder"), set(ALL_FOLDERS));
+    assert_eq!(names("wfn:type:file"), set(&["README"]));
+    // An injected provider (the registry on Windows) replaces the fallback names.
+    let caches = Caches::new();
+    caches.set_type_names(Some(TypeNames::new(|e| (e == "txt").then(|| "Text Document".to_string()))));
+    let env = PlanEnv::default();
+    assert_eq!(names_with("type:\"text document\"", &env, &caches), set(&["café menu.txt", "file2.txt", "file10.txt"]));
+    assert_eq!(names_with("type:\"png file\"", &env, &caches), set(&["holiday.png"]));
+    caches.set_type_names(None);
+    assert_eq!(names_with("type:\"text document\"", &env, &caches), set(&[]));
+}
+
+#[test]
+fn file_lists() {
+    assert_eq!(names("filelist:\"readme|C:\\Windows\\notepad.exe\""), set(&["README", "notepad.exe"]));
+    assert_eq!(names("filelist:\"c:/users/bob/photos/\";track.flac"), set(&["Photos", "track.flac"]));
+    assert_eq!(names("filelist*:IMG_0001.JPG|nope.txt"), set(&["IMG_0001.JPG"]));
+    assert_eq!(names("filelist:\"c:\\no\\such\\file\""), set(&[]));
+}
+
+#[test]
+fn existence_checks() {
+    assert_eq!(names("fileexists:readme"), set(BOB_CHILDREN));
+    assert_eq!(names("fileexists:$stem:.txt"), set(&["café menu.txt", "file2.txt", "file10.txt"]));
+    assert_eq!(names("fileexists:..\\notepad.exe"), set(&["cmd.exe", "drivers"]));
+    assert_eq!(names("fileexists:c:\\windows\\notepad.exe ext:flac"), set(&["track.flac"]));
+    assert_eq!(names("fileexists:c:\\nope.txt"), set(&[]));
+    assert_eq!(names("folderexists:$path:\\Photos"), set(BOB_CHILDREN));
+    assert_eq!(names("folderexists:$fullpath:\\photos"), set(&["bob"]));
+    assert_eq!(names("folderexists:$name: file:"), set(&[]));
+    // A file of that name is not a folder.
+    assert_eq!(names("folderexists:readme"), set(&[]));
+    assert_eq!(names("fileexists:$parent:.txt"), set(&[]));
+    assert_eq!(names("ext:png fileexists:$name:;nope"), set(&["holiday.png"]));
+}
+
+#[test]
+fn omitted_results() {
+    let s = store();
+    let readme = (0..s.len() as u32).map(fnc_core::EntryId).find(|&i| s.name_string(i) == "README").unwrap();
+    let omit = fnc_query::OmitSet { instance: s.instance(), ids: vec![readme].into() };
+    let env = PlanEnv { omit: Some(omit.clone()), ..PlanEnv::default() };
+    let caches = Caches::new();
+    assert!(!names_on(&s, "", &env, &caches).contains("README"));
+    assert_eq!(names_on(&s, "readme", &env, &caches), set(&[]));
+    assert_eq!(names_on(&s, "omit:", &env, &caches), set(&["README"]));
+    assert_eq!(names_on(&s, "!omit: parent:c:\\users\\bob", &env, &caches), set(&BOB_CHILDREN[..5]));
+    // Without an omit set `omit:` changes nothing; a foreign instance omits nothing.
+    assert_eq!(names("omit: readme"), set(&["README"]));
+    let other = PlanEnv { omit: Some(fnc_query::OmitSet { instance: u64::MAX, ..omit }), ..PlanEnv::default() };
+    assert_eq!(names_on(&s, "readme", &other, &caches), set(&["README"]));
+}
+
+#[test]
+fn wildcard_dates() {
+    let local = fnc_core::FileTime(134_000_000_000_000_000).to_local().unwrap();
+    let (y, m) = (local.format("%Y").to_string(), local.format("%m").to_string());
+    let other = format!("{:02}", m.parse::<u32>().unwrap() % 12 + 1);
+    assert_eq!(names(&format!("dm:*-{m} ext:jpg;png")), set(PHOTOS));
+    assert_eq!(names(&format!("dm:*-{other} ext:jpg;png")), set(&[]));
+    assert_eq!(names(&format!("dm:!*-{other} ext:jpg;png")), set(PHOTOS));
+    assert_eq!(names(&format!("dm:{y}-*-* ext:jpg;png")), set(PHOTOS));
+    assert_eq!(names("dm:*-*-*T0:00..*-*-*T23:59 ext:jpg"), set(&["IMG_0001.JPG", "IMG_0002.jpg"]));
+    assert_eq!(names("dm:*-13"), set(&[]));
+}
+
+#[test]
+fn pinyin_ascii_fuzzy_modifiers() {
+    for q in ["py:jdys", "pinyin:jiduyusuan", "py:jiduysb", "pinyinjian:jdysb", "pinyinquan:yusuanbiao", "py:ysb.xlsx"]
+    {
+        assert_eq!(names(q), set(&["季度预算表.xlsx"]), "{q}");
+    }
+    assert_eq!(names("pinyinquan:jdys"), set(&[]));
+    assert_eq!(names("pinyinjian:jiduyusuan"), set(&[]));
+    assert_eq!(names("jdys"), set(&[]));
+    assert_eq!(names("py:holiday"), set(&["holiday.png"]));
+    // Global default (settings) with per-term opt-out.
+    let env = PlanEnv { pinyin_default: true, ..PlanEnv::default() };
+    let caches = Caches::new();
+    assert_eq!(names_with("jdys", &env, &caches), set(&["季度预算表.xlsx"]));
+    assert_eq!(names_with("nopinyin:jdys", &env, &caches), set(&[]));
+    assert_eq!(names_with("img", &env, &caches), set(&["IMG_0001.JPG", "IMG_0002.jpg"]));
+    // ascii: ASCII-only case folding, everything else exact.
+    assert_eq!(names("ascii:cafe"), set(&[]));
+    assert_eq!(names("ascii:CAFÉ"), set(&[]));
+    assert_eq!(names("ascii:Café"), set(&["café menu.txt"]));
+    assert_eq!(names("ascii:readme"), set(&["README"]));
+    // fuzzy: one edit.
+    assert_eq!(names("fuzzy:holidy"), set(&["holiday.png"]));
+    assert_eq!(names("fuzzy:hollday"), set(&["holiday.png"]));
+    assert_eq!(names("fuzzy:holidya"), set(&["holiday.png"]));
+    assert_eq!(names("fuzzy:hloiday"), set(&[]));
+    assert_eq!(names("fuzzy:rport"), set(&["Report Q3.docx"]));
+}
+
+#[test]
+fn start_end_with_and_weight() {
+    assert_eq!(names("startwith:file"), set(&["file2.txt", "file10.txt"]));
+    assert_eq!(names("sw:img_000"), set(&["IMG_0001.JPG", "IMG_0002.jpg"]));
+    assert_eq!(names("endwith:.txt"), set(&["café menu.txt", "file2.txt", "file10.txt"]));
+    assert_eq!(names("ew:flac"), set(&["track.flac"]));
+    assert_eq!(names("weight:10 holiday"), set(&["holiday.png"]));
+}
+
+#[test]
+fn engine_filters_with_options() {
+    use fnc_query::{Filter, FilterSet};
+    let (engine, rx, _) = engine_with(store());
+    let run = |id: u64, text: &str, filter: Option<FilterSet>| {
+        let mut r = req(id, text);
+        r.filter = filter;
+        engine.search(r);
+        let EngineEvent::Done(o) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        o.results.len()
+    };
+    let case = |search: &str| FilterSet::single(Filter { case: true, ..Filter::new(search) });
+    assert_eq!(run(1, "", Some(case("IMG"))), 2);
+    assert_eq!(run(2, "", Some(case("img"))), 0);
+    // Filter options only apply to the filter's own terms.
+    assert_eq!(run(3, "jpg", Some(case("IMG"))), 2);
+    let two = FilterSet { filters: vec![Filter::new("ext:png"), Filter::new("ext:flac")], and: false };
+    assert_eq!(run(4, "", Some(two.clone())), 2);
+    assert_eq!(run(5, "and-filter:", Some(two.clone())), 0);
+    assert_eq!(run(6, "", Some(FilterSet { and: true, ..two.clone() })), 0);
+    assert_eq!(run(7, "or-filter:", Some(FilterSet { and: true, ..two })), 2);
+    let regex = FilterSet::single(Filter { regex: true, ..Filter::new(r"^file\d+\.txt$") });
+    assert_eq!(run(8, "", Some(regex)), 2);
+    let ww = FilterSet::single(Filter { whole_word: true, ..Filter::new("report") });
+    assert_eq!(run(9, "", Some(ww)), 1);
+    let ww_part = FilterSet::single(Filter { whole_word: true, ..Filter::new("repor") });
+    assert_eq!(run(10, "", Some(ww_part)), 0);
+    let path = FilterSet::single(Filter { path: true, ..Filter::new("photos") });
+    assert_eq!(run(11, "", Some(path)), 4);
+}
+
+#[test]
+fn engine_pinyin_default_and_type_names() {
+    let (engine, rx, _) = engine_with(store());
+    let mut r = req(1, "jdys");
+    r.options = Arc::new(SearchOptions { pinyin_default: true, ..SearchOptions::default() });
+    engine.search(r);
+    let EngineEvent::Done(o) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(o.results.len(), 1);
+    let mut r = req(2, "type:spreadsheet");
+    let types = TypeNames::new(|e| (e == "xlsx").then(|| "Microsoft Excel Worksheet (spreadsheet)".to_string()));
+    r.options = Arc::new(SearchOptions { type_names: Some(types), ..SearchOptions::default() });
+    engine.search(r);
+    let EngineEvent::Done(o) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(o.results.len(), 1);
+}

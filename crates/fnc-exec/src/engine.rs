@@ -9,14 +9,16 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 use fnc_core::settings::Precedence;
 use fnc_index::SharedIndex;
+use fnc_query::filter::combine;
 use fnc_query::parser::{Diag, ParseEnv, UserMacro};
-use fnc_query::plan::{PlanDiag, PlanEnv, PlannedQuery};
-use fnc_query::{Expr, ModSet, Modifier, Term, Value, parse, plan};
+use fnc_query::plan::{OmitSet, PlanDiag, PlanEnv, PlannedQuery};
+use fnc_query::{Expr, FilterSet, ModSet, Modifier, Term, Value, parse, plan};
 use parking_lot::Mutex;
 
 use crate::cache::{Caches, CancelToken, Cancelled};
 use crate::exec::{ExecCtx, ResultSet, execute};
 use crate::sort::{SortSpec, sort_ids};
+use crate::types::TypeNames;
 
 /// Search-wide options (from settings).
 #[derive(Clone, Debug, PartialEq)]
@@ -31,8 +33,16 @@ pub struct SearchOptions {
     pub reuse: bool,
     /// Treat the whole search as one regular expression (`match_regex`).
     pub regex_all: bool,
-    /// User macros.
+    /// User macros (e.g. from filters with a macro name, see
+    /// [`fnc_query::Filter::user_macro`]).
     pub macros: Vec<UserMacro>,
+    /// Also match plain terms by pinyin (as if every term had `pinyin:`).
+    pub pinyin_default: bool,
+    /// Results hidden with "Omit result"; excluded unless the search uses `omit:`.
+    pub omit: Option<OmitSet>,
+    /// Type-name provider for `type:` (Windows: registry lookup); `None` = the
+    /// fallback "`EXT` File" names.
+    pub type_names: Option<TypeNames>,
 }
 
 impl Default for SearchOptions {
@@ -44,6 +54,9 @@ impl Default for SearchOptions {
             reuse: true,
             regex_all: false,
             macros: Vec::new(),
+            pinyin_default: false,
+            omit: None,
+            type_names: None,
         }
     }
 }
@@ -67,7 +80,7 @@ impl SearchOptions {
             star_all: s.wildcards_star_all,
             reuse: s.reuse_results,
             regex_all: s.match_regex,
-            macros: Vec::new(),
+            ..Self::default()
         }
     }
 }
@@ -79,8 +92,9 @@ pub struct SearchRequest {
     pub id: u64,
     /// Search text.
     pub text: String,
-    /// Active filter's search, AND-ed with `text`.
-    pub filter: Option<String>,
+    /// Active filters, AND-ed with `text` (`Some("pic:".into())` for a plain
+    /// filter search).
+    pub filter: Option<FilterSet>,
     /// Sort order.
     pub sort: SortSpec,
     /// Options.
@@ -164,11 +178,14 @@ struct Last {
     results: Arc<ResultSet>,
 }
 
-/// Builds the AST for a request (filter AND text; `regex_all` makes the text one regex).
+/// Builds the AST for a request: filters (each with its own match options, combined by
+/// OR unless `and-filter:` / [`FilterSet::and`]) AND the text; `regex_all` makes the
+/// text one regex.
 pub fn request_ast(req: &SearchRequest) -> (Expr, Vec<Diag>) {
     let lookup = |name: &str| std::env::var(name).ok();
     let env = ParseEnv { precedence: req.options.precedence, user_macros: &req.options.macros, env_var: Some(&lookup) };
     let mut diags = Vec::new();
+    let mut and_filter = None;
     let text_ast = if req.options.regex_all && !req.text.is_empty() {
         Expr::Term(Term {
             mods: ModSet::EMPTY.with(Modifier::Regex, true),
@@ -179,17 +196,11 @@ pub fn request_ast(req: &SearchRequest) -> (Expr, Vec<Diag>) {
     } else {
         let p = parse(&req.text, &env);
         diags = p.diagnostics;
+        and_filter = p.and_filter;
         p.ast
     };
-    let ast = match req.filter.as_deref().filter(|f| !f.trim().is_empty()) {
-        Some(f) => {
-            let fp = parse(f, &env);
-            match (fp.ast, text_ast) {
-                (Expr::All, t) => t,
-                (f, Expr::All) => f,
-                (f, t) => Expr::And(vec![f, t]),
-            }
-        }
+    let ast = match req.filter.as_ref().filter(|f| !f.is_empty()) {
+        Some(f) => combine(f.expr(&env, and_filter), text_ast),
         None => text_ast,
     };
     (ast, diags)
@@ -311,7 +322,10 @@ fn run(
         defaults: req.options.defaults,
         star_all: req.options.star_all,
         date: fnc_query::date::DateEnv::now(),
+        pinyin_default: req.options.pinyin_default,
+        omit: req.options.omit.clone(),
     };
+    caches.set_type_names(req.options.type_names.clone());
     let snap = index.snapshot();
     if cancel.is_cancelled() {
         return Err(Cancelled);
