@@ -14,6 +14,7 @@ index-ready = 已索引 { $count } 个条目，用时 { $seconds } 秒
 index-error = 索引错误：{ $message }
 index-db-rebuild = 无法读取索引数据库，正在重建（{ $message }）。
 index-volume-rebuild = { $volume } 的变更日志已改变，正在重建该卷。
+index-volume-added = 已将 { $volume } 加入索引。
 index-watch-error = 已停止监视 { $volume }：{ $message }
 index-folder-fallback = 无法访问 { $volume } 的 NTFS 日志（请以管理员身份运行或安装服务），改为按文件夹索引。
 empty-results = 没有结果

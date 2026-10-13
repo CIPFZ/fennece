@@ -433,12 +433,42 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
             }
         })
     };
-    for (vol, mut src) in volumes {
-        let shared = shared.clone();
-        let stop = stop.clone();
-        let emit = emit.clone();
-        let refresher = refresher.clone();
+    let workers = Arc::new(Workers {
+        shared: shared.clone(),
+        stop: stop.clone(),
+        emit,
+        refresher,
+        active: parking_lot::Mutex::new(std::collections::HashSet::new()),
+    });
+    for (vol, src) in volumes {
         let wants_meta = needs_meta.contains(&vol);
+        workers.start(vol, src, wants_meta, meta_finished.clone());
+    }
+    #[cfg(windows)]
+    if cfg.ntfs {
+        let w = workers.clone();
+        let _ = std::thread::Builder::new().name("fennec-volumes".into()).spawn(move || monitor_volumes(&cfg, &w));
+    }
+    #[cfg(not(windows))]
+    let _ = (&cfg, &workers);
+}
+
+type MetaDone = Arc<dyn Fn(VolumeId, bool) + Send + Sync>;
+
+/// Starts and tracks the per-volume threads (journal watch, metadata back-fill).
+struct Workers {
+    shared: SharedIndex,
+    stop: StopFlag,
+    emit: Arc<Emitter>,
+    refresher: Refresher,
+    /// GUIDs of volumes being watched.
+    active: parking_lot::Mutex<std::collections::HashSet<String>>,
+}
+
+impl Workers {
+    fn start(self: &Arc<Self>, vol: VolumeId, mut src: Box<dyn VolumeSource>, wants_meta: bool, done: MetaDone) {
+        let guid = src.info().guid;
+        self.active.lock().insert(guid.clone());
         // Back-fill concurrently with journal monitoring when the source allows it, so
         // the journal is read from the start (no risk of it wrapping during a long
         // back-fill).
@@ -448,39 +478,155 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
         let fetcher = if wants_meta { src.metadata_fetcher() } else { None };
         let inline_meta = wants_meta && fetcher.is_none();
         if let Some(fetcher) = fetcher {
-            let (shared, stop, emit, refresher, done) =
-                (shared.clone(), stop.clone(), emit.clone(), refresher.clone(), meta_finished.clone());
+            let (me, done) = (self.clone(), done.clone());
             let r = std::thread::Builder::new().name(format!("fennec-meta-{}", vol.0)).spawn(move || {
-                let complete = fill_metadata(&|d, o, s| fetcher.fetch(d, o, s), vol, &shared, &stop, &emit, &refresher);
+                let complete = fill_metadata(
+                    &|d, o, s| fetcher.fetch(d, o, s),
+                    vol,
+                    &me.shared,
+                    &me.stop,
+                    &me.emit,
+                    &me.refresher,
+                );
                 done(vol, complete);
             });
             if let Err(e) = r {
                 tracing::error!(error = %e, "cannot start metadata thread");
             }
         }
-        let done = meta_finished.clone();
+        let me = self.clone();
         let r = std::thread::Builder::new().name(format!("fennec-volume-{}", vol.0)).spawn(move || {
             if inline_meta {
-                let complete =
-                    fill_metadata(&|d, o, s| src.fetch_metadata(d, o, s), vol, &shared, &stop, &emit, &refresher);
+                let complete = fill_metadata(
+                    &|d, o, s| src.fetch_metadata(d, o, s),
+                    vol,
+                    &me.shared,
+                    &me.stop,
+                    &me.emit,
+                    &me.refresher,
+                );
                 done(vol, complete);
             }
             let name = src.info().display_name;
-            let mut sink = WatchSink { shared: shared.clone(), refresher, vol };
-            match src.watch(vol, &mut sink, &stop) {
+            let mut sink = WatchSink { shared: me.shared.clone(), refresher: me.refresher.clone(), vol };
+            match src.watch(vol, &mut sink, &me.stop) {
                 Ok(()) | Err(SourceError::Stopped | SourceError::Unsupported(_)) => {}
                 Err(SourceError::Offline(_)) => {
-                    shared.write().set_volume_online(vol, false);
+                    tracing::info!(volume = %name, "volume went offline");
+                    me.shared.write().set_volume_online(vol, false);
                     sink.refresher.poke();
                 }
-                Err(e) => emit.message(crate::i18n::t_args(
+                Err(SourceError::JournalReset(_)) => {
+                    // The monitor sees the volume as inactive and rebuilds it.
+                    tracing::info!(volume = %name, "journal reset while watching");
+                    me.shared.write().set_volume_online(vol, false);
+                    sink.refresher.poke();
+                }
+                Err(e) => me.emit.message(crate::i18n::t_args(
                     "index-watch-error",
                     &[("volume", name.into()), ("message", e.to_string().into())],
                 )),
             }
+            me.active.lock().remove(&guid);
         });
         if let Err(e) = r {
             tracing::error!(error = %e, "cannot start volume thread");
+        }
+    }
+}
+
+/// Volume arrival/removal (SPEC ch.1 §2.3): polls the fixed NTFS/ReFS drives every
+/// 3 s. A new volume is enumerated privately and absorbed into the index; a volume
+/// seen before resumes from its journal position (entries come back online).
+#[cfg(windows)]
+fn monitor_volumes(cfg: &IndexerConfig, w: &Arc<Workers>) {
+    let opts = fnc_ntfs::NtfsOptions {
+        create_journal: cfg.usn_create,
+        max_size: cfg.usn_max_size,
+        allocation_delta: cfg.usn_delta,
+        poll_interval: cfg.usn_poll,
+    };
+    let mut failed: std::collections::HashMap<String, Instant> = std::collections::HashMap::new();
+    while !w.stop.is_stopped() {
+        for _ in 0..6 {
+            std::thread::sleep(Duration::from_millis(500));
+            if w.stop.is_stopped() {
+                return;
+            }
+        }
+        for d in fnc_ntfs::list_volumes() {
+            let letter = format!("{}:", d.letter);
+            if cfg.ntfs_exclude.iter().any(|x| x.trim_end_matches('\\').eq_ignore_ascii_case(&letter)) {
+                continue;
+            }
+            let guid = if d.guid.is_empty() { d.root.clone() } else { d.guid.clone() };
+            if w.active.lock().contains(&guid)
+                || failed.get(&guid).is_some_and(|t| t.elapsed() < Duration::from_secs(60))
+            {
+                continue;
+            }
+            let mut src = match fnc_ntfs::NtfsSource::open(d, opts, &cfg.instance) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::info!(volume = %letter, error = %e, "cannot open arrived volume");
+                    failed.insert(guid, Instant::now());
+                    continue;
+                }
+            };
+            let info = src.info();
+            let existing = {
+                let snap = w.shared.snapshot();
+                snap.volumes()
+                    .iter()
+                    .find(|v| !v.is_retired() && v.info.kind == info.kind && v.info.guid == info.guid)
+                    .map(|v| (v.id, v.usn_journal_id, v.next_usn, v.metadata_complete))
+            };
+            if let Some((vol, jid, usn, meta_ok)) = existing {
+                if src.resume(jid, usn).is_ok() {
+                    tracing::info!(volume = %info.display_name, "volume back online; resuming its journal");
+                    w.shared.write().set_volume_online(vol, true);
+                    w.refresher.poke();
+                    w.start(vol, Box::new(src), !meta_ok, Arc::new(|_, _| {}));
+                    continue;
+                }
+                w.shared.write().drop_volume(vol);
+            }
+            let t = Instant::now();
+            let mut private = IndexStore::new(IndexOptions { date_accessed: cfg.date_accessed });
+            let Ok(pv) = private.add_volume(info.clone(), Some(src.root_frn())) else { continue };
+            if !enumerate_into(&mut private, pv, &mut src, &w.emit, &w.stop) {
+                return;
+            }
+            let vol = {
+                let mut s = w.shared.write();
+                match s.absorb(private) {
+                    Ok(ids) => {
+                        let order = s.name_order();
+                        if order.covered() < s.len() * 9 / 10 {
+                            s.rebuild_name_order();
+                        }
+                        ids[0]
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "cannot add volume");
+                        continue;
+                    }
+                }
+            };
+            tracing::info!(volume = %info.display_name, elapsed = ?t.elapsed(), "volume arrived and indexed");
+            w.emit.message(crate::i18n::t_args("index-volume-added", &[("volume", info.display_name.clone().into())]));
+            w.refresher.poke();
+            let shared = w.shared.clone();
+            w.start(
+                vol,
+                Box::new(src),
+                true,
+                Arc::new(move |v, complete| {
+                    if complete && let Some(vi) = shared.write().volume_mut(v) {
+                        vi.metadata_complete = true;
+                    }
+                }),
+            );
         }
     }
 }
@@ -1006,6 +1152,65 @@ mod tests {
         assert!(t.elapsed() < Duration::from_secs(1));
         live.stop();
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Volume arrival/removal on Windows (elevated): attaches a VHD as `T:`, expects it
+    /// to be indexed while running, detaches it (entries go offline), re-attaches it
+    /// (journal resumed, entries online again).
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "needs Windows, administrator rights and diskpart"]
+    fn ntfs_volume_hotplug() {
+        crate::i18n::init("en");
+        assert!(fnc_platform::privilege::is_elevated(), "run elevated");
+        let vhd = std::env::temp_dir().join(format!("fennec-hotplug-{}.vhdx", std::process::id()));
+        let diskpart = |script: &str| {
+            let f = std::env::temp_dir().join("fennec-diskpart.txt");
+            std::fs::write(&f, script).unwrap();
+            let out = std::process::Command::new("diskpart").arg("/s").arg(&f).output().unwrap();
+            assert!(out.status.success(), "diskpart failed: {}", String::from_utf8_lossy(&out.stdout));
+        };
+        let db = std::env::temp_dir().join(format!("fennec-hotplug-{}.fnx", std::process::id()));
+        let mut live = Live::start(&db, true);
+        live.ready();
+        let t = Instant::now();
+        diskpart(&format!(
+            "create vdisk file=\"{}\" maximum=256 type=expandable\nselect vdisk file=\"{}\"\nattach vdisk\ncreate partition primary\nformat fs=ntfs quick label=FNTEST\nassign letter=T\n",
+            vhd.display(),
+            vhd.display()
+        ));
+        std::fs::write(r"T:\hotplug-marker.txt", b"x").unwrap();
+        live.count("hotplug-marker.txt", &|n| n == 1, Duration::from_secs(30));
+        eprintln!("arrival: T: attached and searchable after {:?}", t.elapsed());
+        std::fs::write(r"T:\hotplug-live.txt", b"y").unwrap();
+        live.count("hotplug-live.txt", &|n| n == 1, Duration::from_secs(5));
+        let offline = |live: &Live| {
+            let s = live.shared.snapshot();
+            (0..s.len() as u32)
+                .map(fnc_core::EntryId)
+                .find(|&i| s.is_live(i) && s.name_string(i) == "hotplug-marker.txt")
+                .map(|i| s.flags(i).contains(fnc_core::EntryFlags::OFFLINE))
+        };
+        diskpart(&format!("select vdisk file=\"{}\"\ndetach vdisk\n", vhd.display()));
+        let t = Instant::now();
+        while offline(&live) != Some(true) {
+            assert!(t.elapsed() < Duration::from_secs(10), "entries never went offline");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        eprintln!("removal: entries offline after {:?}", t.elapsed());
+        diskpart(&format!("select vdisk file=\"{}\"\nattach vdisk\n", vhd.display()));
+        let t = Instant::now();
+        while offline(&live) != Some(false) {
+            assert!(t.elapsed() < Duration::from_secs(30), "entries never came back online");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        std::fs::write(r"T:\hotplug-after.txt", b"z").unwrap();
+        live.count("hotplug-after.txt", &|n| n == 1, Duration::from_secs(5));
+        eprintln!("re-arrival: online again after {:?}; live changes work", t.elapsed());
+        diskpart(&format!("select vdisk file=\"{}\"\ndetach vdisk\n", vhd.display()));
+        live.stop();
+        let _ = std::fs::remove_file(&vhd);
+        let _ = std::fs::remove_file(&db);
     }
 
     /// IDX-02 (pipeline part): a change delivered by a watcher becomes visible in the

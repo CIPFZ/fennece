@@ -17,6 +17,7 @@ index-ready = { $count } entries indexed in { $seconds } s
 index-error = Index error: { $message }
 index-db-rebuild = The index database could not be read and is being rebuilt ({ $message }).
 index-volume-rebuild = The change journal of { $volume } changed; rebuilding that volume.
+index-volume-added = { $volume } was added to the index.
 index-watch-error = Monitoring { $volume } stopped: { $message }
 index-folder-fallback = No access to the NTFS journal of { $volume } (run as administrator or install the service); indexing it as a folder.
 empty-results = No results

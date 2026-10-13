@@ -462,3 +462,38 @@ fn initial_metadata_is_not_a_recent_change() {
     s.apply(vec![Change::Meta { target: EntryRef::Id(cmd), meta: file(10) }]);
     assert!(s.date_recently_changed(cmd).is_known());
 }
+
+#[test]
+fn absorb_appends_a_privately_built_volume() {
+    let (mut s, _vol) = sample();
+    let cmd = find(&s, "cmd.exe");
+    let before = all_paths(&s);
+    let mut other = IndexStore::default();
+    let v = other.add_volume(VolumeInfo::new(VolumeKind::Ntfs, "T:\\"), Some(5)).unwrap();
+    other.set_journal_position(v, 9, 99);
+    let mut b = other.bulk_load(v);
+    b.push(30, 5, &u16s("新建文件夹"), &dir()).unwrap();
+    b.push(31, 30, &u16s("notes.md"), &file(7)).unwrap();
+    b.push(32, 5, &u16s("gone.tmp"), &file(1)).unwrap();
+    b.finish().unwrap();
+    other.apply(vec![Change::Delete(EntryRef::Frn(v, 32))]);
+    let ids = s.absorb(other).unwrap();
+    let t = ids[0];
+    assert_eq!(s.volume_info(t).unwrap().next_usn, 99);
+    let notes = s.resolve(EntryRef::Frn(t, 31)).unwrap();
+    assert_eq!(path(&s, notes), "T:\\新建文件夹\\notes.md");
+    assert_eq!(s.size(notes), Some(7));
+    assert_eq!(s.ext_dict().name(s.ext_id(notes)), b"md");
+    // Old ids are untouched; the new volume works incrementally.
+    assert_eq!(s.name_string(cmd), "cmd.exe");
+    let mut after = all_paths(&s);
+    after.retain(|p| !p.starts_with("T:"));
+    assert_eq!(after, before);
+    s.apply(vec![Change::Rename {
+        target: EntryRef::Frn(t, 31),
+        new_name: u16s("n.md"),
+        new_parent: EntryRef::Frn(t, 5),
+    }]);
+    assert_eq!(path(&s, notes), "T:\\n.md");
+    assert!(!all_paths(&s).iter().any(|p| p.contains("gone.tmp")));
+}

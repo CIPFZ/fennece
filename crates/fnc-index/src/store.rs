@@ -1209,6 +1209,95 @@ impl IndexStore {
         self.bump(true);
     }
 
+    /// Moves every volume of `other` (built privately, e.g. a volume that appeared
+    /// while running) into this index; returns their new ids in `other`'s order.
+    /// Existing ids stay valid; cost O(rows of `other`) plus a children rebuild.
+    pub fn absorb(&mut self, mut other: IndexStore) -> Result<Vec<VolumeId>> {
+        if other.live != other.len() {
+            other.compact();
+        }
+        let offset = u32::try_from(self.len()).map_err(|_| IndexError::Full)?;
+        if (offset as u64) + other.len() as u64 >= u32::MAX as u64 {
+            return Err(IndexError::Full);
+        }
+        // Volumes (reusing retired records like `add_volume`).
+        let mut vmap = Vec::with_capacity(other.volumes.len());
+        for v in &other.volumes {
+            let reuse =
+                self.volumes.iter().position(Volume::is_retired).filter(|i| !vmap.contains(&VolumeId(*i as u16)));
+            let id =
+                VolumeId(u16::try_from(reuse.unwrap_or(self.volumes.len())).map_err(|_| IndexError::TooManyVolumes)?);
+            let mut nv = v.clone();
+            nv.id = id;
+            nv.roots = v.roots.iter().map(|r| EntryId(r.0 + offset)).collect();
+            match reuse {
+                Some(i) => {
+                    self.volumes[i] = nv;
+                    self.frn_maps[i] = FrnMap::default();
+                    self.orphans[i] = None;
+                }
+                None => {
+                    self.volumes.push(nv);
+                    self.frn_maps.push(FrnMap::default());
+                    self.orphans.push(None);
+                }
+            }
+            vmap.push(id);
+        }
+        for (i, o) in other.orphans.iter().enumerate() {
+            self.orphans[vmap[i].idx()] = o.map(|e| EntryId(e.0 + offset));
+        }
+        let shift = |e: EntryId| if e.is_some() { EntryId(e.0 + offset) } else { EntryId::NONE };
+        let n = other.len();
+        self.reserve(n, other.names.units());
+        for i in 0..n {
+            self.names.push(other.names.get(i)).map_err(IndexError::Core)?;
+            self.folds.push(other.folds.get(i)).map_err(IndexError::Core)?;
+            self.parent.push(shift(other.parent[i]));
+            self.volume.push(vmap[other.volume[i].idx()]);
+            self.flags.push(other.flags[i]);
+            self.frn.push(other.frn[i]);
+            let e = other.ext[i];
+            self.ext.push(match e {
+                NO_EXT | crate::ext::OVERFLOW_EXT => e,
+                _ => self.ext_dict.intern(other.ext_dict.name(e)),
+            });
+            self.size.push(other.size[i]);
+            self.dm.push(other.dm[i]);
+            self.dc.push(other.dc[i]);
+            if let Some(da) = &mut self.da {
+                da.push(other.da.as_ref().map_or(FileTime::UNKNOWN, |d| d[i]));
+            }
+            self.attr.push(other.attr[i]);
+        }
+        self.live += other.live;
+        self.folders += other.folders;
+        self.run.extend(other.run.into_iter().map(|(k, v)| (shift(k), v)));
+        self.recent.extend(other.recent.into_iter().map(|(k, v)| (shift(k), v)));
+        self.links.extend(
+            other.links.into_iter().map(|((v, f), ids)| ((vmap[v.idx()], f), ids.into_iter().map(shift).collect())),
+        );
+        // FRN maps of the new volumes, from their rows.
+        let mut per_vol: HashMap<VolumeId, Vec<(u64, EntryId)>> = HashMap::new();
+        for r in offset as usize..self.len() {
+            let f = self.flags[r];
+            if !f.contains(EntryFlags::HARDLINK_ALIAS) && self.frn[r] != ORPHANS_FRN {
+                per_vol.entry(self.volume[r]).or_default().push((self.frn[r], EntryId(r as u32)));
+            }
+        }
+        for (v, pairs) in per_vol {
+            self.frn_maps[v.idx()] = FrnMap::build(&pairs, matches!(self.volumes[v.idx()].info.kind, VolumeKind::Ntfs));
+        }
+        for &v in &vmap {
+            if let Some(o) = self.orphans[v.idx()] {
+                self.frn_maps[v.idx()].insert(ORPHANS_FRN, o);
+            }
+        }
+        self.rebuild_children();
+        self.bump(true);
+        Ok(vmap)
+    }
+
     fn orphans_dir(&mut self, vol: VolumeId) -> Result<EntryId> {
         if let Some(id) = self.orphans[vol.idx()].filter(|&id| self.is_live(id)) {
             return Ok(id);
