@@ -121,7 +121,7 @@ fn main() -> anyhow::Result<()> {
 
     // Sorting.
     let all: Vec<EntryId> = (0..store.len() as u32).map(EntryId).filter(|&i| store.is_live(i)).collect();
-    let spec = |column, ascending| SortSpec { column, ascending, folders_first: FoldersFirst::Ascending };
+    let spec = |column, ascending| SortSpec::by(column, ascending, FoldersFirst::Ascending);
     for (label, sp, target) in [
         ("sort 1M by name (fast-sort ranks)", spec(SortColumn::Name, true), Some(300.0)),
         ("sort 1M by size desc", spec(SortColumn::Size, false), Some(300.0)),

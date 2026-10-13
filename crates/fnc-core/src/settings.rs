@@ -210,6 +210,34 @@ choice_setting!(
 );
 
 choice_setting!(
+    /// Date column format.
+    DateFormat {
+        /// `2026-07-02 10:52`.
+        Iso => "iso",
+        /// `07/02/2026 10:52`.
+        Us => "us",
+        /// `02/07/2026 10:52`.
+        Eu => "eu",
+        /// `3 minutes ago` (falls back to ISO after a week).
+        Relative => "relative",
+    }
+);
+
+choice_setting!(
+    /// Size column format.
+    SizeFormat {
+        /// Automatic unit (B, KB, MB, ...).
+        Auto => "auto",
+        /// Bytes with digit grouping.
+        Bytes => "bytes",
+        /// Kilobytes.
+        Kb => "kb",
+        /// Megabytes.
+        Mb => "mb",
+    }
+);
+
+choice_setting!(
     /// Whether folders are listed before files when sorting.
     FoldersFirst {
         /// Folders first when sorting ascending only.
@@ -252,6 +280,21 @@ pub struct Settings {
     /// Result list row height in points (0 = derived from the font).
     #[setting(key = "row_height", default = 0, page = "ui")]
     pub row_height: u32,
+    /// Show the menu bar (Alt shows it temporarily when hidden).
+    #[setting(key = "show_menu_bar", default = true, page = "ui")]
+    pub show_menu_bar: bool,
+    /// Show the status bar.
+    #[setting(key = "show_status_bar", default = true, page = "ui")]
+    pub show_status_bar: bool,
+    /// Show the filter bar (one button per filter).
+    #[setting(key = "show_filter_bar", default = false, page = "ui")]
+    pub show_filter_bar: bool,
+    /// Window geometry `x,y,width,height` in points (empty = default).
+    #[setting(key = "window_rect", default = "", page = "ui")]
+    pub window_rect: String,
+    /// Start maximised.
+    #[setting(key = "window_maximized", default = false, page = "ui")]
+    pub window_maximized: bool,
 
     // ---- search ----
     /// Delay in milliseconds between the last keystroke and running the search.
@@ -281,6 +324,18 @@ pub struct Settings {
     /// Reuse the previous result set when the new search only narrows it.
     #[setting(key = "reuse_results", default = true, page = "search")]
     pub reuse_results: bool,
+    /// Also match Chinese names by pinyin (full or initials) for plain search terms.
+    #[setting(key = "match_pinyin", default = false, page = "search")]
+    pub match_pinyin: bool,
+    /// Show completions (history, functions, paths) while typing.
+    #[setting(key = "auto_complete", default = true, page = "search")]
+    pub auto_complete: bool,
+    /// Typing while the result list has focus continues in the search box.
+    #[setting(key = "type_to_search", default = true, page = "search")]
+    pub type_to_search: bool,
+    /// Active filter (name; empty = Everything).
+    #[setting(key = "filter", default = "", page = "search")]
+    pub filter: String,
 
     // ---- results ----
     /// Highlight matched text in the name and path columns.
@@ -293,6 +348,39 @@ pub struct Settings {
     /// Show entries of offline volumes (greyed out).
     #[setting(key = "show_offline", default = true, page = "results")]
     pub show_offline: bool,
+    /// Single click opens (instead of double click).
+    #[setting(key = "single_click_open", default = false, page = "results")]
+    pub single_click_open: bool,
+
+    // ---- view ----
+    /// Visible result columns with widths: `id:width;...` (`name path size ext type dm dc
+    /// da attributes runcount dr rc fullpath filelist indexsource volume depth namelength
+    /// frn`).
+    #[setting(key = "columns", default = vec!["name:300".to_string(), "path:420".to_string(), "size:90".to_string(), "dm:140".to_string()], page = "view")]
+    pub columns: Vec<String>,
+    /// Sort keys: `column-ascending|descending;...` (up to three).
+    #[setting(key = "sort", default = "name-ascending", page = "view")]
+    pub sort: String,
+    /// Alternate row background colours.
+    #[setting(key = "alternate_row_color", default = true, page = "view")]
+    pub alternate_row_color: bool,
+    /// Date format of date columns.
+    #[setting(key = "date_format", default = DateFormat::Iso, page = "view")]
+    pub date_format: DateFormat,
+    /// Size format of the size column.
+    #[setting(key = "size_format", default = SizeFormat::Auto, page = "view")]
+    pub size_format: SizeFormat,
+
+    // ---- keyboard ----
+    /// Key binding overrides: `context:command=Ctrl+Shift+X` (context `search`, `results`
+    /// or `global`; empty chord removes the default).
+    #[setting(key = "key_bindings", default = Vec::new(), page = "keyboard")]
+    pub key_bindings: Vec<String>,
+
+    // ---- open commands ----
+    /// Custom open commands: `Label|program arguments` with `%1` for the full path.
+    #[setting(key = "open_commands", default = Vec::new(), page = "open_commands")]
+    pub open_commands: Vec<String>,
 
     // ---- history ----
     /// Remember search history.
@@ -301,6 +389,9 @@ pub struct Settings {
     /// Maximum number of search history entries.
     #[setting(key = "search_history_max", default = 100, page = "history")]
     pub search_history_max: u32,
+    /// Record run counts and dates when opening results.
+    #[setting(key = "run_history_enabled", default = true, page = "history")]
+    pub run_history_enabled: bool,
 
     // ---- index ----
     /// Index file sizes.

@@ -157,23 +157,27 @@ fn path_matching() {
 #[test]
 fn sorting() {
     let s = store();
-    let name = SortSpec { column: SortColumn::Name, ascending: true, folders_first: FoldersFirst::Never };
+    let name =
+        SortSpec { column: SortColumn::Name, ascending: true, folders_first: FoldersFirst::Never, then: [None; 2] };
     let r = run_on(&s, "file", Some(name));
     assert_eq!(r.iter().map(|p| leaf_name(p)).collect::<Vec<_>>(), vec!["file2.txt", "file10.txt"]);
     let desc = SortSpec { ascending: false, ..name };
     let r = run_on(&s, "file", Some(desc));
     assert_eq!(r.iter().map(|p| leaf_name(p)).collect::<Vec<_>>(), vec!["file10.txt", "file2.txt"]);
-    let size = SortSpec { column: SortColumn::Size, ascending: false, folders_first: FoldersFirst::Never };
+    let size =
+        SortSpec { column: SortColumn::Size, ascending: false, folders_first: FoldersFirst::Never, then: [None; 2] };
     let r = run_on(&s, "ext:jpg;png;flac", Some(size));
     assert_eq!(
         r.iter().map(|p| leaf_name(p)).collect::<Vec<_>>(),
         vec!["track.flac", "IMG_0002.jpg", "IMG_0001.JPG", "holiday.png"]
     );
-    let ff = SortSpec { column: SortColumn::Name, ascending: true, folders_first: FoldersFirst::Ascending };
+    let ff =
+        SortSpec { column: SortColumn::Name, ascending: true, folders_first: FoldersFirst::Ascending, then: [None; 2] };
     let r = run_on(&s, "bob\\", Some(ff));
     let first_file = r.iter().position(|p| p.contains('.') || p.ends_with("README")).unwrap();
     assert!(r[..first_file].iter().all(|p| !p.contains('.')), "{r:?}");
-    let path = SortSpec { column: SortColumn::Path, ascending: true, folders_first: FoldersFirst::Never };
+    let path =
+        SortSpec { column: SortColumn::Path, ascending: true, folders_first: FoldersFirst::Never, then: [None; 2] };
     let r = run_on(&s, "file:", Some(path));
     assert_eq!(r.first().map(String::as_str), Some("C:\\Users\\bob\\file2.txt"));
     assert_eq!(r.last().map(String::as_str), Some("D:\\Music\\track.flac"));
@@ -299,7 +303,8 @@ fn engine_refresh_after_index_change() {
     assert_eq!(o.results.len(), 3);
     // Sort-only change reuses ids.
     let mut r = req(2, "*.jpg");
-    r.sort = SortSpec { column: SortColumn::Size, ascending: false, folders_first: FoldersFirst::Never };
+    r.sort =
+        SortSpec { column: SortColumn::Size, ascending: false, folders_first: FoldersFirst::Never, then: [None; 2] };
     engine.search(r);
     let EngineEvent::Done(o) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(o.results.len(), 3);

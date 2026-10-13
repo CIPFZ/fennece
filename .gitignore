@@ -10,3 +10,4 @@
 # Local test-machine credentials (never commit)
 /tools/env
 /tools/agrt_token.py
+/.claude/

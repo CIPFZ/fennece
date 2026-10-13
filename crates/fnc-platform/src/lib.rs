@@ -12,6 +12,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![allow(unsafe_code)]
 
+pub mod fileops;
 pub mod instance;
 pub mod locale;
 pub mod privilege;

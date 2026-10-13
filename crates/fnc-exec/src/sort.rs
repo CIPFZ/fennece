@@ -39,6 +39,18 @@ pub enum SortColumn {
     DateRun,
     /// Date recently changed.
     DateRecentlyChanged,
+    /// Full path (folder path, then name; same order as [`SortColumn::Path`]).
+    FullPath,
+    /// Volume (root path), then name.
+    Volume,
+    /// Index source kind (`ntfs`, `folder`, `filelist`), then name.
+    IndexSource,
+    /// Depth (root = 0).
+    Depth,
+    /// Name length.
+    NameLength,
+    /// File reference number.
+    Frn,
 }
 
 impl SortColumn {
@@ -47,7 +59,8 @@ impl SortColumn {
         let n: String = s.chars().filter(|c| *c != '-' && *c != '_').collect::<String>().to_ascii_lowercase();
         Some(match n.as_str() {
             "name" | "filename" => Self::Name,
-            "path" | "fullpath" | "pathandname" => Self::Path,
+            "path" => Self::Path,
+            "fullpath" | "pathandname" => Self::FullPath,
             "size" => Self::Size,
             "ext" | "extension" | "type" => Self::Extension,
             "dm" | "datemodified" => Self::DateModified,
@@ -57,6 +70,11 @@ impl SortColumn {
             "runcount" => Self::RunCount,
             "dr" | "daterun" => Self::DateRun,
             "rc" | "daterecentlychanged" => Self::DateRecentlyChanged,
+            "volume" | "drive" => Self::Volume,
+            "indexsource" | "volumekind" => Self::IndexSource,
+            "depth" | "parentscount" => Self::Depth,
+            "namelength" | "len" => Self::NameLength,
+            "frn" => Self::Frn,
             _ => return None,
         })
     }
@@ -71,11 +89,45 @@ pub struct SortSpec {
     pub ascending: bool,
     /// Folder placement.
     pub folders_first: FoldersFirst,
+    /// Secondary and tertiary keys (`Ctrl`+click on a column header), each with its
+    /// own direction; ties after all keys are broken by name.
+    pub then: [Option<(SortColumn, bool)>; 2],
 }
 
 impl Default for SortSpec {
     fn default() -> Self {
-        Self { column: SortColumn::Name, ascending: true, folders_first: FoldersFirst::Ascending }
+        Self { column: SortColumn::Name, ascending: true, folders_first: FoldersFirst::Ascending, then: [None; 2] }
+    }
+}
+
+impl SortSpec {
+    /// Single-key sort.
+    pub fn by(column: SortColumn, ascending: bool, folders_first: FoldersFirst) -> Self {
+        Self { column, ascending, folders_first, then: [None; 2] }
+    }
+
+    /// Adds (or flips, if present) a secondary key; keeps at most three keys.
+    pub fn push_key(&mut self, column: SortColumn, ascending: bool) {
+        if self.column == column {
+            self.ascending = !self.ascending;
+            return;
+        }
+        for k in self.then.iter_mut().flatten() {
+            if k.0 == column {
+                k.1 = !k.1;
+                return;
+            }
+        }
+        if let Some(slot) = self.then.iter_mut().find(|k| k.is_none()) {
+            *slot = Some((column, ascending));
+        } else {
+            self.then[1] = Some((column, ascending));
+        }
+    }
+
+    /// All keys in priority order with their directions.
+    pub fn keys(&self) -> impl Iterator<Item = (SortColumn, bool)> + '_ {
+        std::iter::once((self.column, self.ascending)).chain(self.then.iter().flatten().copied())
     }
 }
 
@@ -94,12 +146,15 @@ pub fn sort_ids(
     let by_name = |a: EntryId, b: EntryId| -> Ordering {
         if order.is_clean(a) && order.is_clean(b) { order.rank(a).cmp(&order.rank(b)) } else { s.cmp_names(a, b) }
     };
-    let dir_rank = (spec.column == SortColumn::Path).then(|| caches.dir_rank(s));
+    let needs_dir_rank = spec.keys().any(|(c, _)| matches!(c, SortColumn::Path | SortColumn::FullPath));
+    let dir_rank = needs_dir_rank.then(|| caches.dir_rank(s));
     let size_key = |id: EntryId| if s.is_dir(id) { -1 } else { s.size(id).map_or(-1, |v| v as i128) };
-    let key_cmp = |a: EntryId, b: EntryId| -> Ordering {
-        let primary = match spec.column {
-            SortColumn::Name => Ordering::Equal,
-            SortColumn::Path => {
+    let volume_root = |id: EntryId| s.volume_info(s.volume_of(id)).map_or("", |v| v.info.root_path.as_str());
+    let volume_kind = |id: EntryId| s.volume_info(s.volume_of(id)).map_or("", |v| v.info.kind.as_str());
+    let column_cmp = |col: SortColumn, a: EntryId, b: EntryId| -> Ordering {
+        match col {
+            SortColumn::Name => by_name(a, b),
+            SortColumn::Path | SortColumn::FullPath => {
                 let r = dir_rank.as_deref().map(|d| &d.rank);
                 let pr = |id: EntryId| {
                     let p = s.parent(id);
@@ -119,8 +174,24 @@ pub fn sort_ids(
             SortColumn::RunCount => s.run_info(a).count.cmp(&s.run_info(b).count),
             SortColumn::DateRun => s.run_info(a).last.cmp(&s.run_info(b).last),
             SortColumn::DateRecentlyChanged => s.date_recently_changed(a).cmp(&s.date_recently_changed(b)),
-        };
-        primary.then_with(|| by_name(a, b))
+            SortColumn::Volume => volume_root(a).cmp(volume_root(b)),
+            SortColumn::IndexSource => volume_kind(a).cmp(volume_kind(b)),
+            SortColumn::Depth => s.depth(a).cmp(&s.depth(b)),
+            SortColumn::NameLength => s.name(a).len().cmp(&s.name(b).len()),
+            SortColumn::Frn => s.frn(a).cmp(&s.frn(b)),
+        }
+    };
+    // Primary key in the caller's direction (applied below); later keys carry their own.
+    let key_cmp = |a: EntryId, b: EntryId| -> Ordering {
+        let mut o = column_cmp(spec.column, a, b);
+        for &(col, asc) in spec.then.iter().flatten() {
+            if o != Ordering::Equal {
+                break;
+            }
+            let k = column_cmp(col, a, b);
+            o = if asc == spec.ascending { k } else { k.reverse() };
+        }
+        o.then_with(|| by_name(a, b))
     };
     let group = match spec.folders_first {
         FoldersFirst::Always => true,
@@ -141,4 +212,49 @@ pub fn sort_ids(
         return Err(Cancelled);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> IndexStore {
+        let efu = "Filename,Size,Date Modified,Date Created,Attributes\n\
+                   \"C:\\a\\x.txt\",10,3,,32\n\
+                   \"C:\\a\\y.txt\",10,1,,32\n\
+                   \"C:\\b\\z.txt\",10,2,,32\n\
+                   \"C:\\b\\w.txt\",5,9,,32\n";
+        let mut s = IndexStore::default();
+        fnc_index::efu::load_efu(&mut s, efu.as_bytes(), "t.efu").unwrap();
+        s.rebuild_name_order();
+        s
+    }
+
+    fn names(s: &IndexStore, spec: &SortSpec) -> Vec<String> {
+        let mut ids: Vec<EntryId> =
+            (0..s.len() as u32).map(EntryId).filter(|&i| s.is_live(i) && !s.is_dir(i)).collect();
+        sort_ids(&mut ids, spec, s, &Caches::default(), &CancelToken::default()).unwrap();
+        ids.iter().map(|&i| s.name_string(i)).collect()
+    }
+
+    #[test]
+    fn secondary_keys_break_ties_in_their_own_direction() {
+        let s = store();
+        let mut spec = SortSpec::by(SortColumn::Size, false, FoldersFirst::Never);
+        // Ties follow the primary direction (names descending too).
+        assert_eq!(names(&s, &spec), ["z.txt", "y.txt", "x.txt", "w.txt"]);
+        // Size descending, then date modified ascending.
+        spec.push_key(SortColumn::DateModified, true);
+        assert_eq!(names(&s, &spec), ["y.txt", "z.txt", "x.txt", "w.txt"]);
+        // Clicking the secondary again flips it.
+        spec.push_key(SortColumn::DateModified, true);
+        assert_eq!(names(&s, &spec), ["x.txt", "z.txt", "y.txt", "w.txt"]);
+        // Clicking the primary flips the primary.
+        spec.push_key(SortColumn::Size, true);
+        assert_eq!(names(&s, &spec)[0], "w.txt");
+        assert_eq!(spec.keys().count(), 2);
+        spec.push_key(SortColumn::Path, true);
+        spec.push_key(SortColumn::Extension, true);
+        assert_eq!(spec.keys().count(), 3, "at most three keys");
+    }
 }

@@ -126,7 +126,7 @@ impl FennecApp {
         let integration =
             Some(crate::tray::install(ctx, deps.settings.show_tray_icon, &deps.settings.hotkey_show_window));
         let options = Arc::new(SearchOptions::from_settings(&deps.settings));
-        let sort = SortSpec { column: SortColumn::Name, ascending: true, folders_first: deps.settings.folders_first };
+        let sort = SortSpec::by(SortColumn::Name, true, deps.settings.folders_first);
         let mut app = Self {
             shared: deps.shared,
             engine: deps.engine,
