@@ -9,7 +9,6 @@ use super::tests::{deps_for, harness, wait_until};
 use super::*;
 
 #[test]
-#[cfg(not(windows))]
 fn advanced_rename_then_undo_and_redo() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("photos");
