@@ -137,11 +137,12 @@ mod imp {
     use windows::Win32::UI::Shell::Common::ITEMIDLIST;
     use windows::Win32::UI::Shell::{
         BHID_DataObject, BHID_SFUIObject, CMF_CANRENAME, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO,
-        CMINVOKECOMMANDINFOEX, DefSubclassProc, FOF_ALLOWUNDO, FOF_NOCONFIRMMKDIR, FOF_WANTNUKEWARNING,
-        FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FileOperation, GCS_VERBW, IContextMenu, IContextMenu2, IContextMenu3,
-        IFileOperation, ILFree, IShellItem, IShellItemArray, OAIF_EXEC, OAIF_HIDE_REGISTRATION, OPENASINFO,
-        RemoveWindowSubclass, SHCreateItemFromParsingName, SHCreateShellItemArrayFromIDLists, SHOP_FILEPATH,
-        SHObjectProperties, SHOpenWithDialog, SHParseDisplayName, SetWindowSubclass,
+        CMINVOKECOMMANDINFOEX, DefSubclassProc, FOF_ALLOWUNDO, FOF_NOCONFIRMMKDIR, FOF_RENAMEONCOLLISION,
+        FOF_WANTNUKEWARNING, FOFX_ADDUNDORECORD, FOFX_RECYCLEONDELETE, FileOperation, GCS_VERBW, IContextMenu,
+        IContextMenu2, IContextMenu3, IFileOperation, ILFree, IShellItem, IShellItemArray, OAIF_EXEC,
+        OAIF_HIDE_REGISTRATION, OPENASINFO, RemoveWindowSubclass, SHCreateItemFromParsingName,
+        SHCreateShellItemArrayFromIDLists, SHOP_FILEPATH, SHObjectProperties, SHOpenWithDialog, SHParseDisplayName,
+        SetWindowSubclass,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, DestroyMenu, MF_GRAYED, MF_SEPARATOR, MF_STRING, SW_SHOWNORMAL,
@@ -413,7 +414,9 @@ mod imp {
                 ReleaseStgMedium(&mut m);
             }
         }
-        let op = file_operation(owner, FOF_ALLOWUNDO.0 | FOFX_ADDUNDORECORD.0 | FOF_NOCONFIRMMKDIR.0)?;
+        // Pasting into the source folder makes "name - Copy" like Explorer.
+        let flags = FOF_ALLOWUNDO.0 | FOFX_ADDUNDORECORD.0 | FOF_NOCONFIRMMKDIR.0 | FOF_RENAMEONCOLLISION.0;
+        let op = file_operation(owner, flags)?;
         let dest = shell_item(dest)?;
         // SAFETY: valid operation, data object and destination folder.
         unsafe {

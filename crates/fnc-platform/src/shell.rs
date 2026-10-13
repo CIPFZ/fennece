@@ -29,6 +29,12 @@ pub fn type_name(ext: &str, is_dir: bool) -> Option<String> {
     imp::type_name(ext, is_dir)
 }
 
+/// Whether Ctrl and `key` (an ASCII letter) are physically held down (Windows). Used
+/// where the UI toolkit swallows a shortcut (Ctrl+V with only files on the clipboard).
+pub fn ctrl_key_down(key: char) -> bool {
+    imp::ctrl_key_down(key)
+}
+
 /// Mouse pointer position in screen pixels (Windows), for native popup menus.
 pub fn cursor_pos() -> Option<(i32, i32)> {
     imp::cursor_pos()
@@ -77,6 +83,15 @@ mod imp {
         } else {
             Err(io::Error::other(format!("ShellExecuteW failed ({})", r.0 as usize)))
         }
+    }
+
+    pub fn ctrl_key_down(key: char) -> bool {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL};
+        let down = |vk: i32| {
+            // SAFETY: plain query of the asynchronous key state.
+            (unsafe { GetAsyncKeyState(vk) } as u16) & 0x8000 != 0
+        };
+        down(i32::from(VK_CONTROL.0)) && down(key.to_ascii_uppercase() as i32)
     }
 
     pub fn cursor_pos() -> Option<(i32, i32)> {
@@ -151,6 +166,10 @@ mod imp {
         None
     }
 
+    pub fn ctrl_key_down(_key: char) -> bool {
+        false
+    }
+
     pub fn run_elevated(exe: &Path, args: &str) -> io::Result<()> {
         let _ = (exe, args);
         Err(io::Error::new(io::ErrorKind::Unsupported, "elevation is only supported on Windows"))
@@ -179,6 +198,10 @@ mod imp {
 
     pub fn cursor_pos() -> Option<(i32, i32)> {
         None
+    }
+
+    pub fn ctrl_key_down(_key: char) -> bool {
+        false
     }
 
     pub fn run_elevated(exe: &Path, args: &str) -> io::Result<()> {

@@ -193,6 +193,8 @@ pub struct FennecApp {
     hwnd: isize,
     /// Alt pressed while the menu bar is hidden: show it temporarily.
     menu_peek: bool,
+    /// Ctrl+V held at the last frame (edge detection, see `handle_keys`).
+    ctrl_v_down: bool,
     worker_tx: Sender<WorkerMsg>,
     worker_rx: Receiver<WorkerMsg>,
     /// Exiting for real (tray "Exit", `-exit`): skip close-to-tray.
@@ -288,6 +290,7 @@ impl FennecApp {
             after: Vec::new(),
             hwnd: 0,
             menu_peek: false,
+            ctrl_v_down: false,
             worker_tx,
             worker_rx,
             quitting: false,
@@ -1020,6 +1023,7 @@ impl FennecApp {
         let mut typed = String::new();
         let complete_open = self.complete.is_open();
         let mut complete_keys = Vec::new();
+        let mut paste_seen = false;
         let type_to_search = self.settings.type_to_search;
         ctx.input_mut(|i| {
             let mut keep = Vec::with_capacity(i.events.len());
@@ -1060,12 +1064,21 @@ impl FennecApp {
                     egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_)
                         if !modal && kctx == KeyCtx::Results =>
                     {
-                        let key = match &e {
-                            egui::Event::Copy => Key::C,
-                            egui::Event::Cut => Key::X,
-                            _ => Key::V,
+                        // On Windows egui-winit also maps Shift+Del to Cut and
+                        // Shift+Insert to Paste.
+                        let shift_only = i.modifiers.shift && !i.modifiers.command;
+                        let key = |key| Chord { ctrl: true, shift: false, alt: false, key };
+                        let chord = match (&e, shift_only) {
+                            (egui::Event::Cut, true) => {
+                                Chord { ctrl: false, shift: true, alt: false, key: Key::Delete }
+                            }
+                            (egui::Event::Copy, _) => key(Key::C),
+                            (egui::Event::Cut, _) => key(Key::X),
+                            _ => key(Key::V),
                         };
-                        let chord = Chord { ctrl: true, shift: false, alt: false, key };
+                        if chord.key == Key::V {
+                            paste_seen = true;
+                        }
                         if let Some(cmd) = self.keymap.lookup(kctx, &chord) {
                             cmds.push(cmd);
                         }
@@ -1075,6 +1088,12 @@ impl FennecApp {
             }
             i.events = keep;
         });
+        // Ctrl+V with only files on the clipboard produces no egui event at all.
+        let ctrl_v = kctx == KeyCtx::Results && !modal && fnc_platform::shell::ctrl_key_down('V');
+        if ctrl_v && !self.ctrl_v_down && !paste_seen {
+            cmds.push(Command::Paste);
+        }
+        self.ctrl_v_down = ctrl_v || paste_seen;
         for k in complete_keys {
             if k == Key::Delete {
                 // Del removes the highlighted history entry (SPEC ch.3 §2).
