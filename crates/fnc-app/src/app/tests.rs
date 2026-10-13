@@ -443,6 +443,21 @@ fn http_server_address_in_status_bar() {
         h.step();
         std::thread::sleep(Duration::from_millis(10));
     }
+    // `/http_enabled=true` + Enter in the search box (the Enter key must reach the
+    // inline command instead of opening the selection) starts it again.
+    h.get_by_role(Role::TextInput).focus();
+    h.step();
+    h.get_by_role(Role::TextInput).type_text("/http_enabled=true");
+    h.step();
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().settings.http_enabled, "inline command applied");
+    let t0 = Instant::now();
+    while h.query_by_label_contains("http://127.0.0.1:").is_none() {
+        assert!(t0.elapsed() < Duration::from_secs(20), "HTTP address not shown again");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
     // Options → Servers.
     let keymap = h.state().keymap.clone();
     let settings = h.state().settings.clone();

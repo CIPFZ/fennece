@@ -1260,6 +1260,8 @@ impl FennecApp {
         let mut paste_seen = false;
         let mut shift_dels = fnc_platform::shell::take_shift_delete();
         let type_to_search = self.settings.type_to_search;
+        // Enter runs a `/key=value` inline command (SPEC ch.3 §13) instead of opening.
+        let inline_command = kctx == KeyCtx::Search && self.v.query.starts_with('/');
         ctx.input_mut(|i| {
             let mut keep = Vec::with_capacity(i.events.len());
             for e in std::mem::take(&mut i.events) {
@@ -1282,6 +1284,10 @@ impl FennecApp {
                         }
                         if *key == Key::Tab && !modifiers.ctrl && !modifiers.alt {
                             tab = true;
+                            continue;
+                        }
+                        if inline_command && *key == Key::Enter && !modifiers.any() {
+                            keep.push(e);
                             continue;
                         }
                         let chord = Chord::from_event(*key, *modifiers);
