@@ -20,6 +20,7 @@ pub(super) enum Dialog {
     Filters { selected: Option<usize> },
     Export { path: String },
     ConfirmDelete { paths: Vec<PathBuf> },
+    Journal { records: Vec<crate::journal::Record>, filter: String },
     ContextMenu { at: egui::Pos2 },
     Help,
     About,
@@ -206,6 +207,7 @@ impl FennecApp {
             Dialog::Filters { .. } => t("cmd-organize-filters"),
             Dialog::Export { .. } => t("cmd-export"),
             Dialog::ConfirmDelete { .. } => t("cmd-delete-permanently"),
+            Dialog::Journal { .. } => t("cmd-index-journal"),
             Dialog::ContextMenu { .. } => String::new(),
             Dialog::Help => t("cmd-help"),
             Dialog::About => t("cmd-about"),
@@ -450,6 +452,63 @@ impl FennecApp {
                     return Act::Close;
                 }
                 if cancel { Act::Close } else { Act::Keep }
+            }
+            Dialog::Journal { records, filter } => {
+                ui.horizontal(|ui| {
+                    ui.label(t("journal-filter"));
+                    ui.text_edit_singleline(filter);
+                    ui.weak(t_args("journal-count", &[("count", records.len().into())]));
+                });
+                let f = filter.to_lowercase();
+                let shown: Vec<&crate::journal::Record> = records
+                    .iter()
+                    .filter(|r| {
+                        f.is_empty() || r.before.to_lowercase().contains(&f) || r.after.to_lowercase().contains(&f)
+                    })
+                    .collect();
+                let mut search: Option<String> = None;
+                let fmt = self.settings.date_format;
+                egui_extras::TableBuilder::new(ui)
+                    .striped(true)
+                    .resizable(true)
+                    .max_scroll_height(420.0)
+                    .column(egui_extras::Column::initial(140.0))
+                    .column(egui_extras::Column::initial(70.0))
+                    .column(egui_extras::Column::initial(330.0).clip(true))
+                    .column(egui_extras::Column::remainder().clip(true))
+                    .header(20.0, |mut h| {
+                        for k in ["journal-time", "journal-action", "journal-before", "journal-after"] {
+                            h.col(|ui| {
+                                ui.strong(t(k));
+                            });
+                        }
+                    })
+                    .body(|body| {
+                        body.rows(20.0, shown.len(), |mut row| {
+                            let r = shown[row.index()];
+                            row.col(|ui| {
+                                ui.label(crate::format::date_with(r.time, fmt, fnc_core::FileTime::now()));
+                            });
+                            row.col(|ui| {
+                                ui.label(r.action.label());
+                            });
+                            for p in [&r.before, &r.after] {
+                                row.col(|ui| {
+                                    if ui
+                                        .add(egui::Label::new(p).sense(egui::Sense::click()).truncate())
+                                        .double_clicked()
+                                    {
+                                        search = Some(p.clone());
+                                    }
+                                });
+                            }
+                        });
+                    });
+                if let Some(p) = search.filter(|p| !p.is_empty()) {
+                    self.set_query(format!("\"{p}\""));
+                    return Act::Close;
+                }
+                if ui.button(t("dialog-close")).clicked() { Act::Close } else { Act::Keep }
             }
             Dialog::Help => {
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {

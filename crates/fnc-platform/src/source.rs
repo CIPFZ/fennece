@@ -136,6 +136,11 @@ pub trait VolumeSource: Send {
     }
     /// `true` if [`VolumeSource::enumerate`] already delivers sizes and dates.
     fn enumerates_metadata(&self) -> bool;
+    /// After [`VolumeSource::watch`] reported `Offline`: `true` once the source is
+    /// reachable again (the next `watch` then rescans before watching).
+    fn reconnect(&mut self) -> bool {
+        false
+    }
     /// Journal id and next USN captured before enumeration (NTFS/ReFS).
     fn journal_position(&self) -> Option<(u64, i64)> {
         None

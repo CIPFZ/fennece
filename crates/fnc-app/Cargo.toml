@@ -31,6 +31,8 @@ chrono.workspace = true
 xxhash-rust.workspace = true
 serde.workspace = true
 toml.workspace = true
+ignore.workspace = true
+globset.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 tray-icon.workspace = true

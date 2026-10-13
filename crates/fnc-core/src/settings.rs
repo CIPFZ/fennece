@@ -441,9 +441,12 @@ pub struct Settings {
     /// the user's home directory.
     #[setting(key = "folders", default = Vec::new(), page = "folders")]
     pub folders: Vec<String>,
-    /// Folder rescan interval in minutes (0 = manual only).
+    /// Folder rescan interval in minutes (0 = only after notification overflow).
     #[setting(key = "folder_rescan_interval", default = 60, page = "folders")]
     pub folder_rescan_interval: u32,
+    /// Watch folder indexes for changes (ReadDirectoryChangesW / inotify).
+    #[setting(key = "folder_watch", default = true, page = "folders")]
+    pub folder_watch: bool,
     /// EFU file lists mounted into the index (`;`-separated paths).
     #[setting(key = "file_lists", default = Vec::new(), page = "filelists")]
     pub file_lists: Vec<String>,
@@ -455,9 +458,26 @@ pub struct Settings {
     /// Exclude system files and folders.
     #[setting(key = "exclude_system", default = false, page = "exclude")]
     pub exclude_system: bool,
-    /// Excluded folders (wildcards allowed, `;`-separated).
+    /// Excluded folders: full paths or folder-name wildcards (`node_modules`, `C:\\Temp\\*`).
     #[setting(key = "exclude_folders", default = Vec::new(), page = "exclude")]
     pub exclude_folders: Vec<String>,
+    /// Excluded files: name wildcards (`*.tmp;~$*`) or full-path wildcards.
+    #[setting(key = "exclude_files", default = Vec::new(), page = "exclude")]
+    pub exclude_files: Vec<String>,
+    /// Folders whose `.gitignore` files are honoured as exclusions (`;`-separated).
+    #[setting(key = "exclude_gitignore_roots", default = Vec::new(), page = "exclude")]
+    pub exclude_gitignore_roots: Vec<String>,
+
+    // ---- index journal ----
+    /// Keep the index journal (created/deleted/renamed/modified entries).
+    #[setting(key = "index_journal_enabled", default = true, page = "index_journal")]
+    pub index_journal_enabled: bool,
+    /// Days of index journal history to keep.
+    #[setting(key = "index_journal_days", default = 7, page = "index_journal")]
+    pub index_journal_days: u32,
+    /// Maximum index journal records.
+    #[setting(key = "index_journal_max", default = 1_000_000, page = "index_journal")]
+    pub index_journal_max: u32,
 
     // ---- advanced ----
     /// Log level: error, warn, info, debug or trace.

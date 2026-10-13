@@ -301,3 +301,15 @@ dialog-confirm-delete = { $count ->
     [one] Permanently delete this item? This cannot be undone.
    *[other] Permanently delete these { $count } items? This cannot be undone.
 }
+cmd-index-journal = Index Journal…
+journal-create = Created
+journal-delete = Deleted
+journal-rename = Renamed
+journal-move = Moved
+journal-modify = Modified
+journal-filter = Show changes containing:
+journal-count = { $count } records
+journal-time = Time
+journal-action = Change
+journal-before = Before
+journal-after = After

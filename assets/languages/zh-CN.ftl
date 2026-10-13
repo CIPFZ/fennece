@@ -289,3 +289,15 @@ help-syntax =
     宏：audio: zip: doc: exe: pic: video:
     命令：在搜索框输入 /search_delay=100 或 /reindex 后按回车。
 dialog-confirm-delete = 确定要永久删除这 { $count } 个项目吗？此操作无法撤销。
+cmd-index-journal = 索引日志…
+journal-create = 新建
+journal-delete = 删除
+journal-rename = 重命名
+journal-move = 移动
+journal-modify = 修改
+journal-filter = 显示包含以下内容的更改：
+journal-count = 共 { $count } 条记录
+journal-time = 时间
+journal-action = 更改
+journal-before = 之前
+journal-after = 之后

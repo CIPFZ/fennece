@@ -84,6 +84,14 @@ pub struct IndexerConfig {
     pub save_interval: Duration,
     /// Instance name (service pipe).
     pub instance: String,
+    /// Exclusion rules (`None` = index everything).
+    pub exclusions: Option<Arc<crate::exclude::Exclusions>>,
+    /// Folder index rescan interval (zero = only after notification overflow).
+    pub folder_rescan: Duration,
+    /// Watch folder indexes for changes.
+    pub folder_watch: bool,
+    /// Index journal file with retention `(days, max records)`.
+    pub journal: Option<(PathBuf, u32, usize)>,
 }
 
 type Callback = Arc<dyn Fn() + Send + Sync>;
@@ -205,6 +213,16 @@ impl EntrySink for LoadSink<'_, '_> {
     }
 }
 
+fn folder_source(cfg: &IndexerConfig, root: PathBuf) -> FolderSource {
+    let opts = fnc_platform::walk::FolderOptions {
+        rescan_interval: cfg.folder_rescan,
+        watch: cfg.folder_watch,
+        exclude: cfg.exclusions.as_ref().map(crate::exclude::Exclusions::as_fn),
+        ..Default::default()
+    };
+    FolderSource::with_options(root, opts)
+}
+
 fn collect_sources(cfg: &IndexerConfig, emit: &Emitter) -> Vec<Box<dyn VolumeSource>> {
     let mut sources: Vec<Box<dyn VolumeSource>> = Vec::new();
     #[cfg(windows)]
@@ -225,7 +243,7 @@ fn collect_sources(cfg: &IndexerConfig, emit: &Emitter) -> Vec<Box<dyn VolumeSou
                 Ok(s) => sources.push(Box::new(s)),
                 Err(SourceError::AccessDenied(_)) => {
                     emit.message(crate::i18n::t_args("index-folder-fallback", &[("volume", letter.into())]));
-                    sources.push(Box::new(FolderSource::new(root)));
+                    sources.push(Box::new(folder_source(cfg, root.into())));
                 }
                 Err(e) => emit.message(crate::i18n::t_args("index-error", &[("message", e.to_string().into())])),
             }
@@ -233,7 +251,7 @@ fn collect_sources(cfg: &IndexerConfig, emit: &Emitter) -> Vec<Box<dyn VolumeSou
     }
     for f in &cfg.folders {
         if f.is_dir() {
-            sources.push(Box::new(FolderSource::new(f.clone())));
+            sources.push(Box::new(folder_source(cfg, f.clone())));
         } else {
             emit.message(crate::i18n::t_args(
                 "index-error",
@@ -303,6 +321,18 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
     let emit = Emitter { tx: events, notify };
     let t0 = Instant::now();
     emit.status(IndexStatus::Starting);
+    // Removing an exclusion rule needs the excluded entries back: rebuild (adding rules
+    // only deletes, which is applied to the loaded index below).
+    let mut cfg = cfg;
+    let fingerprint_file = cfg.db_path.as_ref().map(|p| p.with_extension("excl"));
+    let new_rules = cfg.exclusions.as_ref().map(|e| e.fingerprint().to_string()).unwrap_or_default();
+    if let Some(f) = &fingerprint_file {
+        let old = std::fs::read_to_string(f).unwrap_or_default();
+        if !exclusion_rules_kept(&old, &new_rules) {
+            tracing::info!("exclusion rules were removed; rebuilding the index");
+            cfg.reindex = true;
+        }
+    }
     let mut store =
         load_db(&cfg, &emit).unwrap_or_else(|| IndexStore::new(IndexOptions { date_accessed: cfg.date_accessed }));
     let loaded = !store.is_empty();
@@ -400,6 +430,20 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
     for v in gone {
         store.drop_volume(v);
     }
+    if let Some(ex) = &cfg.exclusions {
+        let t = Instant::now();
+        let vols: Vec<VolumeId> = store
+            .volumes()
+            .iter()
+            .filter(|v| !v.is_retired() && matches!(v.info.kind, VolumeKind::Ntfs | VolumeKind::Refs))
+            .map(|v| v.id)
+            .collect();
+        let removed: usize = vols.into_iter().map(|v| crate::exclude::apply(&mut store, v, ex)).sum();
+        tracing::info!(removed, elapsed = ?t.elapsed(), "exclusions applied");
+    }
+    if let Some(f) = &fingerprint_file {
+        let _ = std::fs::write(f, &new_rules);
+    }
     if store.len() > 1024 && store.live_count() * 5 < store.len() * 4 {
         store.compact();
     }
@@ -454,6 +498,15 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
             }
         })
     };
+    let journal = cfg.journal.as_ref().and_then(|(path, days, max)| {
+        match crate::journal::Journal::open(path.clone(), *days, *max) {
+            Ok(j) => Some(Arc::new(parking_lot::Mutex::new(j))),
+            Err(e) => {
+                tracing::warn!(error = %e, "index journal unavailable");
+                None
+            }
+        }
+    });
     let workers = Arc::new(Workers {
         shared: shared.clone(),
         stop: stop.clone(),
@@ -461,6 +514,8 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
         refresher,
         active: parking_lot::Mutex::new(std::collections::HashSet::new()),
         paused,
+        exclusions: cfg.exclusions.clone(),
+        journal,
     });
     for (vol, src) in volumes {
         let wants_meta = needs_meta.contains(&vol);
@@ -486,6 +541,8 @@ struct Workers {
     /// GUIDs of volumes being watched.
     active: parking_lot::Mutex<std::collections::HashSet<String>>,
     paused: Arc<std::sync::atomic::AtomicBool>,
+    exclusions: Option<Arc<crate::exclude::Exclusions>>,
+    journal: Option<Arc<parking_lot::Mutex<crate::journal::Journal>>>,
 }
 
 impl Workers {
@@ -537,8 +594,31 @@ impl Workers {
                 vol,
                 paused: me.paused.clone(),
                 stop: me.stop.clone(),
+                exclusions: me.exclusions.clone(),
+                journal: me.journal.clone(),
             };
-            match src.watch(vol, &mut sink, &me.stop) {
+            let result = loop {
+                match src.watch(vol, &mut sink, &me.stop) {
+                    // A folder index comes back when its root is reachable again (USB
+                    // stick re-inserted, share reconnected): rescan, then keep watching.
+                    Err(SourceError::Offline(_)) if src.info().kind == VolumeKind::Folder => {
+                        tracing::info!(volume = %name, "folder index offline");
+                        me.shared.write().set_volume_online(vol, false);
+                        sink.refresher.poke();
+                        while !me.stop.is_stopped() && !src.reconnect() {
+                            std::thread::sleep(Duration::from_secs(3));
+                        }
+                        if me.stop.is_stopped() {
+                            break Err(SourceError::Stopped);
+                        }
+                        tracing::info!(volume = %name, "folder index back online");
+                        me.shared.write().set_volume_online(vol, true);
+                        sink.refresher.poke();
+                    }
+                    other => break other,
+                }
+            };
+            match result {
                 Ok(()) | Err(SourceError::Stopped | SourceError::Unsupported(_)) => {}
                 Err(SourceError::Offline(_)) => {
                     tracing::info!(volume = %name, "volume went offline");
@@ -754,6 +834,70 @@ struct WatchSink {
     vol: VolumeId,
     paused: Arc<std::sync::atomic::AtomicBool>,
     stop: StopFlag,
+    exclusions: Option<Arc<crate::exclude::Exclusions>>,
+    journal: Option<Arc<parking_lot::Mutex<crate::journal::Journal>>>,
+}
+
+/// Drops new entries that the exclusion rules leave out and turns renames into excluded
+/// places into deletions (NTFS changes; folder sources filter themselves).
+fn filter_excluded(batch: &mut ChangeBatch, s: &IndexStore, ex: &crate::exclude::Exclusions) {
+    let mut path = String::new();
+    let mut excluded = |parent: EntryRef, name: &[u16], attrs: u32, is_dir: bool| -> bool {
+        let Some(p) = s.resolve(parent) else { return false };
+        s.full_path(p, &mut path);
+        let n = String::from_utf16_lossy(name);
+        if !path.ends_with(['\\', '/']) {
+            path.push(s.separator(p));
+        }
+        path.push_str(&n);
+        ex.excluded(std::path::Path::new(&path), &n, is_dir, attrs)
+    };
+    let dir_attr = fnc_core::flags::attr::DIRECTORY;
+    let mut out = Vec::with_capacity(batch.len());
+    for c in batch.drain(..) {
+        match &c {
+            Change::Create { parent, name, meta, volume, frn } | Change::Touch { parent, name, meta, volume, frn } => {
+                let a = meta.attributes.unwrap_or(0);
+                if excluded(*parent, name, a, a & dir_attr != 0) {
+                    // Known entry moved into an excluded place: it leaves the index.
+                    if s.resolve(EntryRef::Frn(*volume, *frn)).is_some() {
+                        out.push(Change::Delete(EntryRef::Frn(*volume, *frn)));
+                    }
+                    continue;
+                }
+            }
+            Change::Rename { target, new_name, new_parent } => {
+                if let Some(id) = s.resolve(*target)
+                    && excluded(*new_parent, new_name, s.attributes(id), s.is_dir(id))
+                {
+                    out.push(Change::Delete(*target));
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        out.push(c);
+    }
+    *batch = out;
+}
+
+/// `true` unless a rule present in `old` is missing from `new` (both are
+/// [`crate::exclude::Exclusions::fingerprint`] texts).
+fn exclusion_rules_kept(old: &str, new: &str) -> bool {
+    if old.is_empty() {
+        return true;
+    }
+    if new.is_empty() {
+        return false;
+    }
+    let flag = |s: &str, k: &str| s.contains(&format!("{k}=true"));
+    // Turning hidden/system exclusion off removes a rule.
+    if (flag(old, "h") && !flag(new, "h")) || (flag(old, "s") && !flag(new, "s")) {
+        return false;
+    }
+    let items = |s: &str| -> Vec<String> { s.split('"').skip(1).step_by(2).map(String::from).collect() };
+    let n = items(new);
+    items(old).iter().all(|p| n.contains(p))
 }
 
 /// Maximum changes applied under one write lock (keeps lock hold time < 5 ms).
@@ -765,11 +909,21 @@ impl ChangeSink for WatchSink {
         while self.paused.load(std::sync::atomic::Ordering::Relaxed) && !self.stop.is_stopped() {
             std::thread::sleep(Duration::from_millis(200));
         }
+        if let Some(ex) = &self.exclusions {
+            let snap = self.shared.snapshot();
+            filter_excluded(&mut batch, &snap, ex);
+        }
         let mut changed = false;
         while !batch.is_empty() {
             let rest = if batch.len() > MAX_BATCH { batch.split_off(MAX_BATCH) } else { Vec::new() };
             let t = Instant::now();
-            let stats = self.shared.write().apply(batch);
+            let mut w = self.shared.write();
+            let pending = self.journal.as_ref().map(|_| crate::journal::Journal::prepare(&w, &batch));
+            let stats = w.apply(batch);
+            if let (Some(j), Some(p)) = (&self.journal, pending) {
+                j.lock().commit(&w, p);
+            }
+            drop(w);
             tracing::trace!(?stats, held = ?t.elapsed(), "applied USN batch");
             changed |= stats.changed();
             batch = rest;
@@ -1249,6 +1403,23 @@ mod tests {
         let _ = std::fs::remove_file(&db);
     }
 
+    #[test]
+    fn exclusion_rule_removal_is_detected() {
+        let fp = |f: &[&str], h: bool| {
+            let s = fnc_core::settings::Settings {
+                exclude_folders: f.iter().map(|x| x.to_string()).collect(),
+                exclude_hidden: h,
+                ..Default::default()
+            };
+            crate::exclude::Exclusions::from_settings(&s).map(|e| e.fingerprint().to_string()).unwrap_or_default()
+        };
+        assert!(exclusion_rules_kept("", &fp(&["a"], false)), "first run");
+        assert!(exclusion_rules_kept(&fp(&["a"], false), &fp(&["a", "b"], false)), "rule added");
+        assert!(!exclusion_rules_kept(&fp(&["a", "b"], false), &fp(&["a"], false)), "rule removed");
+        assert!(!exclusion_rules_kept(&fp(&["a"], true), &fp(&["a"], false)), "hidden no longer excluded");
+        assert!(!exclusion_rules_kept(&fp(&["a"], false), ""), "all rules removed");
+    }
+
     /// IDX-02 (pipeline part): a change delivered by a watcher becomes visible in the
     /// current search well within 1 s (apply + debounce + re-search).
     #[test]
@@ -1275,8 +1446,15 @@ mod tests {
 
         let handle = engine.handle();
         let refresher = Refresher::spawn(Arc::new(move || handle.refresh()));
-        let mut sink =
-            WatchSink { shared: shared.clone(), refresher, vol, paused: Arc::default(), stop: StopFlag::new() };
+        let mut sink = WatchSink {
+            shared: shared.clone(),
+            refresher,
+            vol,
+            paused: Arc::default(),
+            stop: StopFlag::new(),
+            exclusions: None,
+            journal: None,
+        };
         let t0 = Instant::now();
         sink.changes(vec![Change::Create {
             volume: vol,

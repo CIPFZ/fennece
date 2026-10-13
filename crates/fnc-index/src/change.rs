@@ -83,6 +83,50 @@ pub enum Change {
         /// Metadata.
         meta: Meta,
     },
+    /// A change addressed by path within `volume` (folder indexes).
+    Path {
+        /// Volume.
+        volume: VolumeId,
+        /// The change.
+        change: PathChange,
+    },
+}
+
+/// Path components below a volume root (`["Docs", "a.txt"]`); used by sources without
+/// stable file ids (folder indexes).
+pub type RelPath = Vec<Box<[u16]>>;
+
+/// Path-addressed changes from folder indexes (SPEC ch.1 §3): entries are found by
+/// walking names from the volume root; new entries get synthetic FRNs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PathChange {
+    /// The entry at `path` exists with `meta` (created if missing, else updated).
+    Upsert {
+        /// Location.
+        path: RelPath,
+        /// Metadata (attributes decide file vs folder for new entries).
+        meta: Meta,
+    },
+    /// The entry at `path` (and its subtree) is gone.
+    Remove {
+        /// Location.
+        path: RelPath,
+    },
+    /// Renamed/moved from `from` to `to`.
+    Rename {
+        /// Old location.
+        from: RelPath,
+        /// New location.
+        to: RelPath,
+    },
+    /// Folder `dir` contains exactly `children` (rescan merge): missing ones are created,
+    /// existing ones updated, others deleted. Entry ids of surviving entries are kept.
+    SyncDir {
+        /// Folder (empty = the root).
+        dir: RelPath,
+        /// `(name, metadata)` of every child.
+        children: Vec<(Box<[u16]>, Meta)>,
+    },
 }
 
 /// A batch applied under one write lock.

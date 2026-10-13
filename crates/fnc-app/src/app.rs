@@ -815,6 +815,12 @@ impl FennecApp {
                 self.say(t("msg-db-saved"));
             }
             K::PauseUpdates => self.toggle_pause(),
+            K::IndexJournal => {
+                let file = crate::filters::data_file(&self.settings_path, "journal.tsv");
+                let mut records = crate::journal::read(&file, 10_000);
+                records.reverse();
+                self.dialog = Some(dialogs::Dialog::Journal { records, filter: String::new() });
+            }
             K::Help => self.dialog = Some(dialogs::Dialog::Help),
             K::About => self.dialog = Some(dialogs::Dialog::About),
             K::HideWindow => {

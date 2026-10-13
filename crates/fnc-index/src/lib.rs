@@ -22,7 +22,7 @@ pub mod shared;
 pub mod store;
 pub mod volume;
 
-pub use change::{ApplyStats, Change, ChangeBatch, EntryRef, Meta};
+pub use change::{ApplyStats, Change, ChangeBatch, EntryRef, Meta, PathChange, RelPath};
 pub use error::{IndexError, Result};
 pub use order::NameOrder;
 pub use shared::{IndexSnapshot, SharedIndex};

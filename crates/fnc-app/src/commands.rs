@@ -176,6 +176,8 @@ commands! {
     SaveDatabase = "save-database",
     /// Pause/resume applying index updates.
     PauseUpdates = "pause-updates",
+    /// Show the index journal (recent changes).
+    IndexJournal = "index-journal",
     /// Search syntax help.
     Help = "help",
     /// About.

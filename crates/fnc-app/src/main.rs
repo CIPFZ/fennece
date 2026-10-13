@@ -7,6 +7,7 @@ mod app;
 mod cli;
 mod columns;
 mod commands;
+mod exclude;
 mod filters;
 mod fonts;
 mod format;
@@ -14,6 +15,7 @@ mod history;
 mod i18n;
 mod icon;
 mod indexer;
+mod journal;
 #[cfg(windows)]
 mod tray;
 
@@ -141,6 +143,12 @@ fn run() -> anyhow::Result<()> {
         db_path: if cli.no_db { None } else { Some(cli.db.as_ref().map_or_else(|| paths.index_file(), Into::into)) },
         reindex: cli.reindex,
         instance: cli.instance.clone(),
+        exclusions: exclude::Exclusions::from_settings(&settings),
+        folder_rescan: Duration::from_secs(u64::from(settings.folder_rescan_interval) * 60),
+        folder_watch: settings.folder_watch,
+        journal: settings.index_journal_enabled.then(|| {
+            (paths.root.join("journal.tsv"), settings.index_journal_days, settings.index_journal_max as usize)
+        }),
         save_interval: Duration::from_secs(u64::from(settings.db_save_interval) * 60),
     };
     let (index_tx, index_rx) = crossbeam_channel::unbounded();

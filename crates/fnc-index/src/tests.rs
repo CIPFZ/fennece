@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use fnc_core::flags::attr;
 use fnc_core::{EntryId, VolumeId};
 
+use crate::PathChange;
 use crate::*;
 
 fn u16s(s: &str) -> Box<[u16]> {
@@ -496,4 +497,47 @@ fn absorb_appends_a_privately_built_volume() {
     }]);
     assert_eq!(path(&s, notes), "T:\\n.md");
     assert!(!all_paths(&s).iter().any(|p| p.contains("gone.tmp")));
+}
+
+fn rel(p: &str) -> crate::RelPath {
+    p.split('/').filter(|s| !s.is_empty()).map(u16s).collect()
+}
+
+#[test]
+fn path_changes_for_folder_indexes() {
+    let mut s = IndexStore::default();
+    let vol = s.add_volume(VolumeInfo::new(VolumeKind::Folder, "/data"), Some(1)).unwrap();
+    let mut b = s.bulk_load(vol);
+    b.push(2, 1, &u16s("docs"), &dir()).unwrap();
+    b.push(3, 2, &u16s("a.txt"), &file(1)).unwrap();
+    b.finish().unwrap();
+    let p = |c| Change::Path { volume: vol, change: c };
+    let st = s.apply(vec![
+        p(PathChange::Upsert { path: rel("docs/new"), meta: dir() }),
+        p(PathChange::Upsert { path: rel("docs/new/b.md"), meta: file(5) }),
+        p(PathChange::Upsert { path: rel("docs/a.txt"), meta: file(9) }),
+    ]);
+    assert_eq!((st.created, st.updated), (2, 1));
+    let a = s.resolve_path(vol, &rel("docs/a.txt")).unwrap();
+    assert_eq!(s.size(a), Some(9));
+    let b_md = s.resolve_path(vol, &rel("docs/new/b.md")).unwrap();
+    assert_eq!(path(&s, b_md), "/data/docs/new/b.md");
+    assert!(s.frn(b_md) > 3, "synthetic FRNs continue after the walk's");
+    // Rename a folder: the child follows, ids stay.
+    s.apply(vec![p(PathChange::Rename { from: rel("docs/new"), to: rel("moved") })]);
+    assert_eq!(path(&s, b_md), "/data/moved/b.md");
+    // Sync: `docs` now holds only `c.txt` (a.txt deleted, c.txt created).
+    let st = s.apply(vec![p(PathChange::SyncDir { dir: rel("docs"), children: vec![(u16s("c.txt"), file(2))] })]);
+    assert_eq!((st.created, st.deleted), (1, 1));
+    assert!(!s.is_live(a));
+    // Remove by path; unknown paths are unresolved.
+    let st = s.apply(vec![p(PathChange::Remove { path: rel("moved") }), p(PathChange::Remove { path: rel("nope/x") })]);
+    assert_eq!((st.deleted, st.unresolved), (2, 1));
+    // Parents created later in the same batch resolve on the retry pass.
+    let st = s.apply(vec![
+        p(PathChange::Upsert { path: rel("late/x.txt"), meta: file(1) }),
+        p(PathChange::Upsert { path: rel("late"), meta: dir() }),
+    ]);
+    assert_eq!(st.created, 2);
+    assert_eq!(all_paths(&s).len(), s.live_count());
 }

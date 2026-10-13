@@ -7,7 +7,7 @@ use fnc_core::fold::fold_utf16_into;
 use fnc_core::natsort::name_cmp;
 use fnc_core::{EntryFlags, EntryId, FileTime, FoldArena, NameArena, VolumeId};
 
-use crate::change::{ApplyStats, Change, ChangeBatch, EntryRef, Meta};
+use crate::change::{ApplyStats, Change, ChangeBatch, EntryRef, Meta, PathChange};
 use crate::children::Children;
 use crate::error::{IndexError, Result};
 use crate::ext::{ExtDict, NO_EXT, ext_of};
@@ -83,6 +83,8 @@ pub struct IndexStore {
     /// Additional (hard-link) names per file: `(volume, frn)` → alias rows. The FRN map
     /// points at the primary row.
     pub(crate) links: HashMap<(VolumeId, u64), Vec<EntryId>>,
+    /// Next synthetic FRN per volume (0 = not computed yet).
+    next_frn: Vec<u64>,
     /// `false` while applying initial metadata (not changes: no index-journal entry).
     record_recent: bool,
     generation: u64,
@@ -125,6 +127,7 @@ impl Clone for IndexStore {
             orphans: self.orphans.clone(),
             name_order: self.name_order.clone(),
             links: self.links.clone(),
+            next_frn: self.next_frn.clone(),
             record_recent: true,
             generation: self.generation,
             tree_generation: self.tree_generation,
@@ -167,6 +170,7 @@ impl IndexStore {
             orphans: Vec::new(),
             name_order: NameOrder::default(),
             links: HashMap::new(),
+            next_frn: Vec::new(),
             record_recent: true,
             generation: 0,
             tree_generation: 0,
@@ -244,6 +248,9 @@ impl IndexStore {
                 self.volumes[i] = v;
                 self.frn_maps[i] = FrnMap::default();
                 self.orphans[i] = None;
+                if let Some(n) = self.next_frn.get_mut(i) {
+                    *n = 0;
+                }
             }
             None => {
                 self.volumes.push(v);
@@ -760,6 +767,168 @@ impl IndexStore {
             Change::Rename { target, new_parent, .. } => {
                 self.resolve(*target).is_some() && self.resolve(*new_parent).is_some()
             }
+            Change::Path { volume, change } => match change {
+                PathChange::Upsert { path, .. } | PathChange::Remove { path } => {
+                    path.split_last().is_some_and(|(_, dir)| self.resolve_path(*volume, dir).is_some())
+                }
+                PathChange::Rename { from, to } => {
+                    self.resolve_path(*volume, from).is_some()
+                        && to.split_last().is_some_and(|(_, dir)| self.resolve_path(*volume, dir).is_some())
+                }
+                PathChange::SyncDir { dir, .. } => self.resolve_path(*volume, dir).is_some(),
+            },
+        }
+    }
+
+    /// The entry at `path` below the root of `vol` (empty path = the first root).
+    pub fn resolve_path(&self, vol: VolumeId, path: &[Box<[u16]>]) -> Option<EntryId> {
+        let mut cur = *self.volumes.get(vol.idx())?.roots.first()?;
+        let mut fold = Vec::new();
+        for c in path {
+            fold.clear();
+            fold_utf16_into(c, &mut fold);
+            cur = self.find_child(cur, &fold)?;
+        }
+        Some(cur)
+    }
+
+    /// A fresh synthetic FRN for `vol` (folder indexes number entries sequentially).
+    fn next_synthetic_frn(&mut self, vol: VolumeId) -> u64 {
+        let v = vol.idx();
+        if self.next_frn.len() <= v {
+            self.next_frn.resize(v + 1, 0);
+        }
+        if self.next_frn[v] == 0 {
+            let max = (0..self.len())
+                .filter(|&i| self.volume[i] == vol && self.frn[i] != ORPHANS_FRN)
+                .map(|i| self.frn[i])
+                .max()
+                .unwrap_or(0);
+            self.next_frn[v] = max + 1;
+        }
+        let f = self.next_frn[v];
+        self.next_frn[v] += 1;
+        f
+    }
+
+    fn apply_path(&mut self, vol: VolumeId, change: PathChange, now: FileTime, stats: &mut ApplyStats) -> bool {
+        match change {
+            PathChange::Upsert { path, meta } => {
+                let Some((name, dir)) = path.split_last() else { return false };
+                let Some(parent) = self.resolve_path(vol, dir) else {
+                    stats.unresolved += 1;
+                    return false;
+                };
+                self.upsert_child(vol, parent, name, &meta, now, stats)
+            }
+            PathChange::Remove { path } => match self.resolve_path(vol, &path) {
+                Some(id) if !self.flags(id).contains(EntryFlags::ROOT) => {
+                    let dir = self.is_dir(id);
+                    stats.deleted += self.delete_subtree(id, now);
+                    dir
+                }
+                _ => {
+                    stats.unresolved += 1;
+                    false
+                }
+            },
+            PathChange::Rename { from, to } => {
+                let (Some(id), Some((name, dir))) = (self.resolve_path(vol, &from), to.split_last()) else {
+                    stats.unresolved += 1;
+                    return false;
+                };
+                let Some(p) = self.resolve_path(vol, dir) else {
+                    stats.unresolved += 1;
+                    return false;
+                };
+                if self.flags(id).contains(EntryFlags::ROOT) || self.is_ancestor_or_self(id, p) {
+                    stats.unresolved += 1;
+                    return false;
+                }
+                // Renaming onto an existing name replaces it (as the file system did).
+                let mut fold = Vec::new();
+                fold_utf16_into(name, &mut fold);
+                if let Some(old) = self.find_child(p, &fold).filter(|&o| o != id) {
+                    stats.deleted += self.delete_subtree(old, now);
+                }
+                self.rename(id, name, p, now);
+                stats.renamed += 1;
+                self.is_dir(id)
+            }
+            PathChange::SyncDir { dir, children } => {
+                let Some(d) = self.resolve_path(vol, &dir) else {
+                    stats.unresolved += 1;
+                    return false;
+                };
+                let mut tree = false;
+                let mut fold = Vec::new();
+                let mut seen: std::collections::HashSet<Vec<u8>> =
+                    std::collections::HashSet::with_capacity(children.len());
+                for (name, meta) in &children {
+                    fold.clear();
+                    fold_utf16_into(name, &mut fold);
+                    seen.insert(fold.clone());
+                    tree |= self.upsert_child(vol, d, name, meta, now, stats);
+                }
+                let gone: Vec<EntryId> =
+                    self.children(d).filter(|&c| self.is_live(c) && !seen.contains(self.fold(c))).collect();
+                for g in gone {
+                    tree |= self.is_dir(g);
+                    stats.deleted += self.delete_subtree(g, now);
+                }
+                tree
+            }
+        }
+    }
+
+    /// Creates or updates child `name` of `parent`. A file that became a folder (or the
+    /// reverse) is replaced.
+    fn upsert_child(
+        &mut self,
+        vol: VolumeId,
+        parent: EntryId,
+        name: &[u16],
+        meta: &Meta,
+        now: FileTime,
+        stats: &mut ApplyStats,
+    ) -> bool {
+        let mut fold = Vec::new();
+        fold_utf16_into(name, &mut fold);
+        let want_dir = meta.attributes.is_some_and(|a| a & fnc_core::flags::attr::DIRECTORY != 0);
+        if let Some(id) = self.find_child(parent, &fold) {
+            if self.is_dir(id) == want_dir || meta.attributes.is_none() {
+                let changed = self.size(id) != meta.size.or(self.size(id))
+                    || meta.date_modified.is_some_and(|t| t != self.dm[id.idx()])
+                    || meta.attributes.is_some_and(|a| a != self.attr[id.idx()])
+                    || self.names.get(id.idx()) != name;
+                if self.names.get(id.idx()) != name {
+                    // Case-only rename.
+                    self.rename(id, name, parent, now);
+                }
+                self.update_meta(id, meta);
+                if changed {
+                    self.mark_recent(id, now);
+                    stats.updated += 1;
+                }
+                return false;
+            }
+            stats.deleted += self.delete_subtree(id, now);
+        }
+        let frn = self.next_synthetic_frn(vol);
+        match self.push_row(vol, frn, parent, name, meta, EntryFlags::empty()) {
+            Ok(id) => {
+                self.frn_maps[vol.idx()].insert(frn, id);
+                self.children.add(parent, id);
+                self.name_order.mark_dirty(id);
+                self.mark_recent(id, now);
+                stats.created += 1;
+                self.is_dir(id)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot insert entry");
+                stats.unresolved += 1;
+                false
+            }
         }
     }
 
@@ -808,6 +977,7 @@ impl IndexStore {
             Change::Touch { volume, frn, parent, name, meta } => {
                 tree_changed |= self.apply_touch(volume, frn, parent, &name, &meta, now, stats);
             }
+            Change::Path { volume, change } => tree_changed |= self.apply_path(volume, change, now, stats),
         }
         tree_changed
     }
@@ -1289,6 +1459,9 @@ impl IndexStore {
             self.frn_maps[v.idx()] = FrnMap::build(&pairs, matches!(self.volumes[v.idx()].info.kind, VolumeKind::Ntfs));
         }
         for &v in &vmap {
+            if let Some(n) = self.next_frn.get_mut(v.idx()) {
+                *n = 0;
+            }
             if let Some(o) = self.orphans[v.idx()] {
                 self.frn_maps[v.idx()].insert(ORPHANS_FRN, o);
             }
