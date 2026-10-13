@@ -1588,10 +1588,10 @@ name = "fnc-fes"
 version = "0.1.0"
 dependencies = [
  "fnc-core",
- "fnc-exec",
  "fnc-index",
- "fnc-query",
+ "fnc-ipc",
  "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

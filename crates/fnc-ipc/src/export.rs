@@ -101,6 +101,8 @@ pub struct ExportOptions {
     pub widths: Vec<(Column, usize)>,
     /// Do not add the default "Filename" column.
     pub no_default_filename: bool,
+    /// Line terminator; `None` = CRLF.
+    pub newline: Option<Newline>,
 }
 
 impl Default for ExportOptions {
@@ -120,6 +122,7 @@ impl Default for ExportOptions {
             ansi_highlight: None,
             widths: Vec::new(),
             no_default_filename: false,
+            newline: None,
         }
     }
 }
@@ -184,6 +187,32 @@ pub fn resolve_columns(opts: &ExportOptions) -> Vec<Column> {
     }
 }
 
+/// Line terminator (es `-crlf`, `-lf`, `-nul`, `-no-new-line`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum Newline {
+    /// `\r\n` (default).
+    #[default]
+    CrLf,
+    /// `\n`.
+    Lf,
+    /// NUL character.
+    Nul,
+    /// Nothing.
+    None,
+}
+
+impl Newline {
+    /// The terminator text.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Newline::CrLf => "\r\n",
+            Newline::Lf => "\n",
+            Newline::Nul => "\0",
+            Newline::None => "",
+        }
+    }
+}
+
 /// Streaming exporter.
 pub struct Exporter<W: Write> {
     out: W,
@@ -194,8 +223,6 @@ pub struct Exporter<W: Write> {
     line: String,
     overflow: usize,
 }
-
-const CRLF: &str = "\r\n";
 
 fn csv_quote(s: &str, out: &mut String) {
     out.push('"');
@@ -297,7 +324,7 @@ impl<W: Write> Exporter<W> {
                 self.line.push_str(c.header());
             }
         }
-        self.line.push_str(CRLF);
+        self.line.push_str(self.newline());
         self.out.write_all(self.line.as_bytes())
     }
 
@@ -537,10 +564,15 @@ impl<W: Write> Exporter<W> {
         if self.opts.format == Format::Json {
             self.line.push('}');
         } else {
-            self.line.push_str(CRLF);
+            self.line.push_str(self.newline());
         }
         self.rows += 1;
         self.out.write_all(self.line.as_bytes())
+    }
+
+    /// Line terminator in use.
+    pub fn newline(&self) -> &'static str {
+        self.opts.newline.unwrap_or_default().as_str()
     }
 
     /// Rows written so far.
@@ -548,10 +580,17 @@ impl<W: Write> Exporter<W> {
         self.rows
     }
 
+    /// Writes a free-form line (es footer, messages) with the configured terminator.
+    pub fn write_line(&mut self, text: &str) -> io::Result<()> {
+        self.out.write_all(text.as_bytes())?;
+        self.out.write_all(self.newline().as_bytes())
+    }
+
     /// Finishes (closes the JSON array) and returns the writer.
     pub fn finish(mut self) -> io::Result<W> {
         if self.opts.format == Format::Json {
-            self.out.write_all(if self.rows == 0 { b"[]\r\n" } else { b"]\r\n" })?;
+            self.out.write_all(if self.rows == 0 { b"[]" } else { b"]" })?;
+            self.out.write_all(self.newline().as_bytes())?;
         }
         self.out.flush()?;
         Ok(self.out)
