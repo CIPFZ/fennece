@@ -930,15 +930,20 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | `orientation:` `machine:` `subsystem:` `security:` | — | 数值属性，另可用名称：`orientation:rotate-90`、`machine:x64`、`subsystem:console` | 便于输入 |
 | `is-signed:` `language:` | 签名验证 / 区域名 | `is-signed:` = PE 含 Authenticode 签名目录（不验证）；`language:` 为版本资源语言名（常见 LANGID 英文名，其余十六进制）| 无 WinVerifyTrust（fnc-props 禁止 unsafe）|
 | `line-count:` `word-count:` `char-count:` | 文档属性 | 先取文档元数据（OOXML `app.xml`），否则用已索引/按需提取文本统计：行数、空白分隔词数、不含换行的字符数 | 一个函数同时覆盖文档与文本文件 |
-| `content:` | 已索引文本或 IFilter | 已索引条目用存储的提取文本；否则按需提取（文本编码检测、OOXML、PDF，无 IFilter）；每文件最多读 4 MB；`exact:`/`startwith:`/`endwith:` 对内容按子串处理，通配符不锚定（`*` 不跨行）| IFilter 需 COM 隔离进程（后续）|
+| `content:` | 已索引文本或 IFilter | 已索引条目用存储的提取文本；未启用内容索引时按需提取（文本编码检测、OOXML、PDF，无 IFilter）；每文件最多读 `content_max_file_mb`（默认 4 MB）；`exact:`/`startwith:`/`endwith:` 对内容按子串处理，通配符不锚定（`*` 不跨行）| IFilter 需 COM 隔离进程（见下方 IFilter 行）|
 | `ansicontent:` | 系统 ANSI 代码页 | `ContentExtractor::ansi_code_page`（默认 1252，由应用按 `GetACP()` 设置）| fnc-props 不调用 Win32 |
 | `contenthits:` | 命中次数 | 查询中所有 `content:` 类项的命中总数；查询无内容项时无效并提示 | 文档未定义（SPEC-GAP）|
 | `crc64:` / 哈希 | — | CRC-64/XZ（同 7-Zip）；值为十六进制前缀匹配（大小写、`0x`、空格/`-` 忽略）；`sha256:unknown` = 未在缓存中（不计算）；按需计算受每次搜索文件数上限约束，缓存键为（卷、FRN 或路径、大小、修改日期）| 文档未定义 CRC-64 变体（SPEC-GAP）|
 | 查重函数位置 | 任意 | 只能出现在搜索顶层（与其它项 AND）；嵌套在 `<…\|…>` 内时无效并提示；`!dupe:` 取补集 | 结果集语义只对整个结果定义 |
 | 查重键 | — | 名称比较不区分大小写与变音（折叠键）；未知值（文件夹大小、未知日期/属性、无法读取的哈希）从不算重复；`dupe-count:N` 为组大小（支持比较），`dupe-max:N` 每组保留排序后前 N 个；二者按查询中其它查重函数的键分组，否则按名称 | 文档未给出细节（SPEC-GAP）|
 | PDF | IFilter / Windows 属性 | 自带最小解析器：`/Info`、页数、文本（FlateDecode、ToUnicode、对象流）；不支持加密、OCR、无 ToUnicode 的自定义编码字体 | ADR-014 |
-| Windows 属性系统兜底 | 任意 `System.*` | 由应用通过 `PropertyProvider` 注入；未注入时仅内置提取器 | fnc-props 禁止 unsafe/COM |
-| 属性列排序 | 列排序 | `SortSpec::props`（每个排序键可指定属性列），未知值排在最前 | 与应用并行开发，暂不扩展 `SortColumn` 枚举（ADR-015）|
+| Windows 属性系统兜底 | 任意 `System.*` | `fennec.exe` 注入 `fnc-platform::props`（`SHGetPropertyStoreFromParsingName` + `IPropertyStore`，按属性表的 `System.*` 名取键），只用于内置提取器未给出的属性；单位换算为 Fennec 单位（时长 100 ns→ms、比特率 bps→kbps、帧率 /1000、分级 1–99→1–5 星、GPS 度分秒+参考→带符号度）| fnc-props 禁止 unsafe/COM（ADR-016）|
+| 属性列排序 | 列排序 | 列头单击/`Ctrl`+单击按属性排序（`SortKey::Property`，`SortSpec::props`），未知值排在最前；排序设置写属性名（`width-descending`）| 不扩展 `SortColumn` 枚举（ADR-015/016）|
+| 已索引属性 / 内容索引的范围外文件 | 属性已索引时搜索即时 | 属性（全部来源）已索引、或已启用内容索引时，索引是权威的：范围外或尚未提取的文件视为无值，不读磁盘（`SlowPolicy::read_uncovered = false`）；`notindexed:` 与 `utf8content:` 等原始编码函数仍读取；未索引的属性仍按需读取（预算 `slow_search_max_files`）| IDX-08/09 即时；与 Everything 的“仅包含文件夹”一致（ADR-016）|
+| IFilter / `content_ifilter_separate_process` | Windows IFilter 提取 Office/PDF 等文本 | 不实现：内容只用内置解析器（纯文本+编码检测、HTML、OOXML、PDF）；其余格式无文本 | IFilter 需 COM 与隔离进程（安全、稳定性），M3 范围外 |
+| 属性“快速排序” | 维护排序索引 | `property_fast_sort` 设置被接受但不建额外结构：属性列排序本就是对结果的并行排序（100 万条按宽度 58 ms，预算 300 ms）| 无需额外内存 |
+| 文件夹索引条目的属性/内容 | 跨重启保留 | 文件夹索引每次启动重新遍历、FRN 为并行分配的合成值，`props.fnx`/`content.fnx` 中这些行无法重新挂接，重启后在后台重新提取（NTFS 卷不受影响）| 文件夹索引无稳定文件 ID |
+| 属性列标题与值 | 本地化 | 约 95 个属性的列标题、是/否、像素、星级随界面语言；其他单位用国际缩写（kbps、Hz、mm、f/2.8、fps）| — |
 | `count:<max>`（结果数上限）| 搜索函数，限制结果数 | `count:` 后紧跟纯数字时为结果上限（`FuncId::Count` → `SetKind::Limit`），作为最后一个集合函数在排序后截断，UI 与 IPC/HTTP/fes/兼容层一致（es 1.1.0.38 的 `-n` 以 `< count:N >` 发送）；只能在顶层；其余情况（`count:tags:>2`）仍是比较修饰符 | 同名的修饰符与函数按值区分 |
 | Everything IPC 报告版本 | Everything 自身版本 | `1.4.1.<Fennec 版本>`（0.1.0 → `1.4.1.100`），`Host::everything_version` 可改 | 客户端按 ≥ 1.4.1 启用 QUERY2/IS_DB_LOADED（ADR-031）|
 | IPC `A` 变体字符串 | ANSI 代码页 | UTF-8（失败回退 Latin-1）| 无 Win32 代码页转换（SPEC-GAP）|

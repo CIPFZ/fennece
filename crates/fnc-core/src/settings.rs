@@ -510,6 +510,50 @@ pub struct Settings {
     #[setting(key = "index_journal_max", default = 1_000_000, page = "index_journal")]
     pub index_journal_max: u32,
 
+    // ---- properties / content (SPEC ch.1 §8, §9) ----
+    /// Indexed properties (`width;height;length;artist`…; empty = property index off).
+    #[setting(key = "property_names", default = Vec::new(), page = "properties")]
+    pub property_names: Vec<String>,
+    /// Folders whose files get their properties indexed (empty = all folders).
+    #[setting(key = "property_folders", default = Vec::new(), page = "properties")]
+    pub property_folders: Vec<String>,
+    /// Extensions whose files get their properties indexed (empty = all files).
+    #[setting(key = "property_extensions", default = Vec::new(), page = "properties")]
+    pub property_extensions: Vec<String>,
+    /// Fast sort for indexed properties.
+    #[setting(key = "property_fast_sort", default = false, page = "properties")]
+    pub property_fast_sort: bool,
+    /// Read properties of files that are not indexed when a search needs them (slow).
+    #[setting(key = "property_read_unindexed", default = true, page = "properties")]
+    pub property_read_unindexed: bool,
+    /// Most files a search may read from disk for unindexed properties, content and hashes.
+    #[setting(key = "slow_search_max_files", default = 10_000, page = "properties")]
+    pub slow_search_max_files: u32,
+    /// Index file content (`content:`).
+    #[setting(key = "content_enabled", default = false, page = "content")]
+    pub content_enabled: bool,
+    /// Folders whose files get their content indexed (empty = all folders).
+    #[setting(key = "content_folders", default = Vec::new(), page = "content")]
+    pub content_folders: Vec<String>,
+    /// Extensions whose files get their content indexed.
+    #[setting(key = "content_extensions", default = ["txt", "md", "ini", "log", "json", "xml", "csv", "html", "htm", "js", "ts", "py", "rs", "java", "c", "cpp", "h", "cs", "go", "toml", "yaml", "yml"].map(String::from).to_vec(), page = "content")]
+    pub content_extensions: Vec<String>,
+    /// Largest file whose content is indexed or read, in MiB.
+    #[setting(key = "content_max_file_mb", default = 4, page = "content")]
+    pub content_max_file_mb: u32,
+    /// Total size limit of the content index in MiB (compressed; 0 = unlimited).
+    #[setting(key = "content_max_total_mb", default = 0, page = "content")]
+    pub content_max_total_mb: u32,
+    /// Extract the text of Office documents (docx, xlsx, pptx).
+    #[setting(key = "content_office", default = true, page = "content")]
+    pub content_office: bool,
+    /// Extract the text of PDF documents.
+    #[setting(key = "content_pdf", default = true, page = "content")]
+    pub content_pdf: bool,
+    /// Read the content of files that are not indexed when a search needs it (slow).
+    #[setting(key = "content_read_unindexed", default = true, page = "content")]
+    pub content_read_unindexed: bool,
+
     // ---- server (SPEC ch.4 §3–4: IPC, Everything compatibility, HTTP) ----
     /// Native IPC server for fes.exe and the SDK (pipe `Fennec.<instance>.ipc`).
     #[setting(key = "ipc_server", default = true, page = "server")]

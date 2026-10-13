@@ -32,6 +32,11 @@ struct HeaderEvents {
     reset_columns: bool,
 }
 
+/// `true` if `results` come from a duplicate search (`dupe:` …).
+fn has_dupe_groups(results: &fnc_exec::ResultSet) -> bool {
+    results.extra.as_ref().is_some_and(|e| !e.dupe_groups.is_empty())
+}
+
 /// Mouse action on a result row.
 #[derive(Clone, Copy)]
 enum RowAction {
@@ -44,8 +49,8 @@ enum RowAction {
 
 impl FennecApp {
     fn sort_arrow(&self, col: ColumnId) -> String {
-        let key = col.sort();
-        for (n, (c, asc)) in self.v.sort.keys().enumerate() {
+        let Some(key) = col.sort() else { return String::new() };
+        for (n, (c, asc)) in self.v.sort.sort_keys().enumerate() {
             if c == key && self.column_owns_sort(col) {
                 let arrow = if asc { "▲" } else { "▼" };
                 return if n == 0 { format!(" {arrow}") } else { format!(" {arrow}{}", n + 1) };
@@ -59,8 +64,20 @@ impl FennecApp {
         self.columns.iter().find(|c| c.id.sort() == col.sort()).is_some_and(|c| c.id == col)
     }
 
-    fn header_cell(&self, ui: &mut egui::Ui, i: usize, ev: &mut HeaderEvents) {
-        let col = self.columns[i].id;
+    /// Columns drawn for the current results: the configured ones, plus the duplicate
+    /// group column (after the first column, so it is never pushed out of view) while a
+    /// `dupe:` search is shown (not saved).
+    fn display_columns(&self) -> Vec<ColumnState> {
+        let mut cols = self.columns.clone();
+        if has_dupe_groups(&self.v.results) && !cols.iter().any(|c| c.id == ColumnId::DupeGroup) {
+            let at = cols.len().min(1);
+            cols.insert(at, ColumnState { id: ColumnId::DupeGroup, width: ColumnId::DupeGroup.default_width() });
+        }
+        cols
+    }
+
+    fn header_cell(&self, ui: &mut egui::Ui, cols: &[ColumnState], i: usize, ev: &mut HeaderEvents) {
+        let col = cols[i].id;
         ev.widths[i] = ui.max_rect().width();
         let text = egui::RichText::new(format!("{}{}", col.title(), self.sort_arrow(col))).strong();
         let resp = ui.add(egui::Label::new(text).sense(egui::Sense::click_and_drag()).truncate());
@@ -84,6 +101,26 @@ impl FennecApp {
                     ev.toggle_column = Some(c);
                 }
             }
+            // Property columns (SPEC ch.3 §4.3), indexed ones first.
+            ui.menu_button(t("menu-property-columns"), |ui| {
+                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    let indexed = self.stores.config().props.stored();
+                    let all = ColumnId::properties();
+                    let (first, rest): (Vec<ColumnId>, Vec<ColumnId>) = all.into_iter().partition(|c| match c {
+                        ColumnId::Property(p) => indexed.contains(p),
+                        _ => false,
+                    });
+                    for (k, c) in first.iter().chain(&rest).enumerate() {
+                        if k == first.len() && k > 0 {
+                            ui.separator();
+                        }
+                        let mut on = self.columns.iter().any(|s| s.id == *c);
+                        if ui.checkbox(&mut on, c.title()).changed() {
+                            ev.toggle_column = Some(*c);
+                        }
+                    }
+                });
+            });
             ui.separator();
             if ui.button(t("menu-reset-columns")).clicked() {
                 ev.reset_columns = true;
@@ -92,22 +129,35 @@ impl FennecApp {
         });
     }
 
-    fn apply_header(&mut self, ev: HeaderEvents) {
-        for (c, w) in self.columns.iter_mut().zip(&ev.widths) {
-            if *w > 10.0 {
+    fn apply_header(&mut self, ev: HeaderEvents, cols: &[ColumnState]) {
+        // Widths by column (the display list may contain the virtual dupe column).
+        for (d, w) in cols.iter().zip(&ev.widths) {
+            if *w > 10.0
+                && let Some(c) = self.columns.iter_mut().find(|c| c.id == d.id)
+            {
                 c.width = *w;
             }
         }
-        if let Some((i, ctrl)) = ev.clicked {
-            let col = self.columns[i].id;
-            let key = col.sort();
+        if let Some((i, ctrl)) = ev.clicked
+            && let Some(col) = cols.get(i).map(|c| c.id)
+            && let Some(key) = col.sort()
+        {
+            use fnc_exec::SortKey;
             let first_asc = !col.sort_descending_first();
+            let single = self.v.sort.then.iter().all(Option::is_none);
+            let primary = self.v.sort.sort_keys().next().map(|(k, _)| k);
             if ctrl {
-                self.v.sort.push_key(key, first_asc);
-            } else if self.v.sort.column == key && self.v.sort.then.iter().all(Option::is_none) {
+                match key {
+                    SortKey::Column(c) => self.v.sort.push_key(c, first_asc),
+                    SortKey::Property(p) => self.v.sort.push_property_key(p, first_asc),
+                }
+            } else if primary == Some(key) && single {
                 self.v.sort.ascending = !self.v.sort.ascending;
             } else {
-                self.v.sort = fnc_exec::SortSpec::by(key, first_asc, self.settings.folders_first);
+                self.v.sort = match key {
+                    SortKey::Column(c) => fnc_exec::SortSpec::by(c, first_asc, self.settings.folders_first),
+                    SortKey::Property(p) => fnc_exec::SortSpec::by_property(p, first_asc, self.settings.folders_first),
+                };
             }
             self.send_search();
             // Keep typing in the search box after sorting.
@@ -115,8 +165,10 @@ impl FennecApp {
                 self.v.keep_focus = true;
             }
         }
+        let real = |i: usize| cols.get(i).and_then(|d| self.columns.iter().position(|c| c.id == d.id));
         if let (Some(from), Some(at)) = (ev.drag_from, ev.dropped_at)
             && let Some(to) = ev.rects.iter().position(|r| r.x_range().contains(at.x))
+            && let (Some(from), Some(to)) = (real(from), real(to))
             && to != from
         {
             let c = self.columns.remove(from);
@@ -138,7 +190,13 @@ impl FennecApp {
         self.sync_view_settings();
     }
 
-    fn row(&mut self, id: EntryId, snap: Option<&fnc_index::IndexSnapshot>) -> Option<Row> {
+    fn row(
+        &mut self,
+        id: EntryId,
+        snap: Option<&fnc_index::IndexSnapshot>,
+        props: Option<&fnc_props::PropertySnapshot>,
+        cols: &[ColumnId],
+    ) -> Option<Row> {
         if let Some(r) = self.v.rows.get(&id) {
             return Some(r.clone());
         }
@@ -147,16 +205,23 @@ impl FennecApp {
             return None;
         }
         let is_dir = s.is_dir(id);
-        let mut cells = Vec::with_capacity(self.columns.len());
+        let mut cells = Vec::with_capacity(cols.len());
         let (date, size) = (self.settings.date_format, self.settings.size_format);
-        let cols: Vec<ColumnId> = self.columns.iter().map(|c| c.id).collect();
         let names = self.type_names.clone();
         let cache = &mut self.type_cache;
         let mut type_name = |ext: &str, dir: bool| {
             cache.entry((ext.to_string(), dir)).or_insert_with(|| type_name_of(&names, ext, dir)).clone()
         };
-        let mut f = CellFormat { date, size, type_name: &mut type_name, now: FileTime::now() };
-        for &c in &cols {
+        let results = self.v.results.clone();
+        let mut f = CellFormat {
+            date,
+            size,
+            type_name: &mut type_name,
+            now: FileTime::now(),
+            props: props.map(|p| &**p),
+            results: Some(&results),
+        };
+        for &c in cols {
             cells.push(crate::columns::cell(s, id, c, &mut f));
         }
         let mut name_hl = Vec::new();
@@ -204,11 +269,21 @@ impl FennecApp {
         ui.style_mut().interaction.selectable_labels = false;
         // One short-lived snapshot for all visible rows; never wait more than 2 ms.
         let snap = self.shared.try_snapshot_for(Duration::from_millis(2));
-        if let Some(s) = &snap
-            && s.generation() != self.v.rows_generation
-        {
-            self.v.rows_generation = s.generation();
-            self.v.rows.clear();
+        let cols = self.display_columns();
+        let col_ids: Vec<ColumnId> = cols.iter().map(|c| c.id).collect();
+        let wants_props = col_ids.iter().any(|c| matches!(c, ColumnId::Property(_)));
+        // Property cells: the store snapshot is taken after the index one (lock order).
+        let props = if wants_props && snap.is_some() {
+            self.stores.props.try_snapshot_for(Duration::from_millis(1))
+        } else {
+            None
+        };
+        if let Some(s) = &snap {
+            let generation = s.generation() ^ self.stores.generation().rotate_left(17);
+            if generation != self.v.rows_generation {
+                self.v.rows_generation = generation;
+                self.v.rows.clear();
+            }
         }
         let text_h = ui.text_style_height(&egui::TextStyle::Body);
         let row_h = if self.settings.row_height > 0 {
@@ -218,14 +293,14 @@ impl FennecApp {
         };
         let results = self.v.results.clone();
         let mut action: Option<(usize, RowAction)> = None;
-        let ncols = self.columns.len();
+        let ncols = cols.len();
         let mut builder = TableBuilder::new(ui)
             .striped(self.settings.alternate_row_color)
             .resizable(true)
             .drag_to_scroll(egui::scroll_area::DragScroll::Never)
             .sense(egui::Sense::click_and_drag())
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center));
-        for (i, c) in self.columns.iter().enumerate() {
+        for (i, c) in cols.iter().enumerate() {
             let col = if i + 1 == ncols {
                 Column::remainder().at_least(60.0).clip(true)
             } else {
@@ -242,7 +317,7 @@ impl FennecApp {
         builder
             .header(text_h + 8.0, |mut h| {
                 for i in 0..ncols {
-                    h.col(|ui| self.header_cell(ui, i, &mut header));
+                    h.col(|ui| self.header_cell(ui, &cols, i, &mut header));
                 }
             })
             .body(|body| {
@@ -252,9 +327,14 @@ impl FennecApp {
                     row.set_selected(
                         self.v.sel.contains(id) || (self.v.sel.ids.is_empty() && self.v.selected == Some(i)),
                     );
-                    let data = self.row(id, snap.as_ref());
+                    // Without the property snapshot this frame, don't cache incomplete rows.
+                    let data = if wants_props && props.is_none() && !self.v.rows.contains_key(&id) {
+                        None
+                    } else {
+                        self.row(id, snap.as_ref(), props.as_ref(), &col_ids)
+                    };
                     let weak = data.as_ref().is_some_and(|r| r.offline);
-                    for (ci, c) in self.columns.clone().iter().enumerate() {
+                    for (ci, c) in cols.iter().enumerate() {
                         row.col(|ui| {
                             let Some(r) = &data else {
                                 if ci == 0 {
@@ -262,7 +342,7 @@ impl FennecApp {
                                 }
                                 return;
                             };
-                            let text = &r.cells[ci];
+                            let Some(text) = r.cells.get(ci) else { return };
                             match c.id {
                                 ColumnId::Name => {
                                     if let Some(rn) = self.v.rename.as_mut().filter(|rn| rn.id == id) {
@@ -327,8 +407,9 @@ impl FennecApp {
                     }
                 });
             });
+        drop(props);
         drop(snap);
-        self.apply_header(header);
+        self.apply_header(header, &cols);
         match rename_done {
             Some(true) => self.commit_rename(),
             Some(false) => self.v.rename = None,

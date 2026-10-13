@@ -4,7 +4,8 @@
 //!   (`fnc-ntfs`) and the portable [`walk::FolderSource`].
 //! * [`shell`] — open / reveal in file manager.
 //! * [`instance`] — single-instance detection and command forwarding.
-//! * [`privilege`] — elevation checks.
+//! * [`privilege`] — elevation checks, background thread priority.
+//! * `props` (feature `props`) — the Windows Property System fallback for the property index.
 //! * [`session`] — session id / integrity level of IPC clients.
 //! * [`compat`] — the hidden Everything-compatible IPC window.
 //!
@@ -21,6 +22,8 @@ pub mod integration;
 pub mod locale;
 pub mod privilege;
 pub mod process;
+#[cfg(feature = "props")]
+pub mod props;
 pub mod session;
 pub mod shell;
 pub mod source;

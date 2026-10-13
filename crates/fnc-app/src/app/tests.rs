@@ -39,6 +39,8 @@ pub(super) fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedInde
         None => Indexer::idle(),
     };
     let dir = std::env::temp_dir().join(format!("fennec-ui-{}", std::process::id()));
+    let settings = Settings { show_tray_icon: false, hotkey_show_window: String::new(), ..Settings::default() };
+    let stores = crate::stores::Stores::in_memory(shared.clone(), &settings);
     AppDeps {
         shared,
         engine,
@@ -47,7 +49,8 @@ pub(super) fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedInde
         index_rx,
         instance: None,
         indexer,
-        settings: Settings { show_tray_icon: false, hotkey_show_window: String::new(), ..Settings::default() },
+        stores,
+        settings,
         settings_path: dir.join("settings.toml"),
         initial_search: None,
         initial_cli: None,
@@ -96,9 +99,9 @@ fn typing_searches_and_keyboard_navigates() {
     wait_until(&mut h, "cleared search", |a| a.v.query.is_empty() && a.v.results.len() == 7);
 
     // Unsupported functions are reported in the status bar, not silently ignored.
-    h.get_by_role(Role::TextInput).type_text("width:>100");
+    h.get_by_role(Role::TextInput).type_text("target:x");
     wait_until(&mut h, "diagnostic", |a| !a.v.diagnostics.is_empty());
-    assert!(h.state().v.diagnostics[0].contains("width"));
+    assert!(h.state().v.diagnostics[0].contains("target"));
 }
 
 #[test]
@@ -410,6 +413,139 @@ fn forwarded_command_lines() {
     assert_eq!(h.state().active_filter_name(), "Picture");
     h.state_mut().set_query(String::new());
     wait_until(&mut h, "pictures only", |a| a.v.results.len() == 2 && a.v.sent_query.as_deref() == Some(""));
+}
+
+/// Indexes the files of `dir` into `shared` (folder source).
+fn index_folder(shared: &SharedIndex, dir: &std::path::Path) {
+    let mut store = fnc_index::IndexStore::default();
+    let mut src = fnc_platform::walk::FolderSource::new(dir);
+    let vol = store.add_volume(fnc_platform::VolumeSource::info(&src), Some(1)).unwrap();
+    struct Sink<'a>(fnc_index::BulkLoader<'a>);
+    impl fnc_platform::EntrySink for Sink<'_> {
+        fn entry(&mut self, e: &fnc_platform::RawEntry<'_>) -> Result<(), fnc_platform::SourceError> {
+            self.0
+                .push(e.frn, e.parent_frn, e.name, &e.meta)
+                .map(|_| ())
+                .map_err(|e| fnc_platform::SourceError::io("push", std::io::Error::other(e)))
+        }
+    }
+    let mut sink = Sink(store.bulk_load(vol));
+    fnc_platform::VolumeSource::enumerate(&mut src, &mut sink, &fnc_platform::StopFlag::new()).unwrap();
+    sink.0.finish().unwrap();
+    store.rebuild_name_order();
+    shared.replace(store);
+}
+
+fn png(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    let enc = image::codecs::png::PngEncoder::new(&mut out);
+    image::ImageEncoder::write_image(enc, &vec![0u8; (w * h) as usize], w, h, image::ExtendedColorType::L8).unwrap();
+    out
+}
+
+fn wait_query(h: &mut Harness<'_, FennecApp>, q: &str, n: usize) {
+    h.state_mut().set_query(q.into());
+    wait_until(h, q, |a| {
+        a.v.sent_query.as_deref() == Some(q) && a.v.latest_shown + 1 == a.v.next_id && a.v.results.len() == n
+    });
+    h.run_steps(2);
+}
+
+/// M3 in the window: background extraction feeds `width:` and a sortable property
+/// column, `dupe:` shows the duplicate group column, `content:` highlights the first hit
+/// in the preview, and slow-search warnings are localised (IDX-08/IDX-09 UI side).
+#[test]
+fn m3_property_columns_dupes_content_preview_and_warnings() {
+    use crate::indexer::IndexHooks;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("big.png"), png(4100, 3)).unwrap();
+    std::fs::write(dir.path().join("big copy.png"), png(4100, 3)).unwrap();
+    std::fs::write(dir.path().join("small.png"), png(800, 600)).unwrap();
+    std::fs::write(dir.path().join("plan.txt"), format!("{}the quarterly plan is due\n", "filler line\n".repeat(400)))
+        .unwrap();
+    std::fs::write(dir.path().join("other.txt"), "nothing to see").unwrap();
+    std::fs::write(dir.path().join("third.log"), "nothing either").unwrap();
+    let shared = SharedIndex::default();
+    index_folder(&shared, dir.path());
+    let mut deps = deps_for(None, shared.clone());
+    deps.settings.property_names = vec!["width".into(), "height".into()];
+    deps.settings.property_extensions = vec!["png".into()];
+    deps.settings.content_enabled = true;
+    deps.settings.columns =
+        ["name:240", "path:260", "width:110", "height:110", "size:90"].into_iter().map(String::from).collect();
+    deps.settings.show_preview = true;
+    deps.stores = crate::stores::Stores::in_memory(shared.clone(), &deps.settings);
+    deps.stores.attach(&shared.snapshot());
+    deps.stores.ready();
+    let stores = deps.stores.clone();
+    let mut h = harness(deps);
+    let t0 = Instant::now();
+    while stores.props.snapshot().len() < 3 || stores.content.snapshot().len() < 3 {
+        assert!(t0.elapsed() < Duration::from_secs(20), "extraction never finished");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // Indexed property search + column.
+    wait_query(&mut h, "width:>4000", 2);
+    assert_eq!(h.query_all_by_label_contains("4100 pixels").count(), 2, "width cells");
+    // Sort by the Width header: descending first for numbers.
+    wait_query(&mut h, "ext:png", 3);
+    h.query_by_label_contains(&t_title("width")).unwrap().click();
+    wait_until(&mut h, "width sort", |a| a.v.sort.props[0] == Some(fnc_props::PropertyId::WIDTH));
+    wait_until(&mut h, "sorted", |a| a.v.latest_shown + 1 == a.v.next_id && a.v.results.len() == 3);
+    let last = *h.state().v.results.ids.last().unwrap();
+    assert_eq!(h.state().shared.snapshot().name_string(last), "small.png");
+    assert!(crate::columns::sort_setting(&h.state().v.sort).starts_with("width-descending"));
+
+    // Duplicates: the group column appears for `dupe:` searches only.
+    wait_query(&mut h, "ext:png sizedupe:", 2);
+    let title = t("col-dupegroup");
+    let rect = h.query_by_label_contains(&title).expect("duplicate group column").rect();
+    assert!(rect.max.x < 1000.0 - 160.0, "visible next to the name column: {rect:?}");
+    let first = h.state().v.results.ids[0];
+    assert_eq!(h.state().v.results.dupe_group(first), Some(1));
+    wait_query(&mut h, "ext:png", 3);
+    assert!(h.query_by_label_contains(&t("col-dupegroup")).is_none());
+
+    // Content: indexed search, preview jumps to the highlighted first hit.
+    wait_query(&mut h, "content:\"quarterly plan\"", 1);
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Command::MoveDown);
+    let hits = t_args("preview-hits", &[("count", 1.into())]);
+    let t0 = Instant::now();
+    while h.query_by_label_contains(&hits).is_none() {
+        assert!(t0.elapsed() < Duration::from_secs(10), "content preview never appeared");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    h.run_steps(3);
+    let (scrolled, hit) = h.state().v.preview.text_state().unwrap();
+    assert!(scrolled, "scrolled to the first hit");
+    assert_eq!(hit.to_lowercase(), "quarterly plan");
+
+    // `width:` is indexed: authoritative, no file reads, no warning.
+    wait_query(&mut h, "width:>1 !ext:png", 0);
+    assert!(h.state().v.diagnostics.is_empty(), "{:?}", h.state().v.diagnostics);
+    // Slow search budget: an unindexed property reads at most 1 file.
+    let mut s = h.state().settings.clone();
+    s.slow_search_max_files = 1;
+    h.state_mut().apply_settings(&ctx, s);
+    h.state_mut().set_query("bit-rate:>1".into());
+    wait_until(&mut h, "slow warning", |a| a.v.diagnostics.iter().any(|d| d.contains("Slow search stopped")));
+}
+
+/// Options → Advanced lists the M3 settings.
+#[test]
+fn m3_settings_are_listed_in_options() {
+    let mut h = harness(deps_for(None, SharedIndex::default()));
+    h.step();
+    let (keymap, settings) = (h.state().keymap.clone(), h.state().settings.clone());
+    h.state_mut().options_window = Some(super::options::OptionsState::new(&settings, &keymap).advanced("content_"));
+    h.run_steps(3);
+    for key in ["content_enabled", "content_extensions", "content_max_file_mb"] {
+        assert!(h.query_by_label_contains(key).is_some(), "{key}");
+    }
 }
 
 /// M4: the servers follow the settings; the HTTP address shows in the status bar and the

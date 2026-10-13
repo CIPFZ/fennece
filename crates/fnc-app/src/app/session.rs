@@ -76,15 +76,8 @@ impl FennecApp {
             } else {
                 self.v.query = tab.query.clone();
             }
-            if !tab.sort.is_empty() {
-                let keys = crate::columns::parse_sort(&tab.sort);
-                if let Some(&(c, asc)) = keys.first() {
-                    let mut spec = fnc_exec::SortSpec::by(c, asc, self.settings.folders_first);
-                    for (k, key) in keys.iter().skip(1).take(2).enumerate() {
-                        spec.then[k] = Some(*key);
-                    }
-                    self.v.sort = spec;
-                }
+            if let Some(spec) = crate::columns::sort_spec(&tab.sort, self.settings.folders_first) {
+                self.v.sort = spec;
             }
             self.send_search();
         }

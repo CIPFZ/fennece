@@ -35,7 +35,8 @@
 //! search_options.content = Some(content.clone());
 //! search_options.hashes = Some(fnc_exec::Shared::new(hashes.clone()));
 //! search_options.on_demand = Some(fnc_exec::Shared::new(on_demand));
-//! search_options.slow = fnc_exec::SlowPolicy { max_files: 10_000, ..Default::default() };
+//! search_options.slow = fnc_exec::SlowPolicy { max_files: 10_000, read_uncovered: false, ..Default::default() };
+//! // (fennec.exe: `fnc-app::stores::Stores` does all of this, see ADR-016)
 //! ```
 //!
 //! Handles compare by identity: create them once and keep reusing the same `Arc`s, or every

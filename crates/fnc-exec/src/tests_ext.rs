@@ -234,6 +234,17 @@ fn on_demand_properties_and_notindexed() {
     let props = props_for(&f.store);
     let mixed = Run { props: Some(&props), on_demand: Some(od.clone()), ..Run::new(&f.store) };
     assert_eq!(mixed.names("width:>1000"), ["big.png", "hd.png"]);
+    // The index is authoritative: unextracted entries are absent unless `notindexed:`.
+    let strict = Run {
+        props: Some(&props),
+        on_demand: Some(od.clone()),
+        policy: SlowPolicy { read_uncovered: false, ..SlowPolicy::default() },
+        ..Run::new(&f.store)
+    };
+    assert_eq!(strict.names("width:>1000"), ["big.png"]);
+    assert!(strict.rs("width:>1000").stats.warnings.is_empty());
+    assert_eq!(strict.names("notindexed:width:>1000"), ["big.png", "hd.png"]);
+    assert_eq!(strict.names("album:x").len(), 0, "unindexed properties are still read");
     // Budget.
     let tight =
         Run { on_demand: Some(od), policy: SlowPolicy { max_files: 1, ..SlowPolicy::default() }, ..Run::new(&f.store) };
@@ -284,6 +295,18 @@ fn indexed_and_unindexed_content() {
     let rs = r.rs("content:again");
     assert_eq!(rs.content_hit(id(&f.store, "notes.txt")).map(|h| h.offset), Some(38));
     assert!(r.names("folder: content:x").is_empty());
+    // With the content index authoritative, `content:` only searches it; the raw
+    // encodings still read files.
+    let od: Arc<dyn OnDemand> = Arc::new(DefaultOnDemand::default());
+    let strict = Run {
+        content: Some(&content),
+        on_demand: Some(od),
+        policy: SlowPolicy { read_uncovered: false, ..SlowPolicy::default() },
+        ..Run::new(&f.store)
+    };
+    assert!(strict.names("content:季度").is_empty());
+    assert_eq!(strict.names("utf16content:季度"), ["u16.txt"]);
+    assert_eq!(strict.names("content:\"quarterly plan\""), ["notes.txt"]);
 }
 
 #[test]

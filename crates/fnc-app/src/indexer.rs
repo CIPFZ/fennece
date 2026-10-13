@@ -94,6 +94,29 @@ pub struct IndexerConfig {
     pub journal: Option<(PathBuf, u32, usize)>,
     /// Shared with [`Indexer::rescan_folders`].
     pub rescan_epoch: Arc<std::sync::atomic::AtomicU64>,
+    /// Stores that follow the index (property/content index, [`crate::stores::Stores`]).
+    pub hooks: Option<Arc<dyn IndexHooks>>,
+}
+
+/// Index lifecycle notifications for data keyed by entry id (SPEC ch.1 §8–§9).
+pub trait IndexHooks: Send + Sync + std::fmt::Debug {
+    /// The complete index `s` is about to be published (its ids are final): load
+    /// whatever is keyed by its entries. Runs on the indexer thread before publishing.
+    fn attach(&self, s: &IndexStore);
+    /// An index with id space `old_instance` was compacted into `new_instance`
+    /// (`remap[old] = new`, `u32::MAX` = removed).
+    fn compacted(&self, old_instance: u64, remap: &[u32], new_instance: u64);
+    /// Sizes and dates are complete (after the back-fill of a volume).
+    fn ready(&self);
+    /// `true` if [`IndexHooks::changed`] is wanted (avoids tracking changes otherwise).
+    fn wants_changes(&self) -> bool;
+    /// Live updates changed `ids`; `moved` are folders renamed or moved.
+    fn changed(&self, ids: Vec<EntryId>, moved: Vec<EntryId>);
+    /// Saves alongside the index (periodic, `-save-db`, exit); `s` is the snapshot the
+    /// index was saved from.
+    fn save(&self, s: &IndexStore);
+    /// The indexer is stopping.
+    fn stop(&self);
 }
 
 type Callback = Arc<dyn Fn() + Send + Sync>;
@@ -122,6 +145,7 @@ impl Indexer {
             interval: cfg.save_interval,
             published: false.into(),
             last: parking_lot::Mutex::new(u64::MAX),
+            hooks: cfg.hooks.clone(),
         });
         let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let rescan_epoch = cfg.rescan_epoch.clone();
@@ -160,6 +184,9 @@ impl Indexer {
     /// Stops all indexing threads (they exit at their next check).
     pub fn stop(&self) {
         self.stop.stop();
+        if let Some(h) = &self.saver.hooks {
+            h.stop();
+        }
     }
 
     /// Saves the database now (exit, `-save-db`); no-op before the first build.
@@ -181,6 +208,7 @@ impl Indexer {
             interval: Duration::ZERO,
             published: false.into(),
             last: parking_lot::Mutex::new(0),
+            hooks: None,
         });
         Self { stop: StopFlag::new(), saver, paused: Arc::default(), rescan_epoch: Arc::default() }
     }
@@ -460,7 +488,11 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
         let _ = std::fs::write(f, &new_rules);
     }
     if store.len() > 1024 && store.live_count() * 5 < store.len() * 4 {
-        store.compact();
+        let old = store.instance();
+        let remap = store.compact();
+        if let Some(h) = &cfg.hooks {
+            h.compacted(old, &remap, store.instance());
+        }
     }
     store.shrink_to_fit();
     let order = store.name_order();
@@ -468,6 +500,11 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
         store.rebuild_name_order();
     }
     let entries = store.live_count();
+    if let Some(h) = &cfg.hooks {
+        let t = Instant::now();
+        h.attach(&store);
+        tracing::info!(elapsed = ?t.elapsed(), "property and content stores attached");
+    }
     shared.replace(store);
     refresh();
     let seconds = t0.elapsed().as_secs_f64();
@@ -486,13 +523,16 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
     };
     if needs_meta.is_empty() {
         emit.status(IndexStatus::Ready { entries, seconds });
+        if let Some(h) = &cfg.hooks {
+            h.ready();
+        }
     }
     let emit = Arc::new(emit);
     let total_meta = needs_meta.len();
     let done_meta = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     // Marks a volume's back-fill complete and reports "ready" after the last one.
     let meta_finished = {
-        let (shared, emit, done_meta) = (shared.clone(), emit.clone(), done_meta.clone());
+        let (shared, emit, done_meta, hooks) = (shared.clone(), emit.clone(), done_meta.clone(), cfg.hooks.clone());
         Arc::new(move |vol: VolumeId, complete: bool| {
             if complete && let Some(v) = shared.write().volume_mut(vol) {
                 v.metadata_complete = true;
@@ -510,6 +550,9 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
                 };
                 tracing::info!(entries, heap_mib = heap / (1 << 20), "index ready");
                 emit.status(IndexStatus::Ready { entries, seconds: t0.elapsed().as_secs_f64() });
+                if let Some(h) = &hooks {
+                    h.ready();
+                }
             }
         })
     };
@@ -531,6 +574,7 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
         paused,
         exclusions: cfg.exclusions.clone(),
         journal,
+        hooks: cfg.hooks.clone(),
     });
     for (vol, src) in volumes {
         let wants_meta = needs_meta.contains(&vol);
@@ -558,6 +602,7 @@ struct Workers {
     paused: Arc<std::sync::atomic::AtomicBool>,
     exclusions: Option<Arc<crate::exclude::Exclusions>>,
     journal: Option<Arc<parking_lot::Mutex<crate::journal::Journal>>>,
+    hooks: Option<Arc<dyn IndexHooks>>,
 }
 
 impl Workers {
@@ -611,6 +656,7 @@ impl Workers {
                 stop: me.stop.clone(),
                 exclusions: me.exclusions.clone(),
                 journal: me.journal.clone(),
+                hooks: me.hooks.clone(),
             };
             let result = loop {
                 match src.watch(vol, &mut sink, &me.stop) {
@@ -740,7 +786,7 @@ fn monitor_volumes(cfg: &IndexerConfig, w: &Arc<Workers>) {
             tracing::info!(volume = %info.display_name, elapsed = ?t.elapsed(), "volume arrived and indexed");
             w.emit.message(crate::i18n::t_args("index-volume-added", &[("volume", info.display_name.clone().into())]));
             w.refresher.poke();
-            let shared = w.shared.clone();
+            let (shared, hooks) = (w.shared.clone(), w.hooks.clone());
             w.start(
                 vol,
                 Box::new(src),
@@ -748,6 +794,9 @@ fn monitor_volumes(cfg: &IndexerConfig, w: &Arc<Workers>) {
                 Arc::new(move |v, complete| {
                     if complete && let Some(vi) = shared.write().volume_mut(v) {
                         vi.metadata_complete = true;
+                    }
+                    if let Some(h) = &hooks {
+                        h.ready();
                     }
                 }),
             );
@@ -792,6 +841,8 @@ pub struct Saver {
     published: std::sync::atomic::AtomicBool,
     /// Generation of the last save (skip unchanged saves); serialises saves.
     last: parking_lot::Mutex<u64>,
+    /// Stores saved with the index (`props.fnx`, `content.fnx`, `hashes.fnx`).
+    hooks: Option<Arc<dyn IndexHooks>>,
 }
 
 impl Saver {
@@ -807,16 +858,19 @@ impl Saver {
         }
         let mut last = self.last.lock();
         let snap = self.shared.snapshot();
-        if snap.generation() == *last {
-            return;
-        }
-        let t = Instant::now();
-        match fnc_index::persist::save(&snap, path) {
-            Ok(st) => {
-                *last = snap.generation();
-                tracing::info!(rows = st.rows, mib = st.bytes >> 20, elapsed = ?t.elapsed(), "database saved");
+        if snap.generation() != *last {
+            let t = Instant::now();
+            match fnc_index::persist::save(&snap, path) {
+                Ok(st) => {
+                    *last = snap.generation();
+                    tracing::info!(rows = st.rows, mib = st.bytes >> 20, elapsed = ?t.elapsed(), "database saved");
+                }
+                Err(e) => tracing::warn!(error = %e, "cannot save the database"),
             }
-            Err(e) => tracing::warn!(error = %e, "cannot save the database"),
+        }
+        // Rows of the stores are identified against this same snapshot.
+        if let Some(h) = &self.hooks {
+            h.save(&snap);
         }
     }
 
@@ -870,6 +924,7 @@ struct WatchSink {
     stop: StopFlag,
     exclusions: Option<Arc<crate::exclude::Exclusions>>,
     journal: Option<Arc<parking_lot::Mutex<crate::journal::Journal>>>,
+    hooks: Option<Arc<dyn IndexHooks>>,
 }
 
 /// Drops new entries that the exclusion rules leave out and turns renames into excluded
@@ -948,12 +1003,18 @@ impl ChangeSink for WatchSink {
             filter_excluded(&mut batch, &snap, ex);
         }
         let mut changed = false;
+        let hooks = self.hooks.as_ref().filter(|h| h.wants_changes());
+        let mut touched = crate::stores::Touched::default();
         while !batch.is_empty() {
             let rest = if batch.len() > MAX_BATCH { batch.split_off(MAX_BATCH) } else { Vec::new() };
             let t = Instant::now();
             let mut w = self.shared.write();
             let pending = self.journal.as_ref().map(|_| crate::journal::Journal::prepare(&w, &batch));
+            let after = hooks.map(|_| touched.before(&w, &batch));
             let stats = w.apply(batch);
+            if let Some(after) = after {
+                touched.after(&w, after);
+            }
             if let (Some(j), Some(p)) = (&self.journal, pending) {
                 j.lock().commit(&w, p);
             }
@@ -964,6 +1025,11 @@ impl ChangeSink for WatchSink {
         }
         if changed {
             self.refresher.poke();
+        }
+        if let Some(h) = hooks
+            && !touched.is_empty()
+        {
+            h.changed(touched.ids, touched.moved);
         }
         true
     }
@@ -1554,6 +1620,7 @@ mod tests {
             stop: StopFlag::new(),
             exclusions: None,
             journal: None,
+            hooks: None,
         };
         let t0 = Instant::now();
         sink.changes(vec![Change::Create {

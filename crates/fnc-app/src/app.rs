@@ -74,6 +74,8 @@ pub struct AppDeps {
     pub instance: Option<Primary>,
     /// Indexer handle (stopped on exit).
     pub indexer: Indexer,
+    /// Property, content and hash stores (M3).
+    pub stores: Arc<crate::stores::Stores>,
     /// Settings.
     pub settings: Settings,
     /// Where settings are saved (filters, bookmarks and history live next to it).
@@ -202,6 +204,7 @@ pub struct FennecApp {
     index_rx: Receiver<IndexEvent>,
     instance: Option<Primary>,
     indexer: Indexer,
+    stores: Arc<crate::stores::Stores>,
     settings: Settings,
     settings_path: PathBuf,
     keymap: Keymap,
@@ -316,6 +319,7 @@ impl FennecApp {
             index_rx: deps.index_rx,
             instance: deps.instance,
             indexer: deps.indexer,
+            stores: deps.stores,
             keymap,
             columns,
             type_names: fnc_exec::TypeNames::new(|ext| fnc_platform::shell::type_name(ext, false)),
@@ -415,6 +419,7 @@ impl FennecApp {
         let mut o = SearchOptions::from_settings(&self.settings);
         o.macros.extend(self.filters.macros());
         o.type_names = Some(self.type_names.clone());
+        self.stores.apply_options(&mut o);
         o.semantic = self.semantic_source();
         o.semantic_fuse = o.semantic.is_some() && self.settings.semantic_smart;
         if !self.v.omit.is_empty() {
@@ -484,6 +489,7 @@ impl FennecApp {
         self.v.latest_shown = o.id;
         self.v.elapsed = o.elapsed;
         self.v.highlighter = self.settings.highlight.then(|| Highlighter::new(&o.plan)).filter(|h| !h.is_empty());
+        self.v.preview.set_plan(&o.plan);
         self.v.diagnostics = diagnostics_text(&o);
         let same_set = Arc::ptr_eq(&self.v.results, &o.results);
         self.v.results = o.results;
@@ -624,7 +630,14 @@ impl FennecApp {
                     self.v.sort = SortSpec::by(c, asc, self.settings.folders_first);
                     self.send_search();
                 }
-                None => self.say(t_args("msg-unknown-sort", &[("name", col.clone().into())])),
+                // Property columns (`-sort width`).
+                None => match fnc_props::PropertyId::lookup(col) {
+                    Some(p) => {
+                        self.v.sort = SortSpec::by_property(p, asc.unwrap_or(false), self.settings.folders_first);
+                        self.send_search();
+                    }
+                    None => self.say(t_args("msg-unknown-sort", &[("name", col.clone().into())])),
+                },
             }
         }
         if let Some(f) = &cli.filename {
@@ -1719,6 +1732,18 @@ impl FennecApp {
                     s = format!("{s} ({})", t("status-paused"));
                 }
                 ui.label(s);
+                // Property/content extraction (SPEC ch.3 §4.6).
+                if let Some(p) = self.stores.progress() {
+                    ui.separator();
+                    ui.label(t_args(
+                        "index-extracting",
+                        &[
+                            ("done", format::group_digits(p.done as u64).into()),
+                            ("total", format::group_digits(p.total as u64).into()),
+                        ],
+                    ));
+                    ui.ctx().request_repaint_after(Duration::from_millis(500));
+                }
                 if let Some(sem) = self.semantic_status() {
                     ui.separator();
                     if ui.link(sem).clicked() {
@@ -1771,6 +1796,7 @@ impl FennecApp {
         if old.date_format != s.date_format || old.size_format != s.size_format {
             self.v.rows.clear();
         }
+        self.stores.configure(s);
         let restart = old.language != s.language
             || old.ntfs_auto_include != s.ntfs_auto_include
             || old.ntfs_exclude_volumes != s.ntfs_exclude_volumes
@@ -1817,15 +1843,8 @@ enum TextKind {
 }
 
 fn sort_from_settings(s: &Settings) -> SortSpec {
-    let keys = crate::columns::parse_sort(&s.sort);
-    let mut spec = match keys.first() {
-        Some(&(c, asc)) => SortSpec::by(c, asc, s.folders_first),
-        None => SortSpec::by(SortColumn::Name, true, s.folders_first),
-    };
-    for (i, k) in keys.iter().skip(1).enumerate() {
-        spec.then[i] = Some(*k);
-    }
-    spec
+    crate::columns::sort_spec(&s.sort, s.folders_first)
+        .unwrap_or_else(|| SortSpec::by(SortColumn::Name, true, s.folders_first))
 }
 
 fn default_export_path() -> String {
@@ -1953,10 +1972,25 @@ fn diagnostics_text(o: &SearchOutcome) -> Vec<String> {
             }
         }
     }
-    for e in &o.results.stats.errors {
+    // Warnings are also rendered into `errors`; show them localised instead.
+    let warnings = &o.results.stats.warnings;
+    let rendered: Vec<String> = warnings.iter().map(ToString::to_string).collect();
+    for e in o.results.stats.errors.iter().filter(|e| !rendered.contains(e)) {
         v.push(t_args("diag-pattern", &[("message", e.clone().into())]));
     }
+    v.extend(warnings.iter().map(warning_text));
     v
+}
+
+/// Localised text of a search warning (`ExecStats::warnings`).
+fn warning_text(w: &fnc_exec::ExecWarning) -> String {
+    match w {
+        fnc_exec::ExecWarning::NotIndexed(name) => t_args("warn-not-indexed", &[("name", (*name).into())]),
+        fnc_exec::ExecWarning::SlowLimit(n) => {
+            t_args("warn-slow-limit", &[("count", format::group_digits(*n as u64).into())])
+        }
+        fnc_exec::ExecWarning::Semantic(reason) => t_args("warn-semantic", &[("reason", reason.clone().into())]),
+    }
 }
 
 fn apply_theme(ctx: &egui::Context, theme: Theme) {

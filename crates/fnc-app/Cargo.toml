@@ -22,7 +22,7 @@ fnc-core.workspace = true
 fnc-index.workspace = true
 fnc-query.workspace = true
 fnc-exec.workspace = true
-fnc-platform.workspace = true
+fnc-platform = { workspace = true, features = ["props"] }
 fnc-ntfs.workspace = true
 fnc-semantic = { workspace = true, features = ["llama"], optional = true }
 fnc-props.workspace = true

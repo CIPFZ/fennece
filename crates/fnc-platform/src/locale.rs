@@ -6,9 +6,19 @@ pub fn ui_language() -> Option<String> {
     imp::ui_language().filter(|s| !s.is_empty())
 }
 
+/// The system ANSI code page (`GetACP`, e.g. 1252 or 936); 1252 elsewhere.
+pub fn ansi_code_page() -> u16 {
+    imp::ansi_code_page()
+}
+
 #[cfg(windows)]
 mod imp {
-    use windows::Win32::Globalization::{GetUserDefaultUILanguage, LCIDToLocaleName};
+    use windows::Win32::Globalization::{GetACP, GetUserDefaultUILanguage, LCIDToLocaleName};
+
+    pub fn ansi_code_page() -> u16 {
+        // SAFETY: no arguments; returns the process's ANSI code page.
+        u16::try_from(unsafe { GetACP() }).unwrap_or(1252)
+    }
 
     pub fn ui_language() -> Option<String> {
         // SAFETY: no arguments; returns the user's UI LANGID.
@@ -23,6 +33,10 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
+    pub fn ansi_code_page() -> u16 {
+        1252
+    }
+
     pub fn ui_language() -> Option<String> {
         ["LC_ALL", "LC_MESSAGES", "LANG"]
             .iter()
