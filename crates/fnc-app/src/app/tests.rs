@@ -18,7 +18,7 @@ const EFU: &str = "Filename,Size,Date Modified,Date Created,Attributes\n\
 \"C:\\Docs\\report.docx\",12000,,,32\n\
 \"C:\\Docs\\季度预算表.xlsx\",1048576,,,32\n";
 
-fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedIndex) -> AppDeps {
+pub(super) fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedIndex) -> AppDeps {
     crate::i18n::init("en");
     let (engine_tx, engine_rx) = crossbeam_channel::unbounded();
     let engine = SearchEngine::spawn(shared.clone(), engine_tx, Box::new(|| {}));
@@ -55,10 +55,11 @@ fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedIndex) -> AppDe
         initial_search: None,
         initial_cli: None,
         start_hidden: false,
+        servers: None,
     }
 }
 
-fn wait_until(h: &mut Harness<'_, FennecApp>, what: &str, f: impl Fn(&FennecApp) -> bool) {
+pub(super) fn wait_until(h: &mut Harness<'_, FennecApp>, what: &str, f: impl Fn(&FennecApp) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(20);
     while !f(h.state()) {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
@@ -67,7 +68,7 @@ fn wait_until(h: &mut Harness<'_, FennecApp>, what: &str, f: impl Fn(&FennecApp)
     }
 }
 
-fn harness(deps: AppDeps) -> Harness<'static, FennecApp> {
+pub(super) fn harness(deps: AppDeps) -> Harness<'static, FennecApp> {
     Harness::builder().with_size(egui::vec2(1000.0, 600.0)).build_eframe(|cc| FennecApp::new(cc, deps))
 }
 
@@ -545,4 +546,66 @@ fn m3_settings_are_listed_in_options() {
     for key in ["content_enabled", "content_extensions", "content_max_file_mb"] {
         assert!(h.query_by_label_contains(key).is_some(), "{key}");
     }
+}
+
+/// M4: the servers follow the settings; the HTTP address shows in the status bar and the
+/// Options → Servers page lists the server settings (password masked).
+#[test]
+fn http_server_address_in_status_bar() {
+    let mut deps = deps_for(None, SharedIndex::default());
+    deps.servers =
+        Some(crate::servers::ServersContext { instance: format!("kittest-{}", std::process::id()), portable: true });
+    deps.settings.ipc_server = false;
+    deps.settings.everything_ipc = false;
+    deps.settings.http_enabled = true;
+    deps.settings.http_port = 0;
+    deps.settings.http_password = "secret-pw".into();
+    let mut h = harness(deps);
+    let t0 = Instant::now();
+    while h.query_by_label_contains("http://127.0.0.1:").is_none() {
+        assert!(t0.elapsed() < Duration::from_secs(20), "HTTP address never shown");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(matches!(h.state().servers_status().unwrap().http, crate::servers::HttpStatus::Running(_)));
+    // Turning it off removes the address.
+    let ctx = h.ctx.clone();
+    let mut s = h.state().settings.clone();
+    s.http_enabled = false;
+    h.state_mut().apply_settings(&ctx, s);
+    let t0 = Instant::now();
+    while h.query_by_label_contains("http://127.0.0.1:").is_some() {
+        assert!(t0.elapsed() < Duration::from_secs(20), "HTTP address still shown");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // `/http_enabled=true` + Enter in the search box (the Enter key must reach the
+    // inline command instead of opening the selection) starts it again.
+    h.get_by_role(Role::TextInput).focus();
+    h.step();
+    h.get_by_role(Role::TextInput).type_text("/http_enabled=true");
+    h.step();
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().settings.http_enabled, "inline command applied");
+    let t0 = Instant::now();
+    while h.query_by_label_contains("http://127.0.0.1:").is_none() {
+        assert!(t0.elapsed() < Duration::from_secs(20), "HTTP address not shown again");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Options → Servers.
+    let keymap = h.state().keymap.clone();
+    let settings = h.state().settings.clone();
+    h.state_mut().options_window = Some(super::options::OptionsState::new(&settings, &keymap).on_page("server"));
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("HTTP server port").is_some());
+    assert!(h.query_by_label_contains("Everything 1.4 compatible IPC window").is_some());
+    assert!(
+        h.get_all_by_role(Role::PasswordInput).count() == 1
+            || h.get_all_by_role(Role::TextInput).all(|n| n.value().as_deref() != Some("secret-pw")),
+        "the password is masked"
+    );
+    h.state_mut().options_window = None;
+    h.state_mut().stop_servers();
 }

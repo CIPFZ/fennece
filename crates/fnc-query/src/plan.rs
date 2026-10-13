@@ -291,6 +291,8 @@ pub enum Pred {
     Hash(HashPred),
     /// Semantic term (`sem:`, Fennec extension): nearest chunks of an embedding index.
     Semantic(crate::semantic::SemPred),
+    /// Formula (`eval:`): matches when it evaluates to true.
+    Eval(crate::formula::EvalPred),
     /// Set function before hoisting (never present in a finished plan's tree).
     Set(SetOp),
     /// Function not implemented yet: matches nothing, reported in diagnostics.
@@ -937,7 +939,23 @@ impl Cx<'_> {
             | F::Distinct
             | F::Unique
             | F::DupeCount
-            | F::DupeMax => self.set(f, t),
+            | F::DupeMax
+            | F::Count => self.set(f, t),
+            F::Eval => {
+                // `;` separates arguments too, which the term parser turned into a list.
+                let src = match &t.value {
+                    Value::Text(s) => s.clone(),
+                    Value::List(items) => items.iter().filter_map(Value::as_text).collect::<Vec<_>>().join(";"),
+                    _ => String::new(),
+                };
+                match crate::formula::Formula::parse(&src) {
+                    Ok(f) => leaf(Pred::Eval(crate::formula::EvalPred(Arc::new(f)))),
+                    Err(e) => {
+                        self.diags.push(PlanDiag::InvalidValue(f, format!("{src}: {e}")));
+                        leaf(Pred::Invalid(src))
+                    }
+                }
+            }
             F::Semantic | F::SemName | F::SemContent | F::SemCode | F::SemImage | F::SemMinScore | F::SemTop => {
                 use crate::semantic::Planned;
                 match crate::semantic::plan_term(f, t) {
@@ -1326,6 +1344,8 @@ pub fn cost(n: &Node) -> u32 {
             // Runs after every cheap filter (SPEC ch.5 §3.2): its candidates decide between
             // an exact scan of their vectors and an ANN query.
             Pred::Semantic(_) => 1000,
+            // Evaluated per entry.
+            Pred::Eval(_) => 400,
             Pred::Set(_) => 0,
         },
     }

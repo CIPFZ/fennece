@@ -13,6 +13,8 @@ static NEXT_UID: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct WindowView {
     id: egui::ViewportId,
     pub(super) view: View,
+    /// The window's other tabs.
+    pub(super) tabs: super::tabs::Tabs,
     open: bool,
 }
 
@@ -25,7 +27,7 @@ impl WindowView {
 
 impl FennecApp {
     /// A fresh view with its own engine, searching for `query`.
-    fn new_view(&self, query: String) -> View {
+    pub(super) fn new_view(&self, query: String) -> View {
         let (engine, engine_rx) = (self.new_engine)();
         View {
             uid: NEXT_UID.fetch_add(1, Ordering::Relaxed),
@@ -60,6 +62,7 @@ impl FennecApp {
             rename: None,
             grid_cols: 1,
             preview: Default::default(),
+            find: Default::default(),
         }
     }
 
@@ -72,7 +75,7 @@ impl FennecApp {
         self.rebuild_search_options();
         self.send_search();
         std::mem::swap(&mut self.v, &mut view);
-        self.windows.push(WindowView { id, view, open: true });
+        self.windows.push(WindowView { id, view, tabs: Default::default(), open: true });
     }
 
     /// Drains a view's finished searches (the active view is drained by `logic`).
@@ -87,6 +90,7 @@ impl FennecApp {
         let mut wins = std::mem::take(&mut self.windows);
         for w in &mut wins {
             std::mem::swap(&mut self.v, &mut w.view);
+            std::mem::swap(&mut self.tabs, &mut w.tabs);
             self.drain_engine();
             let title = if self.v.query.is_empty() {
                 crate::i18n::t("app-title")
@@ -118,6 +122,7 @@ impl FennecApp {
             if closed || self.close_secondary {
                 w.open = false;
             }
+            std::mem::swap(&mut self.tabs, &mut w.tabs);
             std::mem::swap(&mut self.v, &mut w.view);
         }
         wins.retain(|w| w.open);

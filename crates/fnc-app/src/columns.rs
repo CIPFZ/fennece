@@ -276,6 +276,23 @@ pub fn parse_sort(s: &str) -> Vec<(SortKey, bool)> {
         .collect()
 }
 
+/// Sort spec of a `sort` setting text (`None` if it names no known key).
+pub fn sort_spec(s: &str, folders_first: fnc_core::settings::FoldersFirst) -> Option<fnc_exec::SortSpec> {
+    let keys = parse_sort(s);
+    let (&(first, asc), rest) = keys.split_first()?;
+    let mut spec = match first {
+        SortKey::Column(c) => fnc_exec::SortSpec::by(c, asc, folders_first),
+        SortKey::Property(p) => fnc_exec::SortSpec::by_property(p, asc, folders_first),
+    };
+    for &(k, asc) in rest {
+        match k {
+            SortKey::Column(c) => spec.push_key(c, asc),
+            SortKey::Property(p) => spec.push_property_key(p, asc),
+        }
+    }
+    Some(spec)
+}
+
 /// Formats a sort spec back into the setting.
 pub fn sort_setting(spec: &fnc_exec::SortSpec) -> String {
     spec.sort_keys()

@@ -68,6 +68,26 @@ commands! {
     DeletePermanently = "delete-permanently",
     /// Rename in place.
     Rename = "rename",
+    /// Rename many items with a template, find/replace, case (SPEC ch.3 §9).
+    AdvancedRename = "advanced-rename",
+    /// Undo the last file operation.
+    Undo = "undo",
+    /// New tab.
+    NewTab = "new-tab",
+    /// Find in the results (find bar; Ctrl+F in the list when `findbar_ctrl_f` is on).
+    FindInResults = "find-in-results",
+    /// Next match of the find bar.
+    FindNext = "find-next",
+    /// Previous match of the find bar.
+    FindPrevious = "find-previous",
+    /// Close the current tab.
+    CloseTab = "close-tab",
+    /// Next tab.
+    NextTab = "next-tab",
+    /// Previous tab.
+    PreviousTab = "previous-tab",
+    /// Redo the last undone file operation.
+    Redo = "redo",
     /// New folder in the selected folder (or the selection's folder).
     NewFolder = "new-folder",
     /// Search the selected folder (`Explore in Fennec`).
@@ -204,6 +224,8 @@ commands! {
     PauseUpdates = "pause-updates",
     /// Show the index journal (recent changes).
     IndexJournal = "index-journal",
+    /// Semantic search setup (scope, model download).
+    SemanticSetup = "semantic-setup",
     /// Search syntax help.
     Help = "help",
     /// About.
@@ -371,7 +393,6 @@ fn defaults() -> Vec<(KeyCtx, Chord, Command)> {
         (G, Chord::new(C, N, C, Key::Num0), K::ZoomReset),
         (G, Chord::new(C, N, N, Key::Q), K::Exit),
         (G, Chord::new(C, N, N, Key::N), K::NewWindow),
-        (G, Chord::new(C, N, N, Key::W), K::CloseWindow),
         (G, Chord::new(N, N, N, Key::F1), K::Help),
         (G, Chord::new(C, N, N, Key::P), K::TogglePreview),
         (G, Chord::new(C, C, N, Key::Num1), K::ViewDetails),
@@ -422,6 +443,16 @@ fn defaults() -> Vec<(KeyCtx, Chord, Command)> {
         (R, Chord::new(N, N, N, Key::Delete), K::Delete),
         (R, Chord::new(N, C, N, Key::Delete), K::DeletePermanently),
         (R, Chord::new(N, N, N, Key::F2), K::Rename),
+        (R, Chord::new(C, N, N, Key::Z), K::Undo),
+        (G, Chord::new(C, N, N, Key::T), K::NewTab),
+        (R, Chord::new(C, N, N, Key::F), K::FindInResults),
+        (R, Chord::new(N, N, N, Key::F3), K::FindNext),
+        (R, Chord::new(N, C, N, Key::F3), K::FindPrevious),
+        (G, Chord::new(C, N, N, Key::W), K::CloseTab),
+        (G, Chord::new(C, N, N, Key::Tab), K::NextTab),
+        (G, Chord::new(C, C, N, Key::Tab), K::PreviousTab),
+        (R, Chord::new(C, N, N, Key::Y), K::Redo),
+        (R, Chord::new(C, C, N, Key::Z), K::Redo),
         (R, Chord::new(N, C, N, Key::F10), K::ContextMenu),
         (R, Chord::new(C, C, N, Key::N), K::NewFolder),
     ]);

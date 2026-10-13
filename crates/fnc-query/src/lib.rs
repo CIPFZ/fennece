@@ -17,6 +17,7 @@ pub mod date;
 pub mod display;
 pub mod duration;
 pub mod filter;
+pub mod formula;
 pub mod funcs;
 pub mod parser;
 pub mod plan;

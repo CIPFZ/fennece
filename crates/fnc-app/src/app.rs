@@ -9,11 +9,17 @@
 
 mod complete;
 mod dialogs;
+mod edit_ui;
+mod findbar;
 mod grid;
+mod integration;
 mod menus;
 mod options;
 mod preview;
+mod semantic_ui;
+mod session;
 pub(super) mod table;
+mod tabs;
 mod window;
 
 use std::collections::{HashMap, HashSet};
@@ -78,6 +84,8 @@ pub struct AppDeps {
     pub initial_cli: Option<crate::cli::Cli>,
     /// Start hidden (tray).
     pub start_hidden: bool,
+    /// Run the IPC/Everything/HTTP servers for this instance (`None`: no servers).
+    pub servers: Option<crate::servers::ServersContext>,
 }
 
 #[derive(Clone)]
@@ -136,6 +144,8 @@ struct RenameState {
 enum WorkerMsg {
     Done(String),
     Failed(String),
+    /// Finished with something for the undo stack.
+    Recorded(String, edit_ui::Recorded),
 }
 
 /// Everything one search view owns: its search, results, selection and engine.
@@ -180,6 +190,8 @@ pub(super) struct View {
     grid_cols: usize,
     /// Preview panel.
     preview: preview::PreviewState,
+    /// Find bar (Ctrl+F in find-bar mode).
+    find: findbar::FindBar,
 }
 
 /// Main application state.
@@ -243,6 +255,14 @@ pub struct FennecApp {
     ctx: egui::Context,
     /// Creates a search engine for a new view.
     new_engine: Arc<dyn Fn() -> (SearchEngine, Receiver<EngineEvent>) + Send + Sync>,
+    /// Semantic search (SPEC ch.5).
+    sem: semantic_ui::SemanticUi,
+    /// Undo stack and advanced rename.
+    edit: edit_ui::EditUi,
+    /// Tabs of the window being drawn (swapped like `v`).
+    tabs: tabs::Tabs,
+    /// IPC, Everything-compatible and HTTP servers.
+    servers: Option<integration::AppServers>,
 }
 
 impl FennecApp {
@@ -287,6 +307,7 @@ impl FennecApp {
             deps.indexer.set_paused(true);
         }
         let new_engine = deps.new_engine;
+        let servers = deps.servers;
         let mut app = Self {
             shared: deps.shared,
             index_rx: deps.index_rx,
@@ -356,15 +377,26 @@ impl FennecApp {
                 rename: None,
                 grid_cols: 1,
                 preview: preview::PreviewState::default(),
+                find: Default::default(),
             },
             windows: Vec::new(),
             in_secondary: false,
             close_secondary: false,
             new_engine,
             ctx: ctx.clone(),
+            sem: Default::default(),
+            edit: Default::default(),
+            tabs: Default::default(),
+            servers: None,
         };
+        app.semantic_init();
         app.rebuild_search_options();
+        app.start_servers(servers);
         app.send_search();
+        // Sessions reopen the saved tabs unless the command line names a search.
+        if !deps.initial_cli.as_ref().is_some_and(|c| c.search.is_some()) && app.v.query.is_empty() {
+            app.restore_session();
+        }
         if let Some(cli) = deps.initial_cli {
             app.apply_cli(ctx, cli, false);
         }
@@ -380,11 +412,14 @@ impl FennecApp {
         o.macros.extend(self.filters.macros());
         o.type_names = Some(self.type_names.clone());
         self.stores.apply_options(&mut o);
+        o.semantic = self.semantic_source();
+        o.semantic_fuse = o.semantic.is_some() && self.settings.semantic_smart;
         if !self.v.omit.is_empty() {
             let instance = self.shared.try_snapshot_for(Duration::from_millis(20)).map_or(0, |s| s.instance());
             o.omit = Some(fnc_query::plan::OmitSet { instance, ids: self.v.omit.iter().copied().collect() });
         }
         self.v.search_opts = Arc::new(o);
+        self.sync_host();
     }
 
     /// The active filters with their own match options (SPEC ch.2 §7).
@@ -493,9 +528,14 @@ impl FennecApp {
         while let Ok(m) = self.worker_rx.try_recv() {
             let text = match m {
                 WorkerMsg::Done(s) | WorkerMsg::Failed(s) => s,
+                WorkerMsg::Recorded(s, r) => {
+                    self.on_recorded(r);
+                    s
+                }
             };
             self.message = Some((text, Instant::now()));
         }
+        self.drain_host_events(ctx);
         let forwarded: Vec<Vec<String>> =
             self.instance.as_ref().map(|p| p.commands().try_iter().collect()).unwrap_or_default();
         for args in forwarded {
@@ -757,6 +797,7 @@ impl FennecApp {
         match cmd {
             K::FocusSearch => self.v.focus_search = true,
             K::Refresh => self.v.engine.refresh(),
+            K::SemanticSetup => self.semantic_open_setup(),
             K::MoveDown => self.move_cursor(self.row_step(), MoveMode::Select),
             K::MoveUp => self.move_cursor(-self.row_step(), MoveMode::Select),
             K::ExtendDown => self.move_cursor(1, MoveMode::Extend),
@@ -851,7 +892,30 @@ impl FennecApp {
                     self.dialog = Some(dialogs::Dialog::ConfirmDelete { paths });
                 }
             }
+            // F2 on several items opens advanced rename (SPEC ch.3 §3).
+            K::Rename if self.v.sel.count(self.v.results.len()) > 1 => self.open_advanced_rename(),
             K::Rename => self.start_rename(),
+            K::AdvancedRename => self.open_advanced_rename(),
+            K::Undo => self.undo_last(),
+            K::NewTab => self.tab_new(String::new()),
+            K::FindInResults if self.settings.findbar_ctrl_f => self.open_find_bar(),
+            K::FindInResults => self.run(ctx, K::FocusSearch),
+            K::FindNext => {
+                if !self.find_step(true) {
+                    self.run(ctx, K::FocusSearch);
+                }
+            }
+            K::FindPrevious => {
+                self.find_step(false);
+            }
+            K::NextTab => self.tab_step(1),
+            K::PreviousTab => self.tab_step(-1),
+            K::CloseTab => {
+                if !self.tab_close() {
+                    self.run(ctx, K::CloseWindow);
+                }
+            }
+            K::Redo => self.redo_last(),
             K::NewFolder => {
                 if let Some(parent) = self.paste_target() {
                     self.dialog = Some(dialogs::Dialog::NewFolder { parent, name: t("new-folder-name") });
@@ -1043,6 +1107,10 @@ impl FennecApp {
         if paths.is_empty() {
             return;
         }
+        if !permanent {
+            self.recycle_paths(paths);
+            return;
+        }
         let owner = self.owner();
         let n = paths.len();
         self.spawn_op(t_args("msg-deleted", &[("count", n.into())]), move || {
@@ -1146,11 +1214,17 @@ impl FennecApp {
         if targets.is_empty() {
             return;
         }
+        if matches!(kind, TextKind::Csv | TextKind::Efu) {
+            // Same writers as File → Export and fes.
+            let Some(snap) = self.shared.try_snapshot_for(Duration::from_millis(50)) else { return };
+            let ids: Vec<EntryId> = targets.iter().map(|(id, _)| *id).collect();
+            let format = if kind == TextKind::Efu { fnc_ipc::Format::Efu } else { fnc_ipc::Format::Csv };
+            ctx.copy_text(crate::export::to_text(format, &snap, &ids, Some(self.type_names.clone())));
+            self.say(t("msg-copied"));
+            return;
+        }
         let snap = self.shared.try_snapshot_for(Duration::from_millis(50));
         let mut out = String::new();
-        if matches!(kind, TextKind::Csv | TextKind::Efu) {
-            out.push_str("Filename,Size,Date Modified,Date Created,Attributes\r\n");
-        }
         for (id, p) in &targets {
             let full = p.display().to_string();
             let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| full.clone());
@@ -1161,24 +1235,18 @@ impl FennecApp {
                 TextKind::Name => name,
                 TextKind::Folder => folder,
                 TextKind::Tsv | TextKind::Csv | TextKind::Efu => {
-                    let (size, dm, dc, attr) = snap.as_ref().map_or((String::new(), 0, 0, 0), |s| {
-                        (
-                            s.size(*id).filter(|_| !s.is_dir(*id)).map(|v| v.to_string()).unwrap_or_default(),
-                            s.date_modified(*id).0,
-                            s.date_created(*id).0,
-                            s.attributes(*id),
-                        )
-                    });
-                    match kind {
-                        TextKind::Tsv => format!("{name}\t{folder}\t{size}"),
-                        _ => format!("\"{}\",{size},{dm},{dc},{attr}", full.replace('"', "\"\"")),
-                    }
+                    let size = snap
+                        .as_ref()
+                        .and_then(|s| s.size(*id).filter(|_| !s.is_dir(*id)))
+                        .map(|v| v.to_string())
+                        .unwrap_or_default();
+                    format!("{name}\t{folder}\t{size}")
                 }
             };
             out.push_str(&line);
             out.push_str("\r\n");
         }
-        if targets.len() == 1 && !matches!(kind, TextKind::Csv | TextKind::Efu) {
+        if targets.len() == 1 {
             out.truncate(out.trim_end().len());
         }
         ctx.copy_text(out);
@@ -1204,11 +1272,7 @@ impl FennecApp {
         if new.is_empty() || new == old {
             return;
         }
-        let owner = self.owner();
-        let path = r.path;
-        self.spawn_op(t_args("msg-renamed", &[("name", new.clone().into())]), move || {
-            fnc_platform::fileops::rename(owner, &path, &new)
-        });
+        self.rename_recorded(r.path, new);
     }
 
     fn context_menu(&mut self, ctx: &egui::Context) {
@@ -1263,6 +1327,8 @@ impl FennecApp {
         let mut paste_seen = false;
         let mut shift_dels = fnc_platform::shell::take_shift_delete();
         let type_to_search = self.settings.type_to_search;
+        // Enter runs a `/key=value` inline command (SPEC ch.3 §13) instead of opening.
+        let inline_command = kctx == KeyCtx::Search && self.v.query.starts_with('/');
         ctx.input_mut(|i| {
             let mut keep = Vec::with_capacity(i.events.len());
             for e in std::mem::take(&mut i.events) {
@@ -1285,6 +1351,10 @@ impl FennecApp {
                         }
                         if *key == Key::Tab && !modifiers.ctrl && !modifiers.alt {
                             tab = true;
+                            continue;
+                        }
+                        if inline_command && *key == Key::Enter && !modifiers.any() {
+                            keep.push(e);
                             continue;
                         }
                         let chord = Chord::from_event(*key, *modifiers);
@@ -1467,6 +1537,7 @@ impl FennecApp {
             if !resp.has_focus() && !self.v.complete.hovered() {
                 self.v.complete.close();
             }
+            self.semantic_toggle(ui);
             self.filter_combo(ui, filter_w);
         });
         // `/key=value` and `/command` (SPEC ch.3 §13) run on Enter.
@@ -1500,9 +1571,11 @@ impl FennecApp {
             match s.set(key.trim(), value.trim()) {
                 Ok(()) => {
                     self.apply_settings(ctx, s);
+                    // Never echo passwords (`http_password`).
+                    let shown = if key.trim().ends_with("password") { "••••" } else { value.trim() };
                     self.say(t_args(
                         "msg-setting-changed",
-                        &[("key", key.trim().to_string().into()), ("value", value.trim().to_string().into())],
+                        &[("key", key.trim().to_string().into()), ("value", shown.to_string().into())],
                     ));
                 }
                 Err(e) => self.say(e.to_string()),
@@ -1515,6 +1588,7 @@ impl FennecApp {
         } else if let Some(cmd) = Command::from_id(body) {
             self.run(ctx, cmd);
         } else if let Some(v) = self.settings.get(body) {
+            let v = if body.ends_with("password") { "••••".to_string() } else { v };
             self.say(format!("{body} = {v}"));
         } else {
             self.say(t_args("msg-unknown-command", &[("command", body.to_string().into())]));
@@ -1653,6 +1727,13 @@ impl FennecApp {
                     ));
                     ui.ctx().request_repaint_after(Duration::from_millis(500));
                 }
+                if let Some(sem) = self.semantic_status() {
+                    ui.separator();
+                    if ui.link(sem).clicked() {
+                        self.semantic_open_setup();
+                    }
+                }
+                self.server_status_ui(ui);
             });
         });
     }
@@ -1709,6 +1790,8 @@ impl FennecApp {
         if restart {
             self.say(t("msg-restart-required"));
         }
+        self.semantic_apply(&old);
+        self.apply_server_settings();
         self.rebuild_search_options();
         self.send_search();
         if let Err(e) = self.settings.save(&self.settings_path) {
@@ -1743,17 +1826,8 @@ enum TextKind {
 }
 
 fn sort_from_settings(s: &Settings) -> SortSpec {
-    let keys = crate::columns::parse_sort(&s.sort);
-    let mut spec = SortSpec::by(SortColumn::Name, true, s.folders_first);
-    for (i, &(k, asc)) in keys.iter().enumerate() {
-        match (i, k) {
-            (0, fnc_exec::SortKey::Column(c)) => spec = SortSpec::by(c, asc, s.folders_first),
-            (0, fnc_exec::SortKey::Property(p)) => spec = SortSpec::by_property(p, asc, s.folders_first),
-            (_, fnc_exec::SortKey::Column(c)) => spec.push_key(c, asc),
-            (_, fnc_exec::SortKey::Property(p)) => spec.push_property_key(p, asc),
-        }
-    }
-    spec
+    crate::columns::sort_spec(&s.sort, s.folders_first)
+        .unwrap_or_else(|| SortSpec::by(SortColumn::Name, true, s.folders_first))
 }
 
 fn default_export_path() -> String {
@@ -1923,6 +1997,7 @@ impl FennecApp {
         }
         egui::Panel::top("search").show(ui, |ui| {
             ui.add_space(4.0);
+            self.tab_bar(ui);
             self.search_bar(ui);
             if self.settings.show_filter_bar {
                 self.filter_bar(ui);
@@ -1931,6 +2006,9 @@ impl FennecApp {
         });
         if self.settings.show_status_bar {
             egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        }
+        if self.v.find.open {
+            egui::Panel::bottom("find-bar").show(ui, |ui| self.find_bar(ui));
         }
         self.thumbs.poll(&ctx);
         if self.settings.show_preview {
@@ -1961,6 +2039,7 @@ const HISTORY_IDLE: Duration = Duration::from_secs(3);
 impl eframe::App for FennecApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_channels(ctx);
+        self.semantic_tick(ctx);
         if ctx.input(|i| i.viewport().close_requested())
             && !self.quitting
             && self.settings.close_to_tray
@@ -2006,6 +2085,8 @@ impl eframe::App for FennecApp {
         self.draw_main(ui, true);
         self.dialogs(&ctx);
         self.options_viewport(&ctx);
+        self.semantic_setup_window(&ctx);
+        self.advanced_rename_window(&ctx);
         for cmd in std::mem::take(&mut self.pending) {
             self.run(&ctx, cmd);
         }
@@ -2024,6 +2105,9 @@ impl eframe::App for FennecApp {
                     format!("{:.0},{:.0},{:.0},{:.0}", rect.min.x, rect.min.y, rect.width(), rect.height());
             }
         }
+        self.save_session();
+        self.semantic_stop();
+        self.stop_servers();
         self.indexer.stop();
         self.indexer.save();
         self.history.save();
@@ -2060,3 +2144,9 @@ fn native_handle(frame: &eframe::Frame) -> isize {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_edit;
+#[cfg(all(test, feature = "semantic"))]
+mod tests_semantic;
+#[cfg(test)]
+mod tests_tabs;

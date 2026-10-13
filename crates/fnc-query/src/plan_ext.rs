@@ -141,6 +141,9 @@ pub enum SetKind {
     DupeCount(NumPred),
     /// Keep at most N results per group (`dupe-max:`).
     DupeMax(u32),
+    /// Keep the first N results (`count:<max>`, Everything 1.5 result limit); always
+    /// applied after the other set functions.
+    Limit(u64),
 }
 
 /// Set function applied to the sorted result set (Everything 1.5 semantics).
@@ -704,6 +707,10 @@ impl Cx<'_> {
                 Some(n) => op(SetKind::DupeMax(n), None),
                 None => self.invalid(f, &t.value),
             },
+            FuncId::Count => match t.value.as_text().and_then(|s| s.trim().parse::<u64>().ok()) {
+                Some(n) => op(SetKind::Limit(n), Some(Vec::new())),
+                None => self.invalid(f, &t.value),
+            },
             _ => self.invalid(f, &t.value),
         }
     }
@@ -808,6 +815,10 @@ pub fn hoist_sets(root: Node, post: &mut Vec<SetOp>, diags: &mut Vec<PlanDiag>) 
             other => rest.push(nested(other, diags)),
         }
     }
+    // The result limit (`count:`) applies last, whatever its position in the search.
+    let (mut limits, sets): (Vec<SetOp>, Vec<SetOp>) =
+        std::mem::take(post).into_iter().partition(|o| matches!(o.kind, SetKind::Limit(_)));
+    *post = sets;
     // `dupe-count:` / `dupe-max:` group like the query's other set function.
     let default_keys = post.iter().find_map(|o| o.keys.clone()).unwrap_or_else(|| vec![DupeKey::Name]);
     for op in post.iter_mut() {
@@ -815,6 +826,10 @@ pub fn hoist_sets(root: Node, post: &mut Vec<SetOp>, diags: &mut Vec<PlanDiag>) 
             op.keys = Some(default_keys.clone());
         }
     }
+    for l in &mut limits {
+        l.negate = false;
+    }
+    post.append(&mut limits);
     and_node(rest)
 }
 

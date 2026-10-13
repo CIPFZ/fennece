@@ -552,6 +552,65 @@ pub struct Settings {
     #[setting(key = "content_read_unindexed", default = true, page = "content")]
     pub content_read_unindexed: bool,
 
+    // ---- server (SPEC ch.4 §3–4: IPC, Everything compatibility, HTTP) ----
+    /// Native IPC server for fes.exe and the SDK (pipe `Fennec.<instance>.ipc`).
+    #[setting(key = "ipc_server", default = true, page = "server")]
+    pub ipc_server: bool,
+    /// Everything 1.4 compatible IPC window for es.exe, the Everything SDK and launchers
+    /// (not created while Everything itself runs).
+    #[setting(key = "everything_ipc", default = true, page = "server")]
+    pub everything_ipc: bool,
+    /// Enable the HTTP server (search page, Everything JSON, downloads).
+    #[setting(key = "http_enabled", default = false, page = "server")]
+    pub http_enabled: bool,
+    /// HTTP server bind address (`127.0.0.1` = this computer only, `0.0.0.0` = all).
+    #[setting(key = "http_bind", default = "127.0.0.1", page = "server")]
+    pub http_bind: String,
+    /// HTTP server port.
+    #[setting(key = "http_port", default = 8080, page = "server")]
+    pub http_port: u16,
+    /// HTTP user name (Basic authentication).
+    #[setting(key = "http_username", default = "", page = "server")]
+    pub http_username: String,
+    /// HTTP password (required; the server does not start without one).
+    #[setting(key = "http_password", default = "", page = "server")]
+    pub http_password: String,
+    /// Allow file downloads over HTTP.
+    #[setting(key = "http_allow_downloads", default = true, page = "server")]
+    pub http_allow_downloads: bool,
+    /// Results per page of the HTTP search page.
+    #[setting(key = "http_page_size", default = 32, page = "server")]
+    pub http_page_size: u32,
+    /// Most results per HTTP request.
+    #[setting(key = "http_max_results", default = 10_000, page = "server")]
+    pub http_max_results: u32,
+    /// Most HTTP requests processed at once.
+    #[setting(key = "http_max_concurrency", default = 16, page = "server")]
+    pub http_max_concurrency: u32,
+    /// HTTP request time limit in milliseconds.
+    #[setting(key = "http_timeout_ms", default = 5000, page = "server")]
+    pub http_timeout_ms: u32,
+    /// Folder served instead of the built-in HTTP page (empty = built-in).
+    #[setting(key = "http_static_root", default = "", page = "server")]
+    pub http_static_root: String,
+    /// Log every HTTP request.
+    #[setting(key = "http_access_log", default = false, page = "server")]
+    pub http_access_log: bool,
+
+    // ---- tabs and sessions (SPEC ch.3 §7) ----
+    /// Show the tab bar even with a single tab.
+    #[setting(key = "show_tab_bar", default = false, page = "ui")]
+    pub show_tab_bar: bool,
+    /// Closing the last tab clears it instead of closing the window.
+    #[setting(key = "close_last_tab_keeps_window", default = true, page = "ui")]
+    pub close_last_tab_keeps_window: bool,
+    /// Ctrl+F in the result list opens the find bar instead of focusing the search box.
+    #[setting(key = "findbar_ctrl_f", default = false, page = "results")]
+    pub findbar_ctrl_f: bool,
+    /// Save windows and tabs on exit and restore them at start.
+    #[setting(key = "restore_session", default = false, page = "ui")]
+    pub restore_session: bool,
+
     // ---- semantic (SPEC ch.5) ----
     /// Enable semantic search (`sem:`) and the background semantic indexer.
     #[setting(key = "semantic_enabled", default = false, page = "semantic")]
@@ -672,6 +731,9 @@ mod tests {
         assert_eq!(s.usn_max_size_mb, 32);
         assert_eq!(s.usn_allocation_delta_mb, 4);
         assert_eq!(s.log_level, "info");
+        // HTTP off by default, loopback only, downloads allowed (Everything); IPC on.
+        assert!(!s.http_enabled && s.http_bind == "127.0.0.1" && s.http_port == 8080 && s.http_allow_downloads);
+        assert!(s.ipc_server && s.everything_ipc);
     }
 
     #[test]

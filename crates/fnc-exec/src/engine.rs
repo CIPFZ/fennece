@@ -353,8 +353,8 @@ fn relevance_order(results: &mut ResultSet, best_first: bool) {
     } else {
         let s = &extra.sem_scores;
         results.ids.sort_by(|a, b| {
-            let (x, y) = (s.get(&a.0), s.get(&b.0));
-            y.is_some().cmp(&x.is_some()).then_with(|| y.copied().unwrap_or(0.0).total_cmp(&x.copied().unwrap_or(0.0)))
+            let (x, y) = (s.get(&a.0).map(|v| v.0), s.get(&b.0).map(|v| v.0));
+            y.is_some().cmp(&x.is_some()).then_with(|| y.unwrap_or(0.0).total_cmp(&x.unwrap_or(0.0)))
         });
     }
     if !best_first {
@@ -454,18 +454,18 @@ fn run(
         };
         match hits {
             Ok(h) => {
-                let hits: Vec<_> = h.into_iter().filter(|(id, _)| snap.is_live(*id)).collect();
+                let hits: Vec<_> = h.into_iter().filter(|h| snap.is_live(h.id)).collect();
                 let mut extra = results.extra.as_deref().cloned().unwrap_or_default();
                 let fused = crate::semantic::fuse(&results.ids, &hits);
                 extra.fused_rank = fused.iter().enumerate().map(|(r, id)| (id.0, r as u32)).collect();
-                extra.sem_scores.extend(hits.iter().map(|(id, score)| (id.0, *score)));
+                extra.sem_scores.extend(hits.iter().map(|h| (h.id.0, (h.score, h.range))));
                 results.extra = Some(Arc::new(extra));
                 if req.sort.column == SortColumn::Relevance {
                     results.ids = if req.sort.ascending { fused.into_iter().rev().collect() } else { fused };
                 } else {
                     // Semantic-only hits join the results in the requested order.
                     let known: std::collections::HashSet<u32> = results.ids.iter().map(|id| id.0).collect();
-                    results.ids.extend(hits.iter().map(|(id, _)| *id).filter(|id| !known.contains(&id.0)));
+                    results.ids.extend(hits.iter().map(|h| h.id).filter(|id| !known.contains(&id.0)));
                     sort_ids_ext(&mut results.ids, &req.sort, &snap, caches, cancel, ext.props)?;
                 }
             }

@@ -1258,6 +1258,14 @@ impl IndexStore {
         }
     }
 
+    /// Forgets every run count and run date (Everything `DELETE_RUN_HISTORY`).
+    pub fn clear_run_history(&mut self) {
+        if !self.run.is_empty() {
+            self.run.clear();
+            self.generation += 1;
+        }
+    }
+
     /// Marks every entry of `vol` online/offline.
     pub fn set_volume_online(&mut self, vol: VolumeId, online: bool) {
         if let Some(v) = self.volumes.get_mut(vol.idx()) {

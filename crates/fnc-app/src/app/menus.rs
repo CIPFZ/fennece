@@ -97,6 +97,13 @@ impl FennecApp {
                 self.item(ui, K::Exit, &mut out);
             });
             ui.menu_button(t("menu-edit"), |ui| {
+                for (c, redo) in [(K::Undo, false), (K::Redo, true)] {
+                    if ui.add_enabled(self.can_undo(redo), egui::Button::new(self.undo_label(redo))).clicked() {
+                        out.push(c);
+                        ui.close();
+                    }
+                }
+                ui.separator();
                 for c in [K::CutFiles, K::CopyFiles, K::Paste] {
                     self.item(ui, c, &mut out);
                 }
@@ -119,9 +126,16 @@ impl FennecApp {
                     self.item(ui, c, &mut out);
                 }
                 ui.separator();
-                for c in
-                    [K::Rename, K::Delete, K::DeletePermanently, K::NewFolder, K::Omit, K::SetRunCount, K::Properties]
-                {
+                for c in [
+                    K::Rename,
+                    K::AdvancedRename,
+                    K::Delete,
+                    K::DeletePermanently,
+                    K::NewFolder,
+                    K::Omit,
+                    K::SetRunCount,
+                    K::Properties,
+                ] {
                     self.item(ui, c, &mut out);
                 }
             });
@@ -228,6 +242,7 @@ impl FennecApp {
                 ui.separator();
                 self.check(ui, K::PauseUpdates, self.indexer.paused(), &mut out);
                 self.item(ui, K::IndexJournal, &mut out);
+                self.item(ui, K::SemanticSetup, &mut out);
                 self.item(ui, K::SaveDatabase, &mut out);
                 ui.separator();
                 self.item(ui, K::InstallService, &mut out);

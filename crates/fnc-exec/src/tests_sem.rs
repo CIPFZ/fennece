@@ -11,7 +11,7 @@ use fnc_query::SemPred;
 
 use crate::engine::{EngineEvent, SearchEngine, SearchOptions, SearchRequest};
 use crate::ext::{ExecWarning, Shared};
-use crate::semantic::SemanticSource;
+use crate::semantic::{SemHit, SemanticSource};
 use crate::sort::{SortColumn, SortSpec};
 
 const EFU: &str = "Filename,Size,Date Modified,Date Created,Attributes\n\
@@ -42,7 +42,7 @@ impl SemanticSource for Fake {
         s: &IndexStore,
         candidates: Option<&[EntryId]>,
         top: usize,
-    ) -> Result<Vec<(EntryId, f32)>, String> {
+    ) -> Result<Vec<SemHit>, String> {
         if q.text == "fail" {
             return Err("model file not found".into());
         }
@@ -55,15 +55,15 @@ impl SemanticSource for Fake {
             Some(c) => c.to_vec(),
             None => (0..s.len() as u32).map(EntryId).filter(|&i| s.is_live(i)).collect(),
         };
-        let mut hits: Vec<(EntryId, f32)> = all
+        let mut hits: Vec<SemHit> = all
             .into_iter()
             .filter_map(|id| {
                 let name = s.name_string(id);
                 let score = *self.scores.iter().find(|((t, n), _)| *t == q.text && *n == name)?.1;
-                (score >= min).then_some((id, score))
+                (score >= min).then_some(SemHit { id, score, range: name.ends_with(".md").then_some((3, 9)) })
             })
             .collect();
-        hits.sort_by(|a, b| b.1.total_cmp(&a.1));
+        hits.sort_by(|a, b| b.score.total_cmp(&a.score));
         hits.truncate(top);
         Ok(hits)
     }
@@ -115,6 +115,8 @@ fn semantic_only_queries_use_ann_and_sort_by_relevance() {
     assert_eq!(got, ["2026Q2_budget.xlsx", "budget-old.xlsx", "notes.md"]);
     assert!(rs.has_relevance());
     assert!(rs.relevance(rs.ids[0]).is_some_and(|s| (s - 0.72).abs() < 1e-6));
+    assert_eq!(rs.semantic_range(rs.ids[2]), Some(3..12));
+    assert_eq!(rs.semantic_range(rs.ids[0]), None);
     assert_eq!((f.ann.load(Ordering::Relaxed), f.exact.load(Ordering::Relaxed)), (1, 0));
     // Thresholds.
     let (got, ..) = run(&f, "sem:>0.6 季度预算", relevance(), false);

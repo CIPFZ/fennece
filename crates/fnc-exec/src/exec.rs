@@ -52,8 +52,9 @@ pub struct ResultExtra {
     pub content_hits: HashMap<u32, (u32, u32)>,
     /// Results before the set functions (re-sorted and re-filtered when the sort changes).
     pub base: Option<Vec<EntryId>>,
-    /// Cosine similarity per entry for searches with semantic terms (relevance column).
-    pub sem_scores: HashMap<u32, f32>,
+    /// Cosine similarity and best chunk range per entry for searches with semantic terms
+    /// (relevance column, preview).
+    pub sem_scores: crate::semantic::Scores,
     /// Fused order (`?sem:`): position per entry for the relevance sort.
     pub fused_rank: HashMap<u32, u32>,
 }
@@ -100,7 +101,13 @@ impl ResultSet {
 
     /// Similarity (0–1) of `id` in a search with semantic terms.
     pub fn relevance(&self, id: EntryId) -> Option<f32> {
-        self.extra.as_ref()?.sem_scores.get(&id.0).copied()
+        self.extra.as_ref()?.sem_scores.get(&id.0).map(|s| s.0)
+    }
+
+    /// Byte range of the best matching chunk of `id` (content/code chunks).
+    pub fn semantic_range(&self, id: EntryId) -> Option<std::ops::Range<usize>> {
+        let (start, len) = self.extra.as_ref()?.sem_scores.get(&id.0)?.1?;
+        Some(start as usize..(start + len) as usize)
     }
 
     /// `true` if the results carry similarities (show the relevance column).

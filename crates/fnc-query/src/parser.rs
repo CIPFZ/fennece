@@ -312,6 +312,17 @@ impl Lexer<'_, '_> {
         !norm.is_empty() && known && (numeric_fn || cmp_mod)
     }
 
+    /// `true` inside the value of `eval:` (formula comparison operators, not groups).
+    fn in_formula(out: &[Ch]) -> bool {
+        let prefix: String =
+            out.iter().take_while(|ch| ch.lit || ch.c != '(').filter(|ch| !ch.lit).map(|ch| ch.c).collect();
+        let mut norm = String::new();
+        prefix.split(':').rev().skip(1).any(|seg| {
+            normalize_name(seg.trim_start_matches('?'), &mut norm);
+            norm == "eval"
+        })
+    }
+
     fn read_term(&mut self) -> Tok {
         let start = self.pos();
         let mut out: Vec<Ch> = Vec::new();
@@ -362,7 +373,7 @@ impl Lexer<'_, '_> {
                     continue;
                 }
                 '|' if !literal_rest => break,
-                '<' | '>' if !literal_rest && !Self::operator_position(&out) => break,
+                '<' | '>' if !literal_rest && !Self::operator_position(&out) && !Self::in_formula(&out) => break,
                 '&' if self.try_entity(&mut out) => continue,
                 '%' if self.try_env(&mut out) => continue,
                 '*' if self.peek(1) == Some(':') && !literal_rest => {
@@ -674,6 +685,12 @@ impl Parser<'_> {
             normalize_name(&ident, &mut norm);
             let span = chars[save].pos..char_end(chars, p + 1, range_end);
             p += 1; // colon
+            // `count:<digits>` is the Everything 1.5 result limit; `count:` before
+            // anything else (`count:tags:>2`) is the comparison modifier.
+            if !star && norm == "count" && p < n && chars[p..].iter().all(|ch| !ch.lit && ch.c.is_ascii_digit()) {
+                self.spans.push(Span { range: span, kind: SpanKind::Function });
+                return Prefix { mods, global, head: Head::Func(FuncId::Count), value_start: p, literal_value: false };
+            }
             if !star && let Some((m, on)) = lookup_modifier(&norm) {
                 if is_global {
                     global.set(m, on);

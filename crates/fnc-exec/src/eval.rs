@@ -614,6 +614,9 @@ impl Compiled {
                 let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
                 Leaf::Extension(Box::new(ExtLeaf::Hash(compile_hash(h, algos, ext, &slow))))
             }
+            Pred::Eval(f) => {
+                Leaf::Extension(Box::new(ExtLeaf::Eval(crate::formula::EvalLeaf::new(&f.0, s, ext.props))))
+            }
             Pred::Semantic(p) => match self.semantic.get(p) {
                 Some(set) => Leaf::In(set.bits.clone()),
                 None => Leaf::Nothing,

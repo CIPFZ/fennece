@@ -10,14 +10,22 @@ license.workspace = true
 name = "fennec"
 path = "src/main.rs"
 
+[features]
+default = ["semantic"]
+# Semantic search (SPEC ch.5): llama.cpp + usearch (C/C++ build, ADR-020).
+semantic = ["dep:fnc-semantic"]
+
 [dependencies]
 fnc-core.workspace = true
 fnc-index.workspace = true
 fnc-query.workspace = true
 fnc-exec.workspace = true
-fnc-props.workspace = true
 fnc-platform = { workspace = true, features = ["props"] }
 fnc-ntfs.workspace = true
+fnc-semantic = { workspace = true, features = ["llama"], optional = true }
+fnc-props.workspace = true
+fnc-ipc.workspace = true
+fnc-http.workspace = true
 eframe.workspace = true
 egui.workspace = true
 egui_extras.workspace = true
@@ -34,6 +42,7 @@ serde.workspace = true
 toml.workspace = true
 ignore.workspace = true
 globset.workspace = true
+regex.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "ico", "tiff"] }
 
 [target.'cfg(windows)'.dependencies]
