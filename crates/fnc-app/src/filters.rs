@@ -37,6 +37,22 @@ pub struct Filter {
     pub builtin: bool,
 }
 
+impl Filter {
+    /// The engine's view of this filter.
+    pub fn to_query(&self) -> fnc_query::Filter {
+        fnc_query::Filter {
+            name: self.name.clone(),
+            search: self.search.clone(),
+            macro_name: Some(self.macro_name.trim().to_string()).filter(|m| !m.is_empty()),
+            case: self.case,
+            whole_word: self.whole_word,
+            path: self.path,
+            diacritics: self.diacritics,
+            regex: self.regex,
+        }
+    }
+}
+
 /// A saved search.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -124,11 +140,7 @@ impl Filters {
 
     /// User macros defined by filters.
     pub fn macros(&self) -> Vec<fnc_query::UserMacro> {
-        self.list
-            .iter()
-            .filter(|f| !f.macro_name.trim().is_empty())
-            .map(|f| fnc_query::UserMacro { name: f.macro_name.trim().to_string(), search: f.search.clone() })
-            .collect()
+        self.list.iter().filter_map(|f| f.to_query().user_macro()).collect()
     }
 
     /// Imports Everything's `Filters.csv`; returns the number added.
@@ -159,17 +171,6 @@ impl Filters {
             n += 1;
         }
         n
-    }
-}
-
-/// The search a set of active filters adds (`or`: any filter matches).
-pub fn combine(filters: &[&Filter], or: bool) -> Option<String> {
-    let parts: Vec<String> =
-        filters.iter().filter(|f| !f.search.trim().is_empty()).map(|f| format!("<{}>", f.search.trim())).collect();
-    match parts.len() {
-        0 => None,
-        1 => parts.into_iter().next(),
-        _ => Some(parts.join(if or { " | " } else { " " })),
     }
 }
 
@@ -267,12 +268,9 @@ mod tests {
         let g = Filters::load(Some(p));
         assert_eq!(g.list.len(), builtins + 1);
         assert_eq!(g.macros()[0].name, "big");
-        let a = &g.list[0];
-        let big = &g.list[builtins];
-        assert_eq!(combine(&[a], true).unwrap(), "<audio:>");
-        assert_eq!(combine(&[a, big], true).unwrap(), "<audio:> | <size:>1gb>");
-        assert_eq!(combine(&[a, big], false).unwrap(), "<audio:> <size:>1gb>");
-        assert!(combine(&[], true).is_none());
+        let q = g.list[builtins].to_query();
+        assert_eq!(q.search, "size:>1gb");
+        assert_eq!(q.user_macro().unwrap().name, "big");
     }
 
     #[test]

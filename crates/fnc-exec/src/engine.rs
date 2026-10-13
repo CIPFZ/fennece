@@ -81,6 +81,7 @@ impl SearchOptions {
             star_all: s.wildcards_star_all,
             reuse: s.reuse_results,
             regex_all: s.match_regex,
+            pinyin_default: s.match_pinyin,
             ..Self::default()
         }
     }

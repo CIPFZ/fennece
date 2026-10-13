@@ -159,7 +159,10 @@ pub struct FennecApp {
     scroll_to: Option<usize>,
     rows: HashMap<EntryId, Row>,
     rows_generation: u64,
-    type_names: HashMap<(String, bool), String>,
+    /// Shell type names (`type:` and the Type column), shared with the engine.
+    type_names: fnc_exec::TypeNames,
+    /// Type column texts per `(extension, is_dir)`.
+    type_cache: HashMap<(String, bool), String>,
     omit: HashSet<EntryId>,
 
     filters: Filters,
@@ -260,7 +263,8 @@ impl FennecApp {
             scroll_to: None,
             rows: HashMap::new(),
             rows_generation: 0,
-            type_names: HashMap::new(),
+            type_names: fnc_exec::TypeNames::new(|ext| fnc_platform::shell::type_name(ext, false)),
+            type_cache: HashMap::new(),
             omit: HashSet::new(),
             filters,
             active_filters,
@@ -301,34 +305,39 @@ impl FennecApp {
 
     // ------------------------------------------------------------------ searching
 
-    /// Search options from settings plus the active filters' switches and macros.
+    /// Search options from settings plus the filters' macros, omitted results and the
+    /// shell's type names.
     fn rebuild_search_options(&mut self) {
-        let mut s = self.settings.clone();
-        for &i in &self.active_filters {
-            if let Some(f) = self.filters.list.get(i) {
-                s.match_case |= f.case;
-                s.match_whole_word |= f.whole_word;
-                s.match_path |= f.path;
-                s.match_diacritics |= f.diacritics;
-                s.match_regex |= f.regex;
-            }
-        }
-        let mut o = SearchOptions::from_settings(&s);
+        let mut o = SearchOptions::from_settings(&self.settings);
         o.macros.extend(self.filters.macros());
+        o.type_names = Some(self.type_names.clone());
+        if !self.omit.is_empty() {
+            let instance = self.shared.try_snapshot_for(Duration::from_millis(20)).map_or(0, |s| s.instance());
+            o.omit = Some(fnc_query::plan::OmitSet { instance, ids: self.omit.iter().copied().collect() });
+        }
         self.search_opts = Arc::new(o);
     }
 
-    fn filter_search(&self) -> Option<String> {
-        let active: Vec<&crate::filters::Filter> =
-            self.active_filters.iter().filter_map(|&i| self.filters.list.get(i)).collect();
-        crate::filters::combine(&active, true)
+    /// The active filters with their own match options (SPEC ch.2 §7).
+    fn filter_set(&self) -> Option<fnc_query::FilterSet> {
+        let filters: Vec<fnc_query::Filter> = self
+            .active_filters
+            .iter()
+            .filter_map(|&i| self.filters.list.get(i))
+            .map(crate::filters::Filter::to_query)
+            .collect();
+        let set = fnc_query::FilterSet { filters, and: false };
+        (!set.is_empty()).then_some(set)
     }
 
     fn send_search(&mut self) {
         let id = self.next_id;
         self.next_id += 1;
-        if self.sent_query.as_deref() != Some(self.query.as_str()) {
+        if self.sent_query.as_deref() != Some(self.query.as_str()) && !self.omit.is_empty() {
             self.omit.clear();
+            self.rebuild_search_options();
+        }
+        if self.sent_query.as_deref() != Some(self.query.as_str()) {
             self.history_recorded = false;
             self.history_idle_since = Some(Instant::now());
         }
@@ -337,7 +346,7 @@ impl FennecApp {
         self.engine.search(SearchRequest {
             id,
             text: self.query.clone(),
-            filter: self.filter_search(),
+            filter: self.filter_set(),
             sort: self.sort,
             options: self.search_opts.clone(),
         });
@@ -365,14 +374,7 @@ impl FennecApp {
         self.highlighter = self.settings.highlight.then(|| Highlighter::new(&o.plan)).filter(|h| !h.is_empty());
         self.diagnostics = diagnostics_text(&o);
         let same_set = Arc::ptr_eq(&self.results, &o.results);
-        self.results = if self.omit.is_empty() {
-            o.results
-        } else {
-            // Omitted rows stay hidden until the search text changes.
-            let mut r = (*o.results).clone();
-            r.ids.retain(|id| !self.omit.contains(id));
-            Arc::new(r)
-        };
+        self.results = o.results;
         if !same_set {
             self.rows.clear();
         }
@@ -691,12 +693,11 @@ impl FennecApp {
             K::Omit => {
                 let ids = self.target_ids();
                 if !ids.is_empty() {
+                    // Hidden until the search text changes (`omit:` lists them).
                     self.omit.extend(ids);
-                    let mut r = (*self.results).clone();
-                    r.ids.retain(|id| !self.omit.contains(id));
-                    self.results = Arc::new(r);
                     self.sel.clear();
-                    self.rows.clear();
+                    self.rebuild_search_options();
+                    self.send_search();
                 }
             }
             K::SetRunCount => {

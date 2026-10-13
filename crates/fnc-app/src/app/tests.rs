@@ -216,7 +216,10 @@ fn selection_commands_and_copy() {
     assert!(paths.iter().all(|p| p.contains("Photos")), "{paths:?}");
     // Omit hides the rows until the search changes.
     h.state_mut().run(&ctx, Command::Omit);
-    assert_eq!(h.state().results.len(), 0);
+    wait_until(&mut h, "omitted", |a| a.results.is_empty());
+    // A new search shows them again.
+    h.state_mut().set_query("img ".into());
+    wait_until(&mut h, "back", |a| a.results.len() == 2);
     // `/key=value` inline command.
     h.state_mut().inline_command(&ctx, "/search_delay=7");
     assert_eq!(h.state().settings.search_delay, 7);

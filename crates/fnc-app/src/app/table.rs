@@ -149,18 +149,15 @@ impl FennecApp {
         let mut cells = Vec::with_capacity(self.columns.len());
         let (date, size) = (self.settings.date_format, self.settings.size_format);
         let cols: Vec<ColumnId> = self.columns.iter().map(|c| c.id).collect();
-        let mut names = std::mem::take(&mut self.type_names);
-        {
-            let mut type_name = |ext: &str, dir: bool| {
-                let key = (ext.to_string(), dir);
-                names.entry(key).or_insert_with(|| default_type_name(ext, dir)).clone()
-            };
-            let mut f = CellFormat { date, size, type_name: &mut type_name, now: FileTime::now() };
-            for &c in &cols {
-                cells.push(crate::columns::cell(s, id, c, &mut f));
-            }
+        let names = self.type_names.clone();
+        let cache = &mut self.type_cache;
+        let mut type_name = |ext: &str, dir: bool| {
+            cache.entry((ext.to_string(), dir)).or_insert_with(|| type_name_of(&names, ext, dir)).clone()
+        };
+        let mut f = CellFormat { date, size, type_name: &mut type_name, now: FileTime::now() };
+        for &c in &cols {
+            cells.push(crate::columns::cell(s, id, c, &mut f));
         }
-        self.type_names = names;
         let mut name_hl = Vec::new();
         let mut path_hl = Vec::new();
         if let Some(h) = &self.highlighter {
@@ -384,8 +381,9 @@ impl FennecApp {
     }
 }
 
-fn default_type_name(ext: &str, is_dir: bool) -> String {
-    fnc_platform::shell::type_name(ext, is_dir).unwrap_or_else(|| {
+fn type_name_of(names: &fnc_exec::TypeNames, ext: &str, is_dir: bool) -> String {
+    let shell = if is_dir { fnc_platform::shell::type_name("", true) } else { names.lookup(ext) };
+    shell.unwrap_or_else(|| {
         if is_dir {
             t("type-folder")
         } else if ext.is_empty() {
