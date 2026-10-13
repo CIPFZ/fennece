@@ -217,12 +217,9 @@ pub fn open_volume(letter: char) -> io::Result<Handle> {
     Ok(Handle(h))
 }
 
-/// FRN of the root folder of `X:\` (record 5 with its sequence number on NTFS).
-///
-/// Read as the 128-bit `FileIdInfo` id and folded like `USN_RECORD_V3` ids, so the root
-/// matches the parent ids of top-level records on ReFS too; falls back to the 64-bit
-/// `nFileIndex` where `FileIdInfo` is unavailable.
-pub fn root_frn(letter: char) -> io::Result<u64> {
+/// Opens the root folder of `letter` for attribute access (no privileges needed); it
+/// serves as the volume hint for [`stat_frn`] when no volume handle is available.
+pub fn open_root(letter: char) -> io::Result<Handle> {
     let path = wide(&format!("{letter}:\\"));
     // SAFETY: as in `open_volume`; BACKUP_SEMANTICS is required to open a directory.
     let h = unsafe {
@@ -237,7 +234,16 @@ pub fn root_frn(letter: char) -> io::Result<u64> {
         )
     }
     .map_err(to_io)?;
-    let h = Handle(h);
+    Ok(Handle(h))
+}
+
+/// FRN of the root folder of `X:\` (record 5 with its sequence number on NTFS).
+///
+/// Read as the 128-bit `FileIdInfo` id and folded like `USN_RECORD_V3` ids, so the root
+/// matches the parent ids of top-level records on ReFS too; falls back to the 64-bit
+/// `nFileIndex` where `FileIdInfo` is unavailable.
+pub fn root_frn(letter: char) -> io::Result<u64> {
+    let h = open_root(letter)?;
     let mut id_info = FILE_ID_INFO::default();
     // SAFETY: `id_info` is an owned FILE_ID_INFO, the size passed is its exact size, and
     // `h` is an open handle.
@@ -332,33 +338,14 @@ pub fn create_journal(h: &Handle, max_size: u64, allocation_delta: u64) -> io::R
 /// Enumerates every MFT record with a USN ≤ `high_usn`, calling `f` for each.
 /// Returns the number of records.
 pub fn enum_mft(h: &Handle, high_usn: i64, mut f: impl FnMut(&UsnRecord<'_>) -> bool) -> io::Result<u64> {
-    let mut buf = AlignedBuf::new(1 << 20);
-    let mut med = MFT_ENUM_DATA_V1 {
-        StartFileReferenceNumber: 0,
-        LowUsn: 0,
-        HighUsn: high_usn,
-        MinMajorVersion: 2,
-        MaxMajorVersion: 3,
-    };
     let mut count = 0u64;
-    loop {
-        let cap = buf.len_bytes();
-        let n = match ioctl(h, FSCTL_ENUM_USN_DATA, Some(&med), Some((&mut buf, cap))) {
-            Ok(n) => n as usize,
-            Err(e) if win32_code(&e) == code::HANDLE_EOF => return Ok(count),
-            Err(e) => return Err(to_io(e)),
-        };
-        if n < 8 {
-            return Ok(count);
-        }
-        let b = buf.bytes(n);
-        let next = u64::from_le_bytes(b[0..8].try_into().unwrap_or([0; 8]));
-        for r in records(&b[8..]) {
+    enum_mft_raw(h, high_usn, |chunk| {
+        for r in records(chunk) {
             match r {
                 Ok(r) => {
                     count += 1;
                     if !f(&r) {
-                        return Ok(count);
+                        return false;
                     }
                 }
                 Err(e) => {
@@ -367,8 +354,39 @@ pub fn enum_mft(h: &Handle, high_usn: i64, mut f: impl FnMut(&UsnRecord<'_>) -> 
                 }
             }
         }
+        true
+    })?;
+    Ok(count)
+}
+
+/// Like [`enum_mft`], passing each raw output block (records after the 8-byte
+/// next-FRN header) to `f` (the service forwards these unparsed).
+pub fn enum_mft_raw(h: &Handle, high_usn: i64, mut f: impl FnMut(&[u8]) -> bool) -> io::Result<()> {
+    let mut buf = AlignedBuf::new(1 << 20);
+    let mut med = MFT_ENUM_DATA_V1 {
+        StartFileReferenceNumber: 0,
+        LowUsn: 0,
+        HighUsn: high_usn,
+        MinMajorVersion: 2,
+        MaxMajorVersion: 3,
+    };
+    loop {
+        let cap = buf.len_bytes();
+        let n = match ioctl(h, FSCTL_ENUM_USN_DATA, Some(&med), Some((&mut buf, cap))) {
+            Ok(n) => n as usize,
+            Err(e) if win32_code(&e) == code::HANDLE_EOF => return Ok(()),
+            Err(e) => return Err(to_io(e)),
+        };
+        if n < 8 {
+            return Ok(());
+        }
+        let b = buf.bytes(n);
+        let next = u64::from_le_bytes(b[0..8].try_into().unwrap_or([0; 8]));
+        if !f(&b[8..]) {
+            return Ok(());
+        }
         if next == med.StartFileReferenceNumber {
-            return Ok(count);
+            return Ok(());
         }
         med.StartFileReferenceNumber = next;
     }

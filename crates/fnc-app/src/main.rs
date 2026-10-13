@@ -71,6 +71,10 @@ fn run() -> anyhow::Result<()> {
     }
     i18n::init(&settings.language);
 
+    if let Some(action) = cli.service {
+        return service_command(action, &cli.instance);
+    }
+
     // Single instance: forward our command line to a running primary and exit.
     let ctx_cell: Arc<OnceLock<egui::Context>> = Arc::new(OnceLock::new());
     let wake = {
@@ -132,6 +136,7 @@ fn run() -> anyhow::Result<()> {
         date_accessed: settings.index_date_accessed,
         db_path: if cli.no_db { None } else { Some(cli.db.as_ref().map_or_else(|| paths.index_file(), Into::into)) },
         reindex: cli.reindex,
+        instance: cli.instance.clone(),
         save_interval: Duration::from_secs(u64::from(settings.db_save_interval) * 60),
     };
     let (index_tx, index_rx) = crossbeam_channel::unbounded();
@@ -177,4 +182,28 @@ fn run() -> anyhow::Result<()> {
         }),
     )
     .map_err(|e| anyhow::anyhow!("window: {e}"))
+}
+
+/// `-install-service` / `-uninstall-service`: runs `fennec-service.exe` (next to this
+/// executable), elevating through UAC when needed.
+fn service_command(action: cli::ServiceAction, instance: &str) -> anyhow::Result<()> {
+    let exe = std::env::current_exe()?;
+    let name = if cfg!(windows) { "fennec-service.exe" } else { "fennec-service" };
+    let svc = exe.with_file_name(name);
+    anyhow::ensure!(svc.exists(), "{} not found", svc.display());
+    let mut args = match action {
+        cli::ServiceAction::Install => "-install".to_string(),
+        cli::ServiceAction::Uninstall => "-uninstall".to_string(),
+    };
+    if !instance.is_empty() {
+        args.push_str(&format!(" -instance {instance}"));
+    }
+    if fnc_platform::privilege::is_elevated() {
+        let status = std::process::Command::new(&svc).args(args.split(' ')).status()?;
+        anyhow::ensure!(status.success(), "fennec-service {args} failed ({status})");
+    } else {
+        fnc_platform::shell::run_elevated(&svc, &args)?;
+    }
+    tracing::info!(%args, "service command done");
+    Ok(())
 }

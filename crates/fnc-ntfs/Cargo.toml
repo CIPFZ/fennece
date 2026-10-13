@@ -13,6 +13,8 @@ fnc-platform.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 xxhash-rust.workspace = true
+interprocess.workspace = true
+parking_lot.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [

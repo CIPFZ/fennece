@@ -11,8 +11,11 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![cfg_attr(windows, allow(unsafe_code))]
 
+#[cfg(windows)]
+pub mod access;
 pub mod dirinfo;
 pub mod journal;
+pub mod proto;
 pub mod record;
 
 #[cfg(windows)]

@@ -53,6 +53,8 @@ egui_kittest = "0.36"
 
 # platform
 windows = "0.62"
+windows-service = "0.8"
+widestring = "1"
 global-hotkey = "0.8"
 tray-icon = "0.26"
 interprocess = "2"

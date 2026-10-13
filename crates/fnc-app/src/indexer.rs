@@ -82,6 +82,8 @@ pub struct IndexerConfig {
     pub reindex: bool,
     /// Periodic save interval (zero = only on exit).
     pub save_interval: Duration,
+    /// Instance name (service pipe).
+    pub instance: String,
 }
 
 type Callback = Arc<dyn Fn() + Send + Sync>;
@@ -198,7 +200,7 @@ fn collect_sources(cfg: &IndexerConfig, emit: &Emitter) -> Vec<Box<dyn VolumeSou
                 continue;
             }
             let root = d.root.clone();
-            match fnc_ntfs::NtfsSource::open(d, opts) {
+            match fnc_ntfs::NtfsSource::open(d, opts, &cfg.instance) {
                 Ok(s) => sources.push(Box::new(s)),
                 Err(SourceError::AccessDenied(_)) => {
                     emit.message(crate::i18n::t_args("index-folder-fallback", &[("volume", letter.into())]));
@@ -971,6 +973,39 @@ mod tests {
         live.stop();
         let _ = std::fs::remove_dir_all(&base);
         let _ = std::fs::remove_file(&db);
+    }
+
+    /// IDX-10: a *non-elevated* process indexes NTFS through `fennec-service`
+    /// (install it first: `fennec-service -install`). Run as a standard user:
+    /// `fennec-<hash>.exe --ignored --nocapture ntfs_service_mode`.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "needs Windows, a standard (non-admin) user and the running fennec-service"]
+    fn ntfs_service_mode() {
+        crate::i18n::init("en");
+        assert!(!fnc_platform::privilege::is_elevated(), "run as a standard user");
+        let base = std::path::PathBuf::from(
+            std::env::var("FENNEC_IT_DIR").unwrap_or_else(|_| r"C:\Users\Public\fennec-it".into()),
+        );
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let db = base.join("index.fnx");
+        let mut live = Live::start(&db, true);
+        let (t, msgs) = live.ready();
+        let entries = live.shared.snapshot().live_count();
+        eprintln!("IDX-10: {entries} entries ready after {t:?}; messages: {msgs:?}");
+        assert!(msgs.is_empty(), "no folder-index fallback: {msgs:?}");
+        assert!(entries > 100_000);
+        let n = live.count("wfn:kernel32.dll parent:C:\\Windows\\System32", &|n| n == 1, Duration::from_secs(10));
+        assert_eq!(n, 1);
+        let name = format!("svc-mode-{}.txt", std::process::id());
+        let t = Instant::now();
+        std::fs::write(base.join(&name), b"hello").unwrap();
+        live.count(&name, &|n| n == 1, Duration::from_secs(5));
+        eprintln!("IDX-10: USN change via the service visible after {:?}", t.elapsed());
+        assert!(t.elapsed() < Duration::from_secs(1));
+        live.stop();
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// IDX-02 (pipeline part): a change delivered by a watcher becomes visible in the

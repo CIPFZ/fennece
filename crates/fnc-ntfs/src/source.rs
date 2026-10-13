@@ -6,9 +6,11 @@ use fnc_core::{EntryId, VolumeId};
 use fnc_index::{Change, ChangeBatch, EntryRef, VolumeInfo, VolumeKind};
 use fnc_platform::{ChangeSink, EntrySink, MetaSink, MetadataFetcher, RawEntry, SourceError, StopFlag, VolumeSource};
 
+use crate::access::{DirectAccess, ServiceAccess, VolumeAccess};
 use crate::journal::fold_records;
+use crate::proto::JournalInfo;
 use crate::record::records;
-use crate::win::{self, AlignedBuf, DriveInfo, Handle, Journal, ReadError};
+use crate::win::{self, DriveInfo, ReadError};
 
 /// Journal creation and polling options (from settings).
 #[derive(Debug, Clone, Copy)]
@@ -50,9 +52,9 @@ pub fn list_volumes() -> Vec<DriveInfo> {
 /// One NTFS/ReFS volume opened for indexing.
 pub struct NtfsSource {
     drive: DriveInfo,
-    handle: Handle,
+    access: Box<dyn VolumeAccess>,
     root_frn: u64,
-    journal: Journal,
+    journal: JournalInfo,
     resume_usn: i64,
     opts: NtfsOptions,
 }
@@ -64,22 +66,36 @@ fn io_err(ctx: String) -> impl FnOnce(std::io::Error) -> SourceError {
 impl NtfsSource {
     /// Opens the volume, reads (or creates) its USN journal and records the journal
     /// position *before* enumeration so no change is missed.
-    pub fn open(drive: DriveInfo, opts: NtfsOptions) -> Result<Self, SourceError> {
-        let handle = win::open_volume(drive.letter).map_err(io_err(format!("open volume {}", drive.root)))?;
+    ///
+    /// Without administrator rights the volume handle cannot be opened; the source
+    /// then goes through `fennec-service` of `instance` if it is running, and reports
+    /// `AccessDenied` otherwise (the caller falls back to a folder index).
+    pub fn open(drive: DriveInfo, opts: NtfsOptions, instance: &str) -> Result<Self, SourceError> {
+        let access: Box<dyn VolumeAccess> = match DirectAccess::open(drive.letter) {
+            Ok(a) => Box::new(a),
+            Err(SourceError::AccessDenied(why)) => match ServiceAccess::connect(instance, drive.letter) {
+                Ok(a) => Box::new(a),
+                Err(e) => {
+                    tracing::info!(volume = %drive.root, error = %e, "no volume access and no fennec-service");
+                    return Err(SourceError::AccessDenied(why));
+                }
+            },
+            Err(e) => return Err(e),
+        };
         let root_frn = win::root_frn(drive.letter).map_err(io_err(format!("root of {}", drive.root)))?;
-        let journal = match win::query_journal(&handle).map_err(io_err(format!("query journal {}", drive.root)))? {
+        let create = opts.create_journal.then_some((opts.max_size, opts.allocation_delta));
+        let journal = match access.query_journal(create)? {
             Some(j) => j,
-            None if opts.create_journal => {
-                tracing::info!(volume = %drive.root, "creating USN journal");
-                win::create_journal(&handle, opts.max_size, opts.allocation_delta)
-                    .map_err(io_err(format!("create journal {}", drive.root)))?;
-                win::query_journal(&handle)
-                    .map_err(io_err(format!("query journal {}", drive.root)))?
-                    .ok_or(SourceError::Unsupported("USN journal unavailable"))?
-            }
+            None if opts.create_journal => return Err(SourceError::Unsupported("USN journal unavailable")),
             None => return Err(SourceError::Unsupported("USN journal disabled and creation not allowed")),
         };
-        Ok(Self { resume_usn: journal.next_usn, drive, handle, root_frn, journal, opts })
+        tracing::info!(volume = %drive.root, mode = access.mode(), journal = journal.id, "volume opened");
+        Ok(Self { resume_usn: journal.next_usn, drive, access, root_frn, journal, opts })
+    }
+
+    /// `"direct"` or `"service"`.
+    pub fn mode(&self) -> &'static str {
+        self.access.mode()
     }
 
     /// Continues from a persisted journal position instead of the current end. Fails
@@ -126,9 +142,7 @@ impl VolumeSource for NtfsSource {
         let root_frn = self.root_frn;
         // ReFS has no MFT; its (hashed) ids must not be mistaken for record 11.
         let mut extend_emitted = self.drive.fs_name != "NTFS";
-        // HighUsn = MAX: records modified while enumerating are included (not skipped);
-        // replaying the journal from the position captured in `open` is idempotent.
-        win::enum_mft(&self.handle, i64::MAX, |r| {
+        self.access.enum_mft(&mut |r| {
             if stop.is_stopped() {
                 failed = Some(SourceError::Stopped);
                 return false;
@@ -171,8 +185,7 @@ impl VolumeSource for NtfsSource {
                 sink.progress(done, 0);
             }
             true
-        })
-        .map_err(io_err(format!("enumerate MFT {}", self.drive.root)))?;
+        })?;
         if let Some(e) = failed {
             return Err(e);
         }
@@ -182,18 +195,18 @@ impl VolumeSource for NtfsSource {
     }
 
     fn watch(&mut self, volume: VolumeId, sink: &mut dyn ChangeSink, stop: &StopFlag) -> Result<(), SourceError> {
-        let mut buf = AlignedBuf::new(64 * 1024);
+        let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
         let mut next = self.resume_usn;
         let mut refresh_batch: ChangeBatch = Vec::new();
         while !stop.is_stopped() {
             let t = Instant::now();
-            let (new_next, len) = match win::read_journal(&self.handle, self.journal.id, next, true, &mut buf) {
+            let new_next = match self.access.read_journal(self.journal.id, next, &mut buf) {
                 Ok(v) => v,
                 Err(ReadError::Reset) => return Err(SourceError::JournalReset(self.drive.root.clone())),
                 Err(ReadError::Unavailable) => return Err(SourceError::Offline(self.drive.root.clone())),
                 Err(ReadError::Io(e)) => return Err(SourceError::io(format!("read journal {}", self.drive.root), e)),
             };
-            if len == 0 {
+            if buf.is_empty() {
                 sink.idle();
                 // The read normally blocks until a record arrives (event-driven). If it
                 // ever returns immediately without data, fall back to polling at the
@@ -204,8 +217,7 @@ impl VolumeSource for NtfsSource {
                 next = new_next.max(next);
                 continue;
             }
-            let bytes = buf.bytes(len + 8);
-            let parsed: Vec<_> = records(&bytes[8..]).filter_map(Result::ok).collect();
+            let parsed: Vec<_> = records(&buf).filter_map(Result::ok).collect();
             let folded = fold_records(volume, parsed);
             next = new_next;
             if !folded.changes.is_empty() && !sink.changes(folded.changes) {
@@ -213,7 +225,7 @@ impl VolumeSource for NtfsSource {
             }
             refresh_batch.clear();
             for frn in folded.refresh {
-                match win::stat_frn(&self.handle, frn) {
+                match self.access.stat(frn) {
                     Ok(meta) => refresh_batch.push(Change::Meta { target: EntryRef::Frn(volume, frn), meta }),
                     Err(e) => tracing::trace!(frn, error = %e, "stat by FRN failed (deleted meanwhile?)"),
                 }

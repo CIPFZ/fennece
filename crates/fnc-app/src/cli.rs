@@ -29,6 +29,8 @@ pub struct Cli {
     pub help: bool,
     /// `-version`.
     pub version: bool,
+    /// `-install-service` / `-uninstall-service`.
+    pub service: Option<ServiceAction>,
     /// `-reindex`: ignore the saved database and rebuild.
     pub reindex: bool,
     /// `-nodb`: neither load nor save the database.
@@ -39,6 +41,15 @@ pub struct Cli {
     pub modifiers: Vec<&'static str>,
     /// Unknown switches (reported as warnings).
     pub unknown: Vec<String>,
+}
+
+/// `-install-service` / `-uninstall-service`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceAction {
+    /// Register and start.
+    Install,
+    /// Stop and remove.
+    Uninstall,
 }
 
 /// Usage text (not localised: printed to the console for scripts).
@@ -59,6 +70,8 @@ fennec [options] [search text]
   -newwindow              open a new window
   -startup, -minimized    start hidden in the tray
   -exit, -quit            exit the running instance
+  -install-service        install fennec-service (index NTFS without admin rights)
+  -uninstall-service      remove fennec-service
   -reindex                rebuild the index (ignore the database)
   -nodb                   do not load or save the database
   -db <file.fnx>          use another database file
@@ -137,6 +150,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Cli {
             "verbose" | "debug" => cli.verbose = true,
             "first-instance" => cli.first_instance = true,
             "exit" | "quit" => cli.exit = true,
+            "install-service" => cli.service = Some(ServiceAction::Install),
+            "uninstall-service" => cli.service = Some(ServiceAction::Uninstall),
             "reindex" => cli.reindex = true,
             "nodb" | "no-db" => cli.no_db = true,
             "db" => cli.db = value(&mut it),

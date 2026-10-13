@@ -23,6 +23,11 @@ pub fn open_folder(path: &Path) -> io::Result<()> {
     imp::open(path)
 }
 
+/// Starts `exe args` with administrator rights (UAC prompt on Windows); does not wait.
+pub fn run_elevated(exe: &Path, args: &str) -> io::Result<()> {
+    imp::run_elevated(exe, args)
+}
+
 fn spawn(mut c: Command) -> io::Result<()> {
     c.spawn().map(|_| ())
 }
@@ -63,6 +68,28 @@ mod imp {
         }
     }
 
+    pub fn run_elevated(exe: &Path, args: &str) -> io::Result<()> {
+        let file = wide(exe.as_os_str());
+        let params = wide(std::ffi::OsStr::new(args));
+        let verb = wide(std::ffi::OsStr::new("runas"));
+        // SAFETY: all strings are NUL-terminated UTF-16 buffers that outlive the call.
+        let r = unsafe {
+            ShellExecuteW(
+                None,
+                PCWSTR(verb.as_ptr()),
+                PCWSTR(file.as_ptr()),
+                PCWSTR(params.as_ptr()),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if r.0 as usize > 32 {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!("ShellExecuteW(runas) failed ({})", r.0 as usize)))
+        }
+    }
+
     pub fn reveal(path: &Path) -> io::Result<()> {
         // `explorer /select,"C:\a b\c"` needs the quotes verbatim, so pass a raw arg.
         let mut c = Command::new("explorer.exe");
@@ -74,6 +101,11 @@ mod imp {
 #[cfg(target_os = "macos")]
 mod imp {
     use super::*;
+
+    pub fn run_elevated(exe: &Path, args: &str) -> io::Result<()> {
+        let _ = (exe, args);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "elevation is only supported on Windows"))
+    }
 
     pub fn open(path: &Path) -> io::Result<()> {
         let mut c = Command::new("open");
@@ -91,6 +123,11 @@ mod imp {
 #[cfg(all(unix, not(target_os = "macos")))]
 mod imp {
     use super::*;
+
+    pub fn run_elevated(exe: &Path, args: &str) -> io::Result<()> {
+        let _ = (exe, args);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "elevation is only supported on Windows"))
+    }
 
     pub fn open(path: &Path) -> io::Result<()> {
         let mut c = Command::new("xdg-open");
