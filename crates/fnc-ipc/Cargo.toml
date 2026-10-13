@@ -7,6 +7,23 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+fnc-core.workspace = true
+fnc-index.workspace = true
+fnc-query.workspace = true
+fnc-exec.workspace = true
+interprocess.workspace = true
+serde.workspace = true
+rmp-serde.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+crossbeam-channel.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+widestring.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
