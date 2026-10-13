@@ -222,9 +222,15 @@ impl FennecApp {
             act = if !cmds.is_empty() || clicked_outside { Act::Close } else { Act::Keep };
         } else {
             let mut open = true;
-            egui::Window::new(title).collapsible(false).resizable(true).open(&mut open).show(ctx, |ui| {
-                act = self.dialog_body(ui, &mut d, &mut cmds);
-            });
+            egui::Window::new(title)
+                .collapsible(false)
+                .resizable(true)
+                .pivot(egui::Align2::CENTER_CENTER)
+                .default_pos(ctx.content_rect().center())
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    act = self.dialog_body(ui, &mut d, &mut cmds);
+                });
             if !open {
                 act = Act::Close;
             }

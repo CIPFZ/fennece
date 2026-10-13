@@ -72,8 +72,8 @@ pub fn drag_files(paths: &[PathBuf]) -> io::Result<DragResult> {
     imp::drag_files(paths)
 }
 
-/// Deletes `paths`: to the recycle bin unless `permanent`. The shell shows its own
-/// confirmation. Returns `false` if the user cancelled.
+/// Deletes `paths`: to the recycle bin unless `permanent` (callers confirm permanent
+/// deletion themselves). Returns `false` if the user cancelled a shell prompt.
 pub fn delete(owner: Owner, paths: &[PathBuf], permanent: bool) -> io::Result<bool> {
     if paths.is_empty() {
         return Ok(true);
@@ -488,8 +488,9 @@ mod imp {
 
     pub fn delete(owner: Owner, paths: &[PathBuf], permanent: bool) -> io::Result<bool> {
         let _com = Com::init();
+        // The caller confirms permanent deletion itself (one prompt, not two).
         let flags = if permanent {
-            FOF_WANTNUKEWARNING.0
+            FOF_NOCONFIRMATION.0
         } else {
             FOF_ALLOWUNDO.0 | FOFX_RECYCLEONDELETE.0 | FOFX_ADDUNDORECORD.0
         };
