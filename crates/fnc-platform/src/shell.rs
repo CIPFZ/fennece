@@ -23,6 +23,17 @@ pub fn open_folder(path: &Path) -> io::Result<()> {
     imp::open(path)
 }
 
+/// Type description of files with extension `ext` (no dot; empty = none) or of a
+/// folder, as Explorer shows it ("Text Document"); `None` where the OS has none.
+pub fn type_name(ext: &str, is_dir: bool) -> Option<String> {
+    imp::type_name(ext, is_dir)
+}
+
+/// Mouse pointer position in screen pixels (Windows), for native popup menus.
+pub fn cursor_pos() -> Option<(i32, i32)> {
+    imp::cursor_pos()
+}
+
 /// Starts `exe args` with administrator rights (UAC prompt on Windows); does not wait.
 pub fn run_elevated(exe: &Path, args: &str) -> io::Result<()> {
     imp::run_elevated(exe, args)
@@ -68,6 +79,36 @@ mod imp {
         }
     }
 
+    pub fn cursor_pos() -> Option<(i32, i32)> {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let mut p = POINT::default();
+        // SAFETY: `p` is a valid out-parameter.
+        unsafe { GetCursorPos(&mut p) }.ok().map(|()| (p.x, p.y))
+    }
+
+    pub fn type_name(ext: &str, is_dir: bool) -> Option<String> {
+        use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL};
+        use windows::Win32::UI::Shell::{SHFILEINFOW, SHGFI_TYPENAME, SHGFI_USEFILEATTRIBUTES, SHGetFileInfoW};
+        // With SHGFI_USEFILEATTRIBUTES the name need not exist; only its extension counts.
+        let name = if is_dir { "folder".to_string() } else { format!("file.{ext}") };
+        let w = wide(std::ffi::OsStr::new(&name));
+        let attrs = if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_NORMAL };
+        let mut info = SHFILEINFOW::default();
+        // SAFETY: `w` is NUL-terminated; `info` is an owned out-structure of the size passed.
+        let r = unsafe {
+            SHGetFileInfoW(
+                PCWSTR(w.as_ptr()),
+                attrs,
+                Some(&mut info),
+                std::mem::size_of::<SHFILEINFOW>() as u32,
+                SHGFI_TYPENAME | SHGFI_USEFILEATTRIBUTES,
+            )
+        };
+        let n = info.szTypeName.iter().position(|&c| c == 0).unwrap_or(0);
+        (r != 0 && n > 0).then(|| String::from_utf16_lossy(&info.szTypeName[..n]))
+    }
+
     pub fn run_elevated(exe: &Path, args: &str) -> io::Result<()> {
         let file = wide(exe.as_os_str());
         let params = wide(std::ffi::OsStr::new(args));
@@ -102,6 +143,14 @@ mod imp {
 mod imp {
     use super::*;
 
+    pub fn type_name(_ext: &str, _is_dir: bool) -> Option<String> {
+        None
+    }
+
+    pub fn cursor_pos() -> Option<(i32, i32)> {
+        None
+    }
+
     pub fn run_elevated(exe: &Path, args: &str) -> io::Result<()> {
         let _ = (exe, args);
         Err(io::Error::new(io::ErrorKind::Unsupported, "elevation is only supported on Windows"))
@@ -123,6 +172,14 @@ mod imp {
 #[cfg(all(unix, not(target_os = "macos")))]
 mod imp {
     use super::*;
+
+    pub fn type_name(_ext: &str, _is_dir: bool) -> Option<String> {
+        None
+    }
+
+    pub fn cursor_pos() -> Option<(i32, i32)> {
+        None
+    }
 
     pub fn run_elevated(exe: &Path, args: &str) -> io::Result<()> {
         let _ = (exe, args);

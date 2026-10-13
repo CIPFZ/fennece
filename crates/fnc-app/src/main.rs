@@ -5,8 +5,12 @@
 
 mod app;
 mod cli;
+mod columns;
+mod commands;
+mod filters;
 mod fonts;
 mod format;
+mod history;
 mod i18n;
 mod icon;
 mod indexer;
@@ -186,7 +190,7 @@ fn run() -> anyhow::Result<()> {
 
 /// `-install-service` / `-uninstall-service`: runs `fennec-service.exe` (next to this
 /// executable), elevating through UAC when needed.
-fn service_command(action: cli::ServiceAction, instance: &str) -> anyhow::Result<()> {
+pub(crate) fn service_command(action: cli::ServiceAction, instance: &str) -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
     let name = if cfg!(windows) { "fennec-service.exe" } else { "fennec-service" };
     let svc = exe.with_file_name(name);

@@ -151,3 +151,77 @@ fn ui01_scrolling_one_million_results() {
     eprintln!("UI-01 frame CPU time over 300 page-downs: mean {mean:?}, p50 {p50:?}, p95 {p95:?}");
     assert!(mean < Duration::from_millis(18), "mean frame {mean:?} (< 18 ms for 55 fps)");
 }
+
+/// UI-08: Options → Advanced, filter "delay": `search_delay` is listed and editable,
+/// and OK applies it.
+#[test]
+fn ui08_advanced_page_lists_and_edits_search_delay() {
+    let shared = SharedIndex::default();
+    let mut h = harness(deps_for(None, shared));
+    h.step();
+    let keymap = h.state().keymap.clone();
+    let settings = h.state().settings.clone();
+    h.state_mut().options_window = Some(super::options::OptionsState::new(&settings, &keymap).advanced("delay"));
+    h.run_steps(3);
+    h.get_by_label("search_delay");
+    // The editor next to it is the only numeric text field on the filtered page.
+    let fields = h.get_all_by_role(Role::TextInput).count();
+    assert!(fields >= 2, "filter box + search_delay editor");
+    let editor = h.get_all_by_role(Role::TextInput).find(|n| n.value().as_deref() == Some("0")).unwrap();
+    editor.focus();
+    h.step();
+    h.key_press(egui::Key::Backspace);
+    h.step();
+    h.get_all_by_role(Role::TextInput).find(|n| n.value().as_deref() == Some("")).unwrap().type_text("250");
+    h.step();
+    h.get_by_label(&t("options-ok")).click();
+    h.run_steps(3);
+    assert!(h.state().options_window.is_none());
+    assert_eq!(h.state().settings.search_delay, 250);
+}
+
+/// UI-07: switching to dark mode applies to every panel at once.
+#[test]
+fn ui07_dark_mode_applies_immediately() {
+    let mut h = harness(deps_for(None, SharedIndex::default()));
+    h.step();
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Command::ThemeDark);
+    h.run_steps(2);
+    assert_eq!(h.ctx.theme(), egui::Theme::Dark);
+    h.state_mut().run(&ctx, Command::ThemeLight);
+    h.run_steps(2);
+    assert_eq!(h.ctx.theme(), egui::Theme::Light);
+}
+
+/// Commands, multi-selection and copy-as-text on real results.
+#[test]
+fn selection_commands_and_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.results.len() == 7);
+    h.get_by_role(Role::TextInput).type_text("img");
+    wait_until(&mut h, "img", |a| a.results.len() == 2 && a.sent_query.as_deref() == Some("img"));
+    let ctx = h.ctx.clone();
+    h.state_mut().run(&ctx, Command::SelectAll);
+    assert_eq!(h.state().target_ids().len(), 2);
+    h.state_mut().run(&ctx, Command::InvertSelection);
+    assert!(h.state().target_ids().is_empty() || h.state().sel.ids.is_empty());
+    h.state_mut().run(&ctx, Command::MoveDown);
+    h.state_mut().run(&ctx, Command::ExtendDown);
+    assert_eq!(h.state().sel.ids.len(), 2);
+    let paths: Vec<String> = h.state().target_paths().iter().map(|(_, p)| p.display().to_string()).collect();
+    assert!(paths.iter().all(|p| p.contains("Photos")), "{paths:?}");
+    // Omit hides the rows until the search changes.
+    h.state_mut().run(&ctx, Command::Omit);
+    assert_eq!(h.state().results.len(), 0);
+    // `/key=value` inline command.
+    h.state_mut().inline_command(&ctx, "/search_delay=7");
+    assert_eq!(h.state().settings.search_delay, 7);
+    // Sorting by a second key from the header model.
+    let mut spec = h.state().sort;
+    spec.push_key(fnc_exec::SortColumn::Size, false);
+    assert_eq!(spec.keys().count(), 2);
+}

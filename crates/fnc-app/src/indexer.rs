@@ -92,6 +92,7 @@ type Callback = Arc<dyn Fn() + Send + Sync>;
 pub struct Indexer {
     stop: StopFlag,
     saver: Arc<Saver>,
+    paused: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Indexer {
@@ -111,12 +112,32 @@ impl Indexer {
             published: false.into(),
             last: parking_lot::Mutex::new(u64::MAX),
         });
-        let ctx = RunCtx { shared, refresh, events, notify, stop: stop.clone(), saver: saver.clone() };
+        let paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ctx = RunCtx {
+            shared,
+            refresh,
+            events,
+            notify,
+            stop: stop.clone(),
+            saver: saver.clone(),
+            paused: paused.clone(),
+        };
         let spawn = std::thread::Builder::new().name("fennec-indexer".into()).spawn(move || run(cfg, ctx));
         if let Err(e) = spawn {
             tracing::error!(error = %e, "cannot start indexer");
         }
-        Self { stop, saver }
+        Self { stop, saver, paused }
+    }
+
+    /// "Pause indexing updates": journal changes are held back (the journal keeps them)
+    /// until resumed.
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether updates are paused.
+    pub fn paused(&self) -> bool {
+        self.paused.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Stops all indexing threads (they exit at their next check).
@@ -139,7 +160,7 @@ impl Indexer {
             published: false.into(),
             last: parking_lot::Mutex::new(0),
         });
-        Self { stop: StopFlag::new(), saver }
+        Self { stop: StopFlag::new(), saver, paused: Arc::default() }
     }
 }
 
@@ -278,7 +299,7 @@ fn enumerate_into(
 }
 
 fn run(cfg: IndexerConfig, ctx: RunCtx) {
-    let RunCtx { shared, refresh, events, notify, stop, saver } = ctx;
+    let RunCtx { shared, refresh, events, notify, stop, saver, paused } = ctx;
     let emit = Emitter { tx: events, notify };
     let t0 = Instant::now();
     emit.status(IndexStatus::Starting);
@@ -439,6 +460,7 @@ fn run(cfg: IndexerConfig, ctx: RunCtx) {
         emit,
         refresher,
         active: parking_lot::Mutex::new(std::collections::HashSet::new()),
+        paused,
     });
     for (vol, src) in volumes {
         let wants_meta = needs_meta.contains(&vol);
@@ -463,6 +485,7 @@ struct Workers {
     refresher: Refresher,
     /// GUIDs of volumes being watched.
     active: parking_lot::Mutex<std::collections::HashSet<String>>,
+    paused: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Workers {
@@ -508,7 +531,13 @@ impl Workers {
                 done(vol, complete);
             }
             let name = src.info().display_name;
-            let mut sink = WatchSink { shared: me.shared.clone(), refresher: me.refresher.clone(), vol };
+            let mut sink = WatchSink {
+                shared: me.shared.clone(),
+                refresher: me.refresher.clone(),
+                vol,
+                paused: me.paused.clone(),
+                stop: me.stop.clone(),
+            };
             match src.watch(vol, &mut sink, &me.stop) {
                 Ok(()) | Err(SourceError::Stopped | SourceError::Unsupported(_)) => {}
                 Err(SourceError::Offline(_)) => {
@@ -638,6 +667,7 @@ struct RunCtx {
     notify: Callback,
     stop: StopFlag,
     saver: Arc<Saver>,
+    paused: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Writes the database: periodically, on demand and at exit (SPEC ch.1 §5.3).
@@ -722,6 +752,8 @@ struct WatchSink {
     shared: SharedIndex,
     refresher: Refresher,
     vol: VolumeId,
+    paused: Arc<std::sync::atomic::AtomicBool>,
+    stop: StopFlag,
 }
 
 /// Maximum changes applied under one write lock (keeps lock hold time < 5 ms).
@@ -729,6 +761,10 @@ const MAX_BATCH: usize = 4096;
 
 impl ChangeSink for WatchSink {
     fn changes(&mut self, mut batch: ChangeBatch) -> bool {
+        // Paused: hold this batch (and the journal reader) until resumed.
+        while self.paused.load(std::sync::atomic::Ordering::Relaxed) && !self.stop.is_stopped() {
+            std::thread::sleep(Duration::from_millis(200));
+        }
         let mut changed = false;
         while !batch.is_empty() {
             let rest = if batch.len() > MAX_BATCH { batch.split_off(MAX_BATCH) } else { Vec::new() };
@@ -1239,7 +1275,8 @@ mod tests {
 
         let handle = engine.handle();
         let refresher = Refresher::spawn(Arc::new(move || handle.refresh()));
-        let mut sink = WatchSink { shared: shared.clone(), refresher, vol };
+        let mut sink =
+            WatchSink { shared: shared.clone(), refresher, vol, paused: Arc::default(), stop: StopFlag::new() };
         let t0 = Instant::now();
         sink.changes(vec![Change::Create {
             volume: vol,

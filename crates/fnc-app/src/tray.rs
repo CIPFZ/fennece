@@ -18,6 +18,10 @@ pub enum ShellEvent {
     Toggle,
     /// "Show" menu item or hotkey: show and focus the search box.
     Show,
+    /// "Options" menu item.
+    Options,
+    /// "Pause indexing updates" menu item.
+    TogglePause,
     /// "Exit" menu item.
     Exit,
 }
@@ -47,18 +51,24 @@ fn build_tray(ctx: &egui::Context, tx: &Sender<ShellEvent>) -> Option<TrayIcon> 
     let (rgba, w, h) = crate::icon::tray_rgba()?;
     let icon = tray_icon::Icon::from_rgba(rgba, w, h).ok()?;
     let show = MenuItem::new(t("tray-show"), true, None);
+    let options = MenuItem::new(t("tray-options"), true, None);
+    let pause = MenuItem::new(t("tray-pause"), true, None);
     let exit = MenuItem::new(t("tray-exit"), true, None);
     let menu = Menu::new();
-    if let Err(e) = menu.append_items(&[&show, &PredefinedMenuItem::separator(), &exit]) {
+    let sep = PredefinedMenuItem::separator();
+    if let Err(e) = menu.append_items(&[&show, &options, &pause, &sep, &exit]) {
         tracing::warn!(error = %e, "tray menu");
     }
-    let (show_id, exit_id) = (show.id().clone(), exit.id().clone());
+    let ids = [
+        (show.id().clone(), ShellEvent::Show),
+        (options.id().clone(), ShellEvent::Options),
+        (pause.id().clone(), ShellEvent::TogglePause),
+        (exit.id().clone(), ShellEvent::Exit),
+    ];
     let (tx_menu, ctx_menu) = (tx.clone(), ctx.clone());
     MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
-        if e.id == show_id {
-            send(&tx_menu, &ctx_menu, ShellEvent::Show);
-        } else if e.id == exit_id {
-            send(&tx_menu, &ctx_menu, ShellEvent::Exit);
+        if let Some((_, ev)) = ids.iter().find(|(id, _)| *id == e.id) {
+            send(&tx_menu, &ctx_menu, *ev);
         }
     }));
     let (tx_icon, ctx_icon) = (tx.clone(), ctx.clone());
