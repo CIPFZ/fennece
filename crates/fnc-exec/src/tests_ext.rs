@@ -153,6 +153,7 @@ impl<'a> Run<'a> {
             hashes: Some(&self.hashes),
             on_demand: self.on_demand.as_ref(),
             policy: self.policy,
+            semantic: None,
         };
         execute_ext(&p, self.s, &ExecCtx { cancel: &cancel, prev: None, caches: &caches }, &ext).unwrap()
     }

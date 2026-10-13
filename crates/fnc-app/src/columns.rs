@@ -246,6 +246,7 @@ fn sort_key(c: SortColumn) -> &'static str {
         SortColumn::Depth => "depth",
         SortColumn::NameLength => "name-length",
         SortColumn::Frn => "frn",
+        SortColumn::Relevance => "relevance",
     }
 }
 

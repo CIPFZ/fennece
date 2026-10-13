@@ -20,6 +20,7 @@ pub mod filter;
 pub mod funcs;
 pub mod parser;
 pub mod plan;
+pub mod semantic;
 pub mod size;
 
 pub use ast::{CmpOp, Expr, MacroRef, ModSet, Modifier, Term, Value};
@@ -28,6 +29,7 @@ pub use filter::{Filter, FilterSet, combine_filter};
 pub use funcs::{FuncId, MacroId, ValueKind};
 pub use parser::{Diag, DiagKind, ParseEnv, Parsed, Span, SpanKind, UserMacro, parse};
 pub use plan::{InputSet, Node, OmitSet, PinyinMode, PlanEnv, PlannedQuery, Pred, TextPred, plan};
+pub use semantic::SemPred;
 
 #[cfg(test)]
 mod tests;

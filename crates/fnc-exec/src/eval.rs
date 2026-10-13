@@ -218,6 +218,8 @@ pub struct Compiled {
     pub errors: Vec<String>,
     /// Slow-path state of property/content/hash leaves (`None` when the plan has none).
     pub(crate) slow: Option<Arc<SlowState>>,
+    /// Hits of nested semantic terms, computed before compiling.
+    pub(crate) semantic: HashMap<fnc_query::semantic::SemPred, Arc<crate::semantic::SemSet>>,
 }
 
 fn needs_paths(n: &Node) -> bool {
@@ -250,6 +252,18 @@ impl Compiled {
         cancel: &CancelToken,
         ext: &ExtCtx<'_>,
     ) -> Result<Self, Cancelled> {
+        Self::with_ext_semantic(root, s, caches, cancel, ext, HashMap::new())
+    }
+
+    /// [`Compiled::with_ext`] with precomputed hits of nested semantic terms.
+    pub fn with_ext_semantic(
+        root: &Node,
+        s: &IndexStore,
+        caches: &Caches,
+        cancel: &CancelToken,
+        ext: &ExtCtx<'_>,
+        semantic: HashMap<fnc_query::semantic::SemPred, Arc<crate::semantic::SemSet>>,
+    ) -> Result<Self, Cancelled> {
         let dir_paths = needs_paths(root).then(|| caches.dir_paths(s));
         let slow = uses_stores(root).then(|| {
             let mut st = SlowState::new(ext, cancel, caches);
@@ -262,7 +276,7 @@ impl Compiled {
         });
         let mut algos = Vec::new();
         collect_hashes(root, &mut algos);
-        let mut c = Compiled { root: CNode::All, dir_paths, errors: Vec::new(), slow };
+        let mut c = Compiled { root: CNode::All, dir_paths, errors: Vec::new(), slow, semantic };
         c.root = c.compile(root, s, caches, cancel, ext, &algos)?;
         Ok(c)
     }
@@ -600,6 +614,10 @@ impl Compiled {
                 let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
                 Leaf::Extension(Box::new(ExtLeaf::Hash(compile_hash(h, algos, ext, &slow))))
             }
+            Pred::Semantic(p) => match self.semantic.get(p) {
+                Some(set) => Leaf::In(set.bits.clone()),
+                None => Leaf::Nothing,
+            },
             Pred::Set(_) => Leaf::Nothing,
             Pred::Unsupported(_) | Pred::Invalid(_) => Leaf::Nothing,
         })

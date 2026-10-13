@@ -742,7 +742,7 @@ impl IndexBackend {
 pub fn column_of(c: fnc_exec::SortColumn) -> Column {
     use fnc_exec::SortColumn as S;
     match c {
-        S::Name | S::NameLength | S::Frn | S::Depth | S::IndexSource => Column::Name,
+        S::Name | S::NameLength | S::Frn | S::Depth | S::IndexSource | S::Relevance => Column::Name,
         S::Path => Column::Path,
         S::FullPath => Column::FullPath,
         S::Size => Column::Size,

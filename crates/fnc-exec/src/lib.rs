@@ -21,6 +21,7 @@ pub mod highlight;
 pub mod matcher;
 pub mod paths;
 pub mod pinyin;
+pub mod semantic;
 pub mod sets;
 pub mod sort;
 pub mod tree;
@@ -35,6 +36,7 @@ pub use exec::{
 };
 pub use ext::{ExecWarning, ExtCtx, Shared, SlowPolicy, content_highlights};
 pub use highlight::Highlighter;
+pub use semantic::SemanticSource;
 pub use sort::{SortColumn, SortKey, SortSpec, sort_ids, sort_ids_ext};
 pub use types::{TypeNameFn, TypeNames};
 
@@ -42,3 +44,5 @@ pub use types::{TypeNameFn, TypeNames};
 mod tests;
 #[cfg(test)]
 mod tests_ext;
+#[cfg(test)]
+mod tests_sem;
