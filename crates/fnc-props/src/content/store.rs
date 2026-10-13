@@ -743,8 +743,10 @@ impl ContentStore {
         }
         w.segment(*b"TOKS", &dict.0);
         let mut docs = Enc::default();
-        docs.u32(self.docs.len() as u32);
-        for d in &self.docs {
+        // One entry per row of `ROWS` (rows without a document are written empty).
+        let rows = self.rows.rows();
+        docs.u32(rows as u32);
+        for d in (0..rows).map(|r| self.docs.get(r).and_then(Option::as_ref)) {
             match d {
                 None => docs.u8(0),
                 Some(d) => {
@@ -1026,6 +1028,35 @@ mod tests {
         assert!(c.search_text("quarterly").is_empty());
         assert_eq!(c.search_text("季度").len(), 1);
         assert!(c.compressed_bytes() > 0 && c.text_bytes() > 0 && c.heap_bytes() > 0);
+    }
+
+    #[test]
+    fn reload_after_changed_entries_and_save_again() {
+        let (s, c) = sample();
+        // n2.txt changes size: its row is dropped on load; the reloaded store must save
+        // and load again (rows and documents stay aligned).
+        let mut s2 = s.clone();
+        s2.apply(vec![fnc_index::Change::Meta {
+            target: fnc_index::EntryRef::Id(id(&s2, 4)),
+            meta: fnc_index::Meta { size: Some(1), ..fnc_index::Meta::default() },
+        }]);
+        let d = ContentStore::from_bytes(&c.to_bytes(&s).unwrap(), &s2).unwrap();
+        assert_eq!(d.len(), 4);
+        assert!(!d.has(id(&s2, 4)));
+        let e = ContentStore::from_bytes(&d.to_bytes(&s2).unwrap(), &s2).unwrap();
+        assert_eq!(e.len(), 4);
+        assert_eq!(e.search_text("quarterly").len(), 2, "n0 and n1; n4 was dropped");
+        // Same for the property store.
+        let mut p = crate::store::PropertyStore::new(s.instance());
+        p.set_indexed(&[crate::PropertyId::WIDTH]);
+        for i in 0..5 {
+            p.insert(id(&s, i), vec![(crate::PropertyId::WIDTH, crate::Value::Int(i as i64))]);
+        }
+        let q = crate::store::PropertyStore::from_bytes(&p.to_bytes(&s).unwrap(), &s2).unwrap();
+        assert_eq!(q.len(), 4);
+        let r = crate::store::PropertyStore::from_bytes(&q.to_bytes(&s2).unwrap(), &s2).unwrap();
+        assert_eq!(r.get(id(&s2, 3), crate::PropertyId::WIDTH), Some(crate::Value::Int(3)));
+        assert_eq!(r.len(), 4);
     }
 
     #[test]
