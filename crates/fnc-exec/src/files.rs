@@ -21,6 +21,27 @@ use fnc_props::{recycle, signature};
 use crate::eval::{Bits, Compiled, Scratch, TextLeaf};
 use crate::ext::{FileText, SlowState};
 
+/// Compiled `parent+N:` (N ≥ 1): the folder `up` levels above the entry's parent is in
+/// `set` (folders whose full path matches).
+pub struct ParentUpLeaf {
+    pub(crate) set: Bits,
+    pub(crate) up: u8,
+}
+
+impl ParentUpLeaf {
+    /// Evaluates entry `id` (at most `up + 1` parent steps).
+    pub(crate) fn eval(&self, s: &IndexStore, id: EntryId) -> bool {
+        let mut p = s.parent(id);
+        for _ in 0..self.up {
+            if !p.is_some() {
+                return false;
+            }
+            p = s.parent(p);
+        }
+        p.is_some() && self.set.get(p.idx())
+    }
+}
+
 /// Compiled `target:` leaf.
 pub struct TargetLeaf {
     /// Pattern (`None`: any readable target).

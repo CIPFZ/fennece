@@ -5,7 +5,10 @@
 //! * [`eval`] — plan compilation (precomputed folder sets, counts) and per-entry
 //!   evaluation.
 //! * [`exec`] — parallel 64K-block scans with cancellation and result-set reuse.
-//! * [`sort`] — result ordering (name fast-sort ranks, folders first).
+//! * [`sort`] — result ordering (name fast-sort ranks, folders first, property, custom
+//!   formula and type-description keys).
+//! * [`files`] — `target:`, `fsi:` and `recycled:` (file reads on the slow path, recycle
+//!   bin membership from the index).
 //! * [`highlight`] — match ranges for visible rows.
 //! * [`engine`] — the background search service used by every front end.
 

@@ -949,6 +949,8 @@ pub enum ExtLeaf {
     Signature(crate::files::SignatureLeaf),
     /// Recycle bin original path (`recycled:<text>`).
     Recycled(crate::files::RecycledLeaf),
+    /// `parent+N:` (index only; boxed here to keep the literal evaluator unchanged).
+    ParentUp(crate::files::ParentUpLeaf),
 }
 
 impl ExtLeaf {
@@ -964,6 +966,7 @@ impl ExtLeaf {
             ExtLeaf::Target(t) => t.eval(s, id, sc),
             ExtLeaf::Signature(f) => f.eval(s, id, sc),
             ExtLeaf::Recycled(r) => r.eval(s, id, sc),
+            ExtLeaf::ParentUp(p) => p.eval(s, id),
         }
     }
 }

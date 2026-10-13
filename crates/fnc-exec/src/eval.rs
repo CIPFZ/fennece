@@ -138,8 +138,6 @@ pub enum Leaf {
     Empty(Arc<ChildCounts>),
     /// Parent folder in set.
     ParentIn(Bits),
-    /// The folder `up` levels above the parent is in the set (`parent+N:`).
-    ParentUpIn(Bits, u8),
     /// Some ancestor in set.
     AncestorIn(Bits),
     /// The entry itself or an ancestor in set.
@@ -293,16 +291,23 @@ impl Compiled {
         self.slow.as_ref().map(|s| s.content_hits.lock().clone()).unwrap_or_default()
     }
 
-    pub(crate) fn text_leaf(&mut self, t: &TextPred, s: &IndexStore) -> Option<TextLeaf> {
-        let pattern = match compile_pattern(t) {
-            Ok(p) => p,
+    /// Text leaf for values matched with [`Compiled::match_str`] (link targets, list
+    /// files, original paths): no folder fast path, which only helps index subjects.
+    pub(crate) fn value_leaf(&mut self, t: &TextPred) -> Option<TextLeaf> {
+        match compile_pattern(t) {
+            Ok(pattern) => {
+                Some(TextLeaf { pattern, pred: t.clone(), mode: subject_mode(t), dir_hit: None, needle_len: 0 })
+            }
             Err(e) => {
                 self.errors.push(e.to_string());
-                return None;
+                None
             }
-        };
-        let mode = subject_mode(t);
-        let mut leaf = TextLeaf { pattern, pred: t.clone(), mode, dir_hit: None, needle_len: 0 };
+        }
+    }
+
+    pub(crate) fn text_leaf(&mut self, t: &TextPred, s: &IndexStore) -> Option<TextLeaf> {
+        let mut leaf = self.value_leaf(t)?;
+        let mode = leaf.mode;
         if t.target == Target::FullPath
             && mode == SubjectMode::StoredFold
             && t.kind == PatternKind::Substring
@@ -416,7 +421,7 @@ impl Compiled {
     /// (or full path, for patterns with a separator) matches.
     fn file_list_name(&mut self, t: Option<&TextPred>, s: &IndexStore) -> Leaf {
         let leaf = match t {
-            Some(t) => match self.text_leaf(t, s) {
+            Some(t) => match self.value_leaf(t) {
                 Some(l) => Some(l),
                 None => return Leaf::Nothing,
             },
@@ -540,12 +545,15 @@ impl Compiled {
             Pred::Root => Leaf::Root,
             Pred::Empty => Leaf::Empty(caches.child_counts(s)),
             Pred::Parent(t) => Leaf::ParentIn(self.folder_set(t, s)),
-            Pred::ParentUp(up, t) => Leaf::ParentUpIn(self.folder_set(t, s), *up),
+            Pred::ParentUp(up, t) => Leaf::Extension(Box::new(ExtLeaf::ParentUp(crate::files::ParentUpLeaf {
+                set: self.folder_set(t, s),
+                up: *up,
+            }))),
             Pred::FileListName(t) => self.file_list_name(t.as_ref(), s),
             Pred::LinkTarget(t) => {
                 let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
                 let text = match t {
-                    Some(t) => match self.text_leaf(t, s) {
+                    Some(t) => match self.value_leaf(t) {
                         Some(l) => Some(Box::new(l)),
                         None => return Ok(Leaf::Nothing),
                     },
@@ -576,7 +584,7 @@ impl Compiled {
             Pred::Recycled(None) => Leaf::In(crate::files::recycle_sets(s).all),
             Pred::Recycled(Some(t)) => {
                 let Some(slow) = self.slow.clone() else { return Ok(Leaf::Nothing) };
-                let Some(text) = self.text_leaf(t, s) else { return Ok(Leaf::Nothing) };
+                let Some(text) = self.value_leaf(t) else { return Ok(Leaf::Nothing) };
                 if slow.on_demand.is_none() {
                     slow.warn(ExtWarning::NoFileAccess("recycled"));
                 }
@@ -976,16 +984,6 @@ impl Compiled {
             }
             Leaf::ParentIn(set) => {
                 let p = s.parent(id);
-                p.is_some() && set.get(p.idx())
-            }
-            Leaf::ParentUpIn(set, up) => {
-                let mut p = s.parent(id);
-                for _ in 0..*up {
-                    if !p.is_some() {
-                        return false;
-                    }
-                    p = s.parent(p);
-                }
                 p.is_some() && set.get(p.idx())
             }
             Leaf::AncestorIn(set) => Self::ancestor_in(set, s, s.parent(id)),
