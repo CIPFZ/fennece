@@ -271,7 +271,11 @@ fn run(
         Arc::new(move || {
             let finished = done_meta.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             if finished == total_meta {
-                let entries = shared.snapshot().live_count();
+                let (entries, heap) = {
+                    let s = shared.snapshot();
+                    (s.live_count(), s.heap_bytes())
+                };
+                tracing::info!(entries, heap_mib = heap / (1 << 20), "index ready");
                 emit.status(IndexStatus::Ready { entries, seconds: t0.elapsed().as_secs_f64() });
             }
         })
