@@ -451,3 +451,14 @@ fn touch_inserts_unknown_files_and_renames_folders() {
     }]);
     assert_eq!(path(&s, s.resolve(EntryRef::Frn(vol, 90)).unwrap()), "C:\\Users2\\missed.txt");
 }
+
+#[test]
+fn initial_metadata_is_not_a_recent_change() {
+    let (mut s, vol) = sample();
+    let cmd = s.resolve(EntryRef::Frn(vol, 12)).unwrap();
+    s.apply_initial(vec![Change::Meta { target: EntryRef::Id(cmd), meta: file(9) }]);
+    assert_eq!(s.size(cmd), Some(9));
+    assert!(!s.date_recently_changed(cmd).is_known());
+    s.apply(vec![Change::Meta { target: EntryRef::Id(cmd), meta: file(10) }]);
+    assert!(s.date_recently_changed(cmd).is_known());
+}

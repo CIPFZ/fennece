@@ -271,8 +271,13 @@ fn run(
         Arc::new(move || {
             let finished = done_meta.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             if finished == total_meta {
+                // Rows added by the back-fill (hard-link names) grew the columns
+                // geometrically; give the slack back once (one-time, tens of ms).
                 let (entries, heap) = {
-                    let s = shared.snapshot();
+                    let mut s = shared.write();
+                    s.shrink_to_fit();
+                    // Fold the alias rows out of the children overlay into the CSR.
+                    s.rebuild_children();
                     (s.live_count(), s.heap_bytes())
                 };
                 tracing::info!(entries, heap_mib = heap / (1 << 20), "index ready");
@@ -460,7 +465,7 @@ fn fill_metadata(
         let mut batch = std::mem::take(&mut collector.out);
         while !batch.is_empty() {
             let rest = if batch.len() > MAX_BATCH { batch.split_off(MAX_BATCH) } else { Vec::new() };
-            shared.write().apply(batch);
+            shared.write().apply_initial(batch);
             batch = rest;
         }
         refresher.poke();

@@ -83,6 +83,8 @@ pub struct IndexStore {
     /// Additional (hard-link) names per file: `(volume, frn)` → alias rows. The FRN map
     /// points at the primary row.
     pub(crate) links: HashMap<(VolumeId, u64), Vec<EntryId>>,
+    /// `false` while applying initial metadata (not changes: no index-journal entry).
+    record_recent: bool,
     generation: u64,
     tree_generation: u64,
     instance: u64,
@@ -123,6 +125,7 @@ impl Clone for IndexStore {
             orphans: self.orphans.clone(),
             name_order: self.name_order.clone(),
             links: self.links.clone(),
+            record_recent: true,
             generation: self.generation,
             tree_generation: self.tree_generation,
             instance: next_instance(),
@@ -164,6 +167,7 @@ impl IndexStore {
             orphans: Vec::new(),
             name_order: NameOrder::default(),
             links: HashMap::new(),
+            record_recent: true,
             generation: 0,
             tree_generation: 0,
             instance: next_instance(),
@@ -211,6 +215,8 @@ impl IndexStore {
             da.shrink_to_fit();
         }
         self.attr.shrink_to_fit();
+        self.recent.shrink_to_fit();
+        self.links.shrink_to_fit();
         self.scratch = Vec::new();
     }
 
@@ -683,6 +689,23 @@ impl IndexStore {
 
     // ------------------------------------------------------------------ changes
 
+    /// Like [`IndexStore::apply`] for metadata that completes the initial index (size and
+    /// date back-fill, hard-link names found while listing): the entries did not change,
+    /// so nothing is recorded in the index journal (`date-recently-changed:`).
+    pub fn apply_initial(&mut self, batch: ChangeBatch) -> ApplyStats {
+        self.record_recent = false;
+        let stats = self.apply(batch);
+        self.record_recent = true;
+        stats
+    }
+
+    #[inline]
+    fn mark_recent(&mut self, id: EntryId, now: FileTime) {
+        if self.record_recent {
+            self.recent.insert(id, now);
+        }
+    }
+
     /// Applies a batch of changes. Callers keep batches small enough that the write
     /// lock is held < 5 ms (SPEC ch.0 §4.3).
     ///
@@ -764,7 +787,7 @@ impl IndexStore {
                     // Every name of a hard-linked file shares its metadata.
                     for n in self.names_of(id) {
                         self.update_meta(n, &meta);
-                        self.recent.insert(n, now);
+                        self.mark_recent(n, now);
                     }
                     stats.updated += 1;
                 }
@@ -834,7 +857,7 @@ impl IndexStore {
                 self.links.entry((volume, frn)).or_default().push(id);
                 self.children.add(p, id);
                 self.name_order.mark_dirty(id);
-                self.recent.insert(id, now);
+                self.mark_recent(id, now);
                 stats.created += 1;
             }
             Err(e) => {
@@ -886,7 +909,7 @@ impl IndexStore {
                 self.frn_maps[volume.idx()].insert(frn, id);
                 self.children.add(p, id);
                 self.name_order.mark_dirty(id);
-                self.recent.insert(id, now);
+                self.mark_recent(id, now);
                 stats.created += 1;
                 self.is_dir(id)
             }
@@ -932,7 +955,7 @@ impl IndexStore {
             self.parent[id.idx()] = new_parent;
             self.children.add(new_parent, id);
         }
-        self.recent.insert(id, now);
+        self.mark_recent(id, now);
     }
 
     fn update_meta(&mut self, id: EntryId, meta: &Meta) {
@@ -990,7 +1013,7 @@ impl IndexStore {
             self.names.clear_item(i);
             self.folds.clear_item(i);
             self.run.remove(&d);
-            self.recent.insert(d, now);
+            self.mark_recent(d, now);
             self.live -= 1;
         }
         doomed.len()
