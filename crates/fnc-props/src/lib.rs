@@ -1,17 +1,23 @@
-//! Fennec property, content, hash and duplicate extraction.
+//! Fennec property, content, hash and duplicate support (SPEC ch.1 §8, §9, §11).
 //!
-//! Scheduled for milestone M3 (SPEC ch.6 §3). The crate exists from M0 so the
-//! workspace layout, dependency graph and CI are final; see `README.md`.
+//! Provisional crate root; the integration contract is documented once all modules land.
 
 #![forbid(unsafe_code)]
 
-/// Milestone in which this crate's functionality lands.
-pub const MILESTONE: &str = "M3";
+pub mod config;
+pub mod content;
+#[cfg(feature = "extract")]
+pub mod extract;
+pub mod fnx;
+pub mod hash;
+#[cfg(feature = "extract")]
+pub mod ondemand;
+pub mod rows;
+pub mod schema;
+pub mod store;
+pub mod value;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn builds() {
-        assert_eq!(super::MILESTONE, "M3");
-    }
-}
+pub use config::{ContentIndexConfig, ContentLimits, PropertyIndexConfig, Scope};
+pub use schema::{Extractor, PROPERTIES, PropType, PropertyDef, PropertyId, Unit};
+pub use store::{ColumnView, PropertyIndex, PropertySnapshot, PropertyStore, ValueRef};
+pub use value::{Value, display};
