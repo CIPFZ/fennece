@@ -53,3 +53,18 @@ fn sem06_off_means_no_semantic_source() {
     assert!(h.state().semantic_status().is_none());
     assert!(h.query_by_label("Semantic").is_none());
 }
+
+#[test]
+fn semantic_searches_sort_by_relevance_and_restore_the_sort() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }));
+    let before = h.state().v.sort;
+    h.state_mut().set_query("sem:budget".into());
+    assert_eq!(h.state().v.sort.column, fnc_exec::SortColumn::Relevance);
+    assert!(!h.state().v.sort.ascending);
+    h.state_mut().set_query("report".into());
+    assert_eq!(h.state().v.sort, before);
+}

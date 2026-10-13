@@ -195,6 +195,8 @@ pub(super) struct View {
     /// Last refresh requested because the index moved on (tabs and windows other than
     /// the first view are not notified by the indexer).
     stale_refresh: Option<Instant>,
+    /// Sort to restore when the search stops being semantic.
+    sort_before_semantic: Option<SortSpec>,
     /// Find bar (Ctrl+F in find-bar mode).
     find: findbar::FindBar,
     /// Back/forward through the tab's searches.
@@ -388,6 +390,7 @@ impl FennecApp {
                 grid_cols: 1,
                 preview: preview::PreviewState::default(),
                 stale_refresh: None,
+                sort_before_semantic: None,
                 find: Default::default(),
                 nav: Default::default(),
             },
@@ -451,6 +454,18 @@ impl FennecApp {
     fn send_search(&mut self) {
         let id = self.v.next_id;
         self.v.next_id += 1;
+        // Searches by meaning list the most similar first (SPEC ch.5 §3.1); the previous
+        // order comes back with the next literal search (unless a header was clicked).
+        let semantic = semantic_ui::is_semantic_query(&self.v.query, false);
+        if semantic && self.v.sort_before_semantic.is_none() && self.v.sort.column != SortColumn::Relevance {
+            self.v.sort_before_semantic = Some(self.v.sort);
+            self.v.sort = SortSpec::by(SortColumn::Relevance, false, self.v.sort.folders_first);
+        } else if !semantic
+            && let Some(prev) = self.v.sort_before_semantic.take()
+            && self.v.sort.column == SortColumn::Relevance
+        {
+            self.v.sort = prev;
+        }
         if self.v.sent_query.as_deref() != Some(self.v.query.as_str()) && !self.v.omit.is_empty() {
             self.v.omit.clear();
             self.rebuild_search_options();
