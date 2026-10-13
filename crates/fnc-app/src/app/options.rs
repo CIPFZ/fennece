@@ -103,18 +103,25 @@ impl OptionsState {
                 }
             }
             SettingKind::Int | SettingKind::Float | SettingKind::Text | SettingKind::List => {
-                let text = self.edits.entry(d.key).or_insert_with(|| current.clone());
-                let width = if matches!(d.kind, SettingKind::Int | SettingKind::Float) { 90.0 } else { 320.0 };
-                // Passwords (`http_password`) are masked.
+                // Passwords (`http_password`) are masked; a stored hash is never shown, the
+                // box starts empty and typing replaces the password.
                 let secret = d.key.ends_with("password");
-                let resp = ui.add(egui::TextEdit::singleline(text).desired_width(width).password(secret));
+                let stored_hash = secret && fnc_core::secret::is_hashed(&current);
+                let text = self
+                    .edits
+                    .entry(d.key)
+                    .or_insert_with(|| if stored_hash { String::new() } else { current.clone() });
+                let width = if matches!(d.kind, SettingKind::Int | SettingKind::Float) { 90.0 } else { 320.0 };
+                let hint = if stored_hash { t("options-password-set") } else { String::new() };
+                let resp =
+                    ui.add(egui::TextEdit::singleline(text).desired_width(width).password(secret).hint_text(hint));
                 if resp.changed() {
                     match self.draft.set(d.key, text) {
                         Ok(()) => self.error = None,
                         Err(e) => self.error = Some(e.to_string()),
                     }
                 }
-                if resp.lost_focus() {
+                if resp.lost_focus() && !secret {
                     // Show the normalised value.
                     *text = self.draft.get(d.key).unwrap_or_default();
                 }

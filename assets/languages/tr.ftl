@@ -557,3 +557,4 @@ col-relevance = İlgi düzeyi
 col-custom = Özel { $n }
 cmd-rebuild-index = Dizini yeniden oluştur
 msg-rebuilding-index = Dizin yeniden oluşturuluyor; tamamlanana kadar geçerli dizin kullanılıyor
+options-password-set = (ayarlı — değiştirmek için yazın)

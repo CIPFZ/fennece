@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 fnc-core.workspace = true
+parking_lot.workspace = true
 fnc-index.workspace = true
 fnc-ipc.workspace = true
 tokio.workspace = true

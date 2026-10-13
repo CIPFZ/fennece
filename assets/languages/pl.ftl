@@ -644,3 +644,4 @@ col-relevance = Trafność
 col-custom = Niestandardowa { $n }
 cmd-rebuild-index = Odbuduj indeks
 msg-rebuilding-index = Odbudowywanie indeksu; do zakończenia używany jest bieżący indeks
+options-password-set = (ustawione — wpisz, aby zmienić)

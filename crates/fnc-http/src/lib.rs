@@ -139,7 +139,8 @@ pub struct HttpConfig {
     pub port: u16,
     /// User name for Basic authentication.
     pub username: String,
-    /// Password; required (the server refuses to start without one).
+    /// Password, or its hash from `fnc_core::secret::hash` (settings store the hash);
+    /// required (the server refuses to start without one).
     pub password: String,
     /// Allow file downloads (Everything default: on).
     pub allow_downloads: bool,
@@ -211,7 +212,9 @@ struct AppState {
     config: HttpConfig,
     backend: Arc<IndexBackend>,
     permits: Arc<Semaphore>,
-    auth: Vec<u8>,
+    /// Credentials verified so far (`user:password` → ok), so PBKDF2 runs once per
+    /// client, not per request; bounded.
+    verified: parking_lot::Mutex<std::collections::HashMap<Vec<u8>, bool>>,
 }
 
 /// A running server; dropping it stops the server.
@@ -264,9 +267,12 @@ pub fn start(config: HttpConfig, backend: Arc<IndexBackend>) -> Result<HttpHandl
         .enable_all()
         .build()
         .map_err(HttpError::Runtime)?;
-    let auth = format!("{}:{}", config.username, config.password).into_bytes();
-    let state =
-        Arc::new(AppState { permits: Arc::new(Semaphore::new(config.max_concurrency.max(1))), config, backend, auth });
+    let state = Arc::new(AppState {
+        permits: Arc::new(Semaphore::new(config.max_concurrency.max(1))),
+        config,
+        backend,
+        verified: parking_lot::Mutex::new(std::collections::HashMap::new()),
+    });
     let (tx, mut rx) = watch::channel(false);
     let mut rx2 = rx.clone();
     let thread = std::thread::Builder::new()
@@ -316,13 +322,30 @@ fn text(status: StatusCode, msg: &str) -> Response {
 
 const MAX_URI: usize = 8 * 1024;
 
-fn authorized(headers: &HeaderMap, expected: &[u8]) -> bool {
+fn authorized(headers: &HeaderMap, st: &AppState) -> bool {
     let Some(v) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) else { return false };
     let Some((scheme, cred)) = v.trim().split_once(' ') else { return false };
     if !scheme.eq_ignore_ascii_case("basic") {
         return false;
     }
-    base64_decode(cred).is_some_and(|got| ct_eq(&got, expected))
+    let Some(got) = base64_decode(cred) else { return false };
+    if let Some(&ok) = st.verified.lock().get(&got) {
+        return ok;
+    }
+    let ok = match got.iter().position(|&b| b == b':') {
+        Some(i) => {
+            let (user, pass) = (&got[..i], &got[i + 1..]);
+            ct_eq(user, st.config.username.as_bytes())
+                && std::str::from_utf8(pass).is_ok_and(|p| fnc_core::secret::verify(p, &st.config.password))
+        }
+        None => false,
+    };
+    let mut cache = st.verified.lock();
+    // Bounded: a flood of wrong passwords cannot grow memory (nor skip the hashing).
+    if cache.len() < 64 {
+        cache.insert(got, ok);
+    }
+    ok
 }
 
 /// Auth, limits, timeout and fixed headers around every request.
@@ -332,7 +355,7 @@ async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Res
     let path = req.uri().path().to_string();
     let mut resp = if req.uri().to_string().len() > MAX_URI {
         text(StatusCode::URI_TOO_LONG, "URI too long")
-    } else if !authorized(req.headers(), &st.auth) {
+    } else if !authorized(req.headers(), &st) {
         let mut r = text(StatusCode::UNAUTHORIZED, "authentication required");
         r.headers_mut()
             .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Basic realm=\"Fennec\", charset=\"UTF-8\""));

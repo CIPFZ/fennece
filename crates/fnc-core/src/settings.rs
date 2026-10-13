@@ -722,6 +722,14 @@ impl Settings {
         Self::deserialize(table).map_err(|e| e.to_string())
     }
 
+    /// Replaces plain-text secrets (`http_password`) by their salted hash; already hashed
+    /// values are kept. Call after editing settings from user input.
+    pub fn secure_secrets(&mut self) {
+        if !self.http_password.is_empty() && !crate::secret::is_hashed(&self.http_password) {
+            self.http_password = crate::secret::hash(&self.http_password);
+        }
+    }
+
     /// Serialises to TOML text.
     pub fn to_toml(&self) -> Result<String> {
         toml::to_string(self).map_err(|e| CoreError::SettingsSerialize(e.to_string()))
@@ -729,7 +737,10 @@ impl Settings {
 
     /// Writes atomically (`settings.toml.tmp` + rename).
     pub fn save(&self, path: &Path) -> Result<()> {
-        let text = self.to_toml()?;
+        // Secrets never reach the disk in plain text.
+        let mut s = self.clone();
+        s.secure_secrets();
+        let text = s.to_toml()?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| CoreError::io(dir, e))?;
         }
@@ -826,5 +837,21 @@ mod tests {
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path).unwrap(), s);
         assert!(!path.with_extension("toml.tmp").exists());
+    }
+
+    #[test]
+    fn passwords_are_saved_hashed() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("settings.toml");
+        let mut s = Settings::default();
+        s.set("http_password", "s3cret").unwrap();
+        s.save(&p).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("s3cret") && text.contains("pbkdf2-sha256$"), "{text}");
+        let back = Settings::load(&p).unwrap();
+        assert!(crate::secret::verify("s3cret", &back.http_password));
+        // Saving again keeps the same hash (no re-hashing of hashes).
+        back.save(&p).unwrap();
+        assert_eq!(Settings::load(&p).unwrap().http_password, back.http_password);
     }
 }

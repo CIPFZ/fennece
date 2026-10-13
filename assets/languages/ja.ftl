@@ -554,3 +554,4 @@ col-relevance = 関連度
 col-custom = カスタム { $n }
 cmd-rebuild-index = インデックスの再構築
 msg-rebuilding-index = インデックスを再構築しています。完了するまで現在のインデックスで検索します
+options-password-set = （設定済み — 入力すると変更）

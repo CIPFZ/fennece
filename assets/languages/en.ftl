@@ -578,3 +578,4 @@ col-relevance = Relevance
 col-custom = Custom { $n }
 cmd-rebuild-index = Rebuild Index
 msg-rebuilding-index = Rebuilding the index; searches use the current one until it is ready
+options-password-set = (set — type to change)

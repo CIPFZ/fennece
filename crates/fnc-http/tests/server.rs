@@ -315,3 +315,19 @@ fn request_timeout() {
     assert!(t.elapsed() < Duration::from_millis(450), "answered at the deadline");
     assert_eq!(r.header("server"), Some("Fennec"));
 }
+
+#[test]
+fn hashed_password_from_settings_authenticates() {
+    let f = fixture();
+    let stored = fnc_core::secret::hash("s3cret");
+    let cfg = HttpConfig { port: 0, username: "u".into(), password: stored, ..HttpConfig::default() };
+    let h = fnc_http::start(cfg, f.backend.clone()).unwrap();
+    assert_eq!(get(h.local_addr(), "/?search=abc&json=1", Some(("u", "s3cret"))).status, 200);
+    assert_eq!(get(h.local_addr(), "/?search=abc&json=1", Some(("u", "wrong"))).status, 401);
+    // The hash itself is not a password.
+    let hash_as_pw = fnc_core::secret::hash("x");
+    assert_eq!(get(h.local_addr(), "/", Some(("u", &hash_as_pw))).status, 401);
+    // Cached verification is still correct.
+    assert_eq!(get(h.local_addr(), "/?search=abc&json=1", Some(("u", "s3cret"))).status, 200);
+    assert_eq!(get(h.local_addr(), "/", Some(("v", "s3cret"))).status, 401);
+}

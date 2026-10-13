@@ -21,6 +21,7 @@ pub mod ids;
 pub mod logging;
 pub mod natsort;
 pub mod paths;
+pub mod secret;
 pub mod settings;
 pub mod time;
 
