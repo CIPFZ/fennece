@@ -1223,6 +1223,16 @@ mod tests {
         again.attach(&shared.snapshot());
         assert_eq!(again.props.snapshot().get(big, PropertyId::WIDTH), Some(Value::Int(4100)));
         assert!(again.content.snapshot().has(note));
+        {
+            // A restart walks the folder again into a new index: path-derived file ids
+            // let the saved rows re-attach (no re-extraction).
+            let rewalked = SharedIndex::new(index_of(dir.path()));
+            let fresh = Stores::start(rewalked.clone(), &settings, Some(data.path().to_path_buf()), Arc::new(|| {}));
+            fresh.attach(&rewalked.snapshot());
+            let big_new = id_of(&rewalked.snapshot(), "big.png");
+            assert_eq!(fresh.props.snapshot().get(big_new, PropertyId::WIDTH), Some(Value::Int(4100)), "re-attached");
+            fresh.stop();
+        }
 
         // Compaction (small.png's tombstone goes away): rows follow the remap.
         let old = shared.snapshot().instance();

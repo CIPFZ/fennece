@@ -942,7 +942,7 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | 已索引属性 / 内容索引的范围外文件 | 属性已索引时搜索即时 | 属性（全部来源）已索引、或已启用内容索引时，索引是权威的：范围外或尚未提取的文件视为无值，不读磁盘（`SlowPolicy::read_uncovered = false`）；`notindexed:` 与 `utf8content:` 等原始编码函数仍读取；未索引的属性仍按需读取（预算 `slow_search_max_files`）| IDX-08/09 即时；与 Everything 的“仅包含文件夹”一致（ADR-016）|
 | IFilter / `content_ifilter_separate_process` | Windows IFilter 提取 Office/PDF 等文本 | 不实现：内容只用内置解析器（纯文本+编码检测、HTML、OOXML、PDF）；其余格式无文本 | IFilter 需 COM 与隔离进程（安全、稳定性），M3 范围外 |
 | 属性“快速排序” | 维护排序索引 | `property_fast_sort` 设置被接受但不建额外结构：属性列排序本就是对结果的并行排序（100 万条按宽度 58 ms，预算 300 ms）| 无需额外内存 |
-| 文件夹索引条目的属性/内容 | 跨重启保留 | 文件夹索引每次启动重新遍历、FRN 为并行分配的合成值，`props.fnx`/`content.fnx` 中这些行无法重新挂接，重启后在后台重新提取（NTFS 卷不受影响）| 文件夹索引无稳定文件 ID |
+| 文件夹索引条目的文件号 | — | 文件夹索引的条目号由"父条目号 + 折叠名称"的哈希得出（62 位，同一文件夹内冲突线性探测，文件夹号全局唯一），每次遍历与实时新建得到同一值，`props.fnx`/`content.fnx` 重启后直接重新挂接；极少数跨文件夹哈希冲突的文件获得新号并在后台重新提取 | 无原生文件号 |
 | 属性列标题与值 | 本地化 | 约 95 个属性的列标题、是/否、像素、星级随界面语言；其他单位用国际缩写（kbps、Hz、mm、f/2.8、fps）| — |
 | `count:<max>`（结果数上限）| 搜索函数，限制结果数 | `count:` 后紧跟纯数字时为结果上限（`FuncId::Count` → `SetKind::Limit`），作为最后一个集合函数在排序后截断，UI 与 IPC/HTTP/fes/兼容层一致（es 1.1.0.38 的 `-n` 以 `< count:N >` 发送）；只能在顶层；其余情况（`count:tags:>2`）仍是比较修饰符 | 同名的修饰符与函数按值区分 |
 | Everything IPC 报告版本 | Everything 自身版本 | `1.4.1.<Fennec 版本>`（0.1.0 → `1.4.1.100`），`Host::everything_version` 可改 | 客户端按 ≥ 1.4.1 启用 QUERY2/IS_DB_LOADED（ADR-031）|

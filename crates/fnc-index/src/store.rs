@@ -97,6 +97,22 @@ pub struct IndexStore {
 
 static NEXT_INSTANCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// File id of a folder-index entry: a hash of the parent's id and the folded name, in
+/// `2..2^62` (0/1 are the root, the top values are reserved). Identical across walks, so
+/// stores keyed by file id survive restarts.
+pub fn path_frn(parent_frn: u64, fold: &[u8]) -> u64 {
+    let mut h = xxhash_rust::xxh3::Xxh3::new();
+    h.update(&parent_frn.to_le_bytes());
+    h.update(fold);
+    (h.digest() >> 2).max(2)
+}
+
+/// Next candidate after a collision of [`path_frn`].
+pub fn path_frn_probe(frn: u64) -> u64 {
+    let n = frn.wrapping_add(0x9E37_79B9) & ((1 << 62) - 1);
+    n.max(2)
+}
+
 fn next_instance() -> u64 {
     NEXT_INSTANCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
@@ -832,6 +848,21 @@ impl IndexStore {
     }
 
     /// A fresh synthetic FRN for `vol` (folder indexes number entries sequentially).
+    /// Path-derived file id for a new child of `parent` (folder indexes): stable across
+    /// restarts so property/content rows re-attach ([`path_frn`]); collisions take the
+    /// next free value.
+    fn child_frn(&mut self, vol: VolumeId, parent: EntryId, fold: &[u8]) -> u64 {
+        let parent_frn = self.frn[parent.idx()];
+        let mut f = path_frn(parent_frn, fold);
+        for _ in 0..64 {
+            if self.frn_maps.get(vol.idx()).is_none_or(|m| m.get(f).is_none()) {
+                return f;
+            }
+            f = path_frn_probe(f);
+        }
+        self.next_synthetic_frn(vol)
+    }
+
     fn next_synthetic_frn(&mut self, vol: VolumeId) -> u64 {
         let v = vol.idx();
         if self.next_frn.len() <= v {
@@ -953,7 +984,7 @@ impl IndexStore {
             }
             stats.deleted += self.delete_subtree(id, now);
         }
-        let frn = self.next_synthetic_frn(vol);
+        let frn = self.child_frn(vol, parent, &fold);
         match self.push_row(vol, frn, parent, name, meta, EntryFlags::empty()) {
             Ok(id) => {
                 self.frn_maps[vol.idx()].insert(frn, id);
@@ -1583,6 +1614,27 @@ impl BulkLoader<'_> {
         Ok(id)
     }
 
+    /// Folder indexes: files whose path-derived id collided with another entry's get a
+    /// fresh synthetic id (~1e-7 per million files; such a file is re-extracted after a
+    /// restart, nothing else changes).
+    fn dedupe_folder_ids(&mut self) {
+        if self.store.volumes[self.vol.idx()].info.kind != VolumeKind::Folder {
+            return;
+        }
+        let mut seen = std::collections::HashSet::with_capacity(self.pending.len());
+        let dups: Vec<EntryId> =
+            self.pending.iter().filter(|&&(id, _)| !seen.insert(self.store.frn[id.idx()])).map(|&(id, _)| id).collect();
+        for id in dups {
+            // Folder ids are unique by construction (the walker checks them); a file that
+            // collides with anything gets a fresh id.
+            if self.store.is_dir(id) {
+                continue;
+            }
+            let f = self.store.next_synthetic_frn(self.vol);
+            self.store.frn[id.idx()] = f;
+        }
+    }
+
     /// Adds another root (file lists spanning several drives).
     pub fn add_root(&mut self, frn: u64, name: &str) -> Result<EntryId> {
         self.store.add_root(self.vol, frn, name)
@@ -1605,7 +1657,9 @@ impl BulkLoader<'_> {
 
     /// Resolves parents, builds the FRN map and the children index.
     pub fn finish(self) -> Result<BulkStats> {
-        let BulkLoader { store, vol, first, pending } = self;
+        let mut this = self;
+        this.dedupe_folder_ids();
+        let BulkLoader { store, vol, first, pending } = this;
         let ntfs_like = matches!(store.volumes[vol.idx()].info.kind, VolumeKind::Ntfs);
         let mut pairs: Vec<(u64, EntryId)> = (first..store.len())
             .filter(|&i| store.volume[i] == vol)

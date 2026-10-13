@@ -26,7 +26,9 @@ pub use change::{ApplyStats, Change, ChangeBatch, EntryRef, Meta, PathChange, Re
 pub use error::{IndexError, Result};
 pub use order::NameOrder;
 pub use shared::{IndexSnapshot, SharedIndex};
-pub use store::{BulkLoader, BulkStats, IndexOptions, IndexStats, IndexStore, RunInfo, SIZE_UNKNOWN};
+pub use store::{
+    BulkLoader, BulkStats, IndexOptions, IndexStats, IndexStore, RunInfo, SIZE_UNKNOWN, path_frn, path_frn_probe,
+};
 pub use volume::{Volume, VolumeInfo, VolumeKind};
 
 #[cfg(test)]

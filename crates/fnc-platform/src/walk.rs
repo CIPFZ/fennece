@@ -305,7 +305,10 @@ impl VolumeSource for FolderSource {
         // Workers list folders in parallel; this thread feeds the sink.
         type Item = (u64, u64, Vec<u16>, Meta);
         let (tx, rx) = crossbeam_channel::bounded::<Vec<Item>>(64);
-        let next = AtomicU64::new(FOLDER_ROOT_FRN + 1);
+        // Path-derived ids (stable across walks, see `fnc_index::path_frn`). Collisions
+        // within a folder take the next probe; folder ids are also checked against every
+        // folder id issued (children hang off them), files are de-duplicated by the index.
+        let folders = std::sync::Mutex::new(std::collections::HashSet::<u64>::from([FOLDER_ROOT_FRN]));
         let queue = crossbeam_channel::unbounded::<(PathBuf, u64)>();
         let pending = AtomicU64::new(1);
         queue.0.send((self.root.clone(), FOLDER_ROOT_FRN)).ok();
@@ -314,7 +317,7 @@ impl VolumeSource for FolderSource {
         std::thread::scope(|scope| {
             for _ in 0..this.opts.threads.max(1) {
                 let (qtx, qrx) = (queue.0.clone(), queue.1.clone());
-                let (tx, next, pending) = (tx.clone(), &next, &pending);
+                let (tx, pending, folders) = (tx.clone(), &pending, &folders);
                 scope.spawn(move || {
                     let mut name = Vec::with_capacity(256);
                     while pending.load(Ordering::Acquire) > 0 {
@@ -326,9 +329,27 @@ impl VolumeSource for FolderSource {
                         let mut batch = Vec::new();
                         match this.list(&dir) {
                             Ok(items) => {
+                                let mut fold = Vec::with_capacity(256);
+                                let mut here: Vec<u64> = Vec::with_capacity(items.len());
                                 for (n, meta, is_dir) in items {
                                     os_name_to_utf16(&n, &mut name);
-                                    let id = next.fetch_add(1, Ordering::Relaxed);
+                                    fold.clear();
+                                    fnc_core::fold::fold_utf16_into(&name, &mut fold);
+                                    // Folded names are unique within a folder, so only
+                                    // a hash collision probes (order-independent in practice).
+                                    let mut id = fnc_index::path_frn(frn, &fold);
+                                    while here.contains(&id) {
+                                        id = fnc_index::path_frn_probe(id);
+                                    }
+                                    if is_dir {
+                                        let mut f = folders.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                                        while here.contains(&id) || !f.insert(id) {
+                                            id = fnc_index::path_frn_probe(id);
+                                        }
+                                    }
+                                    if here.len() < 64 {
+                                        here.push(id);
+                                    }
                                     if is_dir {
                                         pending.fetch_add(1, Ordering::AcqRel);
                                         let _ = qtx.send((dir.join(&n), id));
@@ -524,6 +545,54 @@ mod tests {
     }
 
     #[test]
+    fn file_ids_are_stable_across_walks_and_live_creates() {
+        let dir = tempfile::tempdir().unwrap();
+        for d in 0..20 {
+            std::fs::create_dir_all(dir.path().join(format!("d{d}/sub"))).unwrap();
+            for f in 0..30 {
+                std::fs::write(dir.path().join(format!("d{d}/sub/f{f}.txt")), b"x").unwrap();
+            }
+        }
+        let walk = || {
+            let mut src = FolderSource::new(dir.path());
+            let mut c = Collect(Vec::new());
+            src.enumerate(&mut c, &StopFlag::new()).unwrap();
+            let mut v: Vec<(u64, u64, String)> = c.0.into_iter().map(|r| (r.0, r.1, r.2)).collect();
+            v.sort();
+            v
+        };
+        let a = walk();
+        assert_eq!(a.len(), 20 * 32);
+        assert_eq!(a, walk(), "same ids on every walk");
+        let ids: std::collections::HashSet<u64> = a.iter().map(|r| r.0).collect();
+        assert_eq!(ids.len(), a.len(), "unique");
+        // A file created later (watcher path) gets the id a fresh walk gives it.
+        let mut store = fnc_index::IndexStore::default();
+        let src = FolderSource::new(dir.path());
+        let vol = store.add_volume(src.info(), Some(src.root_frn())).unwrap();
+        let mut b = store.bulk_load(vol);
+        for (frn, parent, name) in &a {
+            let w: Vec<u16> = name.encode_utf16().collect();
+            let attrs = if name.contains('.') { 32 } else { attr::DIRECTORY };
+            b.push(*frn, *parent, &w, &Meta::attrs(attrs)).unwrap();
+        }
+        b.finish().unwrap();
+        std::fs::write(dir.path().join("d3/sub/late.txt"), b"y").unwrap();
+        let rel: Vec<Box<[u16]>> = ["d3", "sub", "late.txt"]
+            .iter()
+            .map(|c| c.encode_utf16().collect::<Vec<u16>>().into_boxed_slice())
+            .collect();
+        store.apply(vec![fnc_index::Change::Path {
+            volume: vol,
+            change: fnc_index::PathChange::Upsert { path: rel.clone(), meta: Meta::attrs(32) },
+        }]);
+        let late = store.resolve_path(vol, &rel).unwrap();
+        let fresh = walk();
+        let expected = fresh.iter().find(|r| r.2 == "late.txt").unwrap().0;
+        assert_eq!(store.frn(late), expected);
+    }
+
+    #[test]
     fn into_index() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("x")).unwrap();
@@ -637,5 +706,27 @@ mod tests {
         assert!(find(&shared, "node_modules").is_none(), "new excluded folder stays out");
         stop.stop();
         assert!(matches!(h.join().unwrap(), Err(SourceError::Stopped)));
+    }
+}
+
+/// Walk speed of a large tree: `FENNEC_WALK_DIR=<dir> cargo test --release -p fnc-platform walk_speed -- --ignored --nocapture`.
+#[cfg(test)]
+#[test]
+#[ignore = "needs FENNEC_WALK_DIR"]
+fn walk_speed() {
+    struct Count(usize);
+    impl EntrySink for Count {
+        fn entry(&mut self, _: &RawEntry<'_>) -> Result<(), SourceError> {
+            self.0 += 1;
+            Ok(())
+        }
+    }
+    let dir = std::env::var("FENNEC_WALK_DIR").unwrap_or_else(|_| "/usr".into());
+    for _ in 0..3 {
+        let mut src = FolderSource::new(Path::new(&dir));
+        let mut c = Count(0);
+        let t = std::time::Instant::now();
+        src.enumerate(&mut c, &StopFlag::new()).unwrap();
+        eprintln!("{} entries in {:?}", c.0, t.elapsed());
     }
 }
