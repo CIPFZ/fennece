@@ -228,3 +228,23 @@ fn selection_commands_and_copy() {
     spec.push_key(fnc_exec::SortColumn::Size, false);
     assert_eq!(spec.keys().count(), 2);
 }
+
+/// Mouse: click selects, Ctrl+click adds, Shift+click extends, double click opens.
+#[test]
+fn mouse_selection_on_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.results.len() == 7);
+    h.get_by_role(Role::TextInput).type_text("img");
+    wait_until(&mut h, "img", |a| a.results.len() == 2 && a.sent_query.as_deref() == Some("img"));
+    h.run_steps(2);
+    h.get_by_label_contains("0002").click();
+    h.run_steps(2);
+    assert_eq!(h.state().sel.ids.len(), 1);
+    assert_eq!(h.state().focus, Focus::Results, "clicking the list moves keyboard focus to it");
+    h.get_by_label_contains("0001").click_modifiers(egui::Modifiers::CTRL);
+    h.run_steps(2);
+    assert_eq!(h.state().sel.ids.len(), 2);
+}

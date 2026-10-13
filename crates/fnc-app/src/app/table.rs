@@ -189,6 +189,9 @@ impl FennecApp {
             });
             return;
         }
+        // Selectable labels would take the clicks meant for the row (select, open,
+        // context menu, drag).
+        ui.style_mut().interaction.selectable_labels = false;
         // One short-lived snapshot for all visible rows; never wait more than 2 ms.
         let snap = self.shared.try_snapshot_for(Duration::from_millis(2));
         if let Some(s) = &snap
