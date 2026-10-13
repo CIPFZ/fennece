@@ -314,6 +314,7 @@ impl FennecApp {
     pub fn new(cc: &eframe::CreationContext<'_>, deps: AppDeps) -> Self {
         let ctx = &cc.egui_ctx;
         crate::fonts::install_cjk_fallback(ctx.clone());
+        deps.stores.cells.set_repaint(ctx.clone());
         apply_theme(ctx, deps.settings.theme);
         if (deps.settings.ui_scale - 1.0).abs() > f32::EPSILON {
             ctx.set_zoom_factor(deps.settings.ui_scale.clamp(0.5, 3.0));

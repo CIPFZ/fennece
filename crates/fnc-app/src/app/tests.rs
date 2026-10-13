@@ -610,3 +610,26 @@ fn http_server_address_in_status_bar() {
     h.state_mut().options_window = None;
     h.state_mut().stop_servers();
 }
+
+#[test]
+fn unindexed_property_and_file_columns_load_in_the_background() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("wide.png"), png(4100, 3)).unwrap();
+    std::fs::write(dir.path().join("note.txt"), "text").unwrap();
+    let shared = SharedIndex::default();
+    index_folder(&shared, dir.path());
+    let mut deps = deps_for(None, shared.clone());
+    // No property index: the width column reads the visible files.
+    deps.settings.columns =
+        ["name:200", "width:110", "filesignature:110", "linktarget:200"].into_iter().map(String::from).collect();
+    deps.stores = crate::stores::Stores::in_memory(shared.clone(), &deps.settings);
+    let mut h = harness(deps);
+    wait_query(&mut h, "wide.png | note.txt", 2);
+    let t0 = Instant::now();
+    while h.query_by_label_contains("4100 pixels").is_none() || h.query_by_label("png").is_none() {
+        assert!(t0.elapsed() < Duration::from_secs(20), "cells never loaded");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(h.state().stores.props.snapshot().is_empty(), "nothing indexed");
+}

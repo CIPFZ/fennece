@@ -134,7 +134,9 @@ pub struct Stores {
     pub content: ContentIndex,
     /// Hash cache (`sha256:`, `dupe:size;sha256`).
     pub hashes: Arc<HashCache>,
-    on_demand: Mutex<Arc<dyn OnDemand>>,
+    on_demand: Arc<Mutex<Arc<dyn OnDemand>>>,
+    /// Result cells that read files (unindexed property columns, link targets, …).
+    pub cells: crate::cells::LazyCells,
     provider: Option<Arc<dyn PropertyProvider>>,
     ansi_code_page: u16,
     /// Folder of `props.fnx` / `content.fnx` / `hashes.fnx` (`None` = not persisted).
@@ -186,11 +188,14 @@ impl Stores {
             })
             .unwrap_or_default();
         let (tx, rx) = crossbeam_channel::unbounded();
+        let on_demand = Arc::new(Mutex::new(on_demand(provider.clone(), &cfg, ansi_code_page)));
+        let source = on_demand.clone();
         let me = Arc::new(Self {
             props: PropertyIndex::new(PropertyStore::new(0)),
             content: ContentIndex::new(ContentStore::new(0)),
             hashes: Arc::new(hashes),
-            on_demand: Mutex::new(on_demand(provider.clone(), &cfg, ansi_code_page)),
+            on_demand,
+            cells: crate::cells::LazyCells::new(move || source.lock().clone()),
             provider,
             ansi_code_page,
             dir,
@@ -246,6 +251,7 @@ impl Stores {
         let index_changed = cur.props != cfg.props || cur.content != cfg.content;
         if limits_changed {
             *self.on_demand.lock() = on_demand(self.provider.clone(), &cfg, self.ansi_code_page);
+            self.cells.clear();
         }
         self.active.store(cfg.active(), Ordering::Release);
         *cur = Arc::new(cfg);
@@ -1058,13 +1064,13 @@ pub(crate) fn default_extensions_match() -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::Path;
 
     use super::*;
     use fnc_props::{PropertyId, Value};
 
-    fn index_of(dir: &Path) -> IndexStore {
+    pub(crate) fn index_of(dir: &Path) -> IndexStore {
         let mut store = IndexStore::default();
         let mut src = fnc_platform::walk::FolderSource::new(dir);
         let vol = store.add_volume(fnc_platform::VolumeSource::info(&src), Some(1)).unwrap();
@@ -1083,7 +1089,7 @@ mod tests {
         store
     }
 
-    fn id_of(s: &IndexStore, name: &str) -> EntryId {
+    pub(crate) fn id_of(s: &IndexStore, name: &str) -> EntryId {
         (0..s.len() as u32).map(EntryId).find(|&i| s.is_live(i) && s.name_string(i) == name).unwrap()
     }
 

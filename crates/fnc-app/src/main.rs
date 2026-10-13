@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod cells;
 mod cli;
 mod columns;
 mod commands;

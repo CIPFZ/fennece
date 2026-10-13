@@ -234,6 +234,7 @@ impl FennecApp {
             now: FileTime::now(),
             props: props.map(|p| &**p),
             results: Some(&results),
+            lazy: Some(&self.stores.cells),
         };
         for &c in cols {
             cells.push(crate::columns::cell(s, id, c, &mut f));
@@ -261,7 +262,10 @@ impl FennecApp {
         if self.v.rows.len() > 4096 {
             self.v.rows.clear();
         }
-        self.v.rows.insert(id, row.clone());
+        // Property cells drawn without the store (its lock was busy) are drawn again.
+        if props.is_some() || !cols.iter().any(|c| matches!(c, ColumnId::Property(_))) {
+            self.v.rows.insert(id, row.clone());
+        }
         Some(row)
     }
 
@@ -300,7 +304,9 @@ impl FennecApp {
             ui.ctx().request_repaint_after(Duration::from_millis(30));
         }
         if let Some(s) = &snap {
-            let generation = s.generation() ^ self.stores.generation().rotate_left(17);
+            let generation = s.generation()
+                ^ self.stores.generation().rotate_left(17)
+                ^ self.stores.cells.generation().rotate_left(34);
             if generation != self.v.rows_generation {
                 self.v.rows_generation = generation;
                 self.v.rows.clear();

@@ -11,6 +11,7 @@ use fnc_exec::{ResultSet, Shared, SortColumn, SortKey};
 use fnc_index::IndexSnapshot;
 use fnc_props::{PropType, PropertyId, PropertyStore};
 
+use crate::cells::{LazyCol, LazyVal};
 use crate::format;
 use crate::i18n::t;
 
@@ -61,6 +62,12 @@ pub enum ColumnId {
     Property(PropertyId),
     /// Semantic relevance (0–100) of searches with semantic terms.
     Relevance,
+    /// Target of shortcuts, internet shortcuts, symbolic links and junctions (read).
+    LinkTarget,
+    /// File signature (read).
+    FileSignature,
+    /// Original location of recycle bin items (read).
+    RecycleOrigin,
     /// Custom column `n` (0-based) of the `custom_columns` setting.
     Custom(u8),
 }
@@ -114,7 +121,7 @@ pub fn custom_formulas() -> Vec<Option<Shared<fnc_query::formula::Formula>>> {
 impl ColumnId {
     /// Every built-in column, in the column chooser's order (property columns are listed
     /// separately, see [`ColumnId::properties`]).
-    pub const ALL: [ColumnId; 21] = [
+    pub const ALL: [ColumnId; 24] = [
         ColumnId::Name,
         ColumnId::Path,
         ColumnId::Size,
@@ -136,6 +143,9 @@ impl ColumnId {
         ColumnId::Frn,
         ColumnId::DupeGroup,
         ColumnId::Relevance,
+        ColumnId::LinkTarget,
+        ColumnId::FileSignature,
+        ColumnId::RecycleOrigin,
     ];
 
     /// The custom columns defined in the settings.
@@ -176,6 +186,9 @@ impl ColumnId {
             ColumnId::Frn => "frn",
             ColumnId::DupeGroup => "dupegroup",
             ColumnId::Relevance => "relevance",
+            ColumnId::LinkTarget => "linktarget",
+            ColumnId::FileSignature => "filesignature",
+            ColumnId::RecycleOrigin => "recyclebinoriginalpath",
             ColumnId::Custom(i) => CUSTOM_KEYS.get(usize::from(i)).copied().unwrap_or("custom1"),
             ColumnId::Property(p) => p.name(),
         }
@@ -214,6 +227,7 @@ impl ColumnId {
             ColumnId::DateModified | ColumnId::DateCreated | ColumnId::DateAccessed | ColumnId::DateRun => 140.0,
             ColumnId::DateRecentlyChanged => 140.0,
             ColumnId::FileListFilename => 200.0,
+            ColumnId::LinkTarget | ColumnId::RecycleOrigin => 300.0,
             ColumnId::Relevance => 80.0,
             ColumnId::Custom(_) => 140.0,
             ColumnId::Property(p) => match p.ty() {
@@ -248,14 +262,21 @@ impl ColumnId {
         match self {
             ColumnId::Property(p) => Some(SortKey::Property(p)),
             ColumnId::Custom(i) => Some(SortKey::Custom(i)),
-            ColumnId::DupeGroup => None,
+            // Read per visible row, not known for the whole result.
+            ColumnId::DupeGroup | ColumnId::LinkTarget | ColumnId::FileSignature | ColumnId::RecycleOrigin => None,
             c => Some(SortKey::Column(c.sort_column())),
         }
     }
 
     fn sort_column(self) -> SortColumn {
         match self {
-            ColumnId::Name | ColumnId::DupeGroup | ColumnId::Property(_) | ColumnId::Custom(_) => SortColumn::Name,
+            ColumnId::Name
+            | ColumnId::DupeGroup
+            | ColumnId::Property(_)
+            | ColumnId::Custom(_)
+            | ColumnId::LinkTarget
+            | ColumnId::FileSignature
+            | ColumnId::RecycleOrigin => SortColumn::Name,
             ColumnId::Relevance => SortColumn::Relevance,
             ColumnId::Path => SortColumn::Path,
             ColumnId::Size => SortColumn::Size,
@@ -457,6 +478,8 @@ pub struct CellFormat<'a> {
     pub props: Option<&'a PropertyStore>,
     /// Results (duplicate groups).
     pub results: Option<&'a ResultSet>,
+    /// Loader of cells that read files (`None`: such cells stay empty).
+    pub lazy: Option<&'a crate::cells::LazyCells>,
 }
 
 /// Text of `col` for entry `id` (`name`/`path`-like columns are produced by the caller
@@ -547,17 +570,34 @@ pub fn cell(s: &IndexSnapshot, id: EntryId, col: ColumnId, f: &mut CellFormat<'_
             }
             None => String::new(),
         },
-        ColumnId::Property(p) => f
-            .props
-            .filter(|st| st.instance() == s.instance())
-            .and_then(|st| match p.ty() {
-                PropType::Date => st.get(id, p).and_then(|v| match v {
-                    fnc_props::Value::Date(t) => Some(date(t)),
+        ColumnId::Property(p) => {
+            let fmt = |v: fnc_props::Value| match (p.ty(), v) {
+                (PropType::Date, fnc_props::Value::Date(t)) => Some(date(t)),
+                (PropType::Date, _) => None,
+                (_, v) => Some(format_property(p, &v)),
+            };
+            match f.props.filter(|st| st.instance() == s.instance()) {
+                // The property index is authoritative for what it has extracted.
+                Some(st) if st.covers(id, p) => st.get(id, p).and_then(fmt),
+                // Not extracted (not indexed, outside its scope, or not reached yet).
+                _ => match f.lazy.and_then(|l| l.get(s, id, LazyCol::Prop(p))) {
+                    Some(LazyVal::Prop(v)) => fmt(v),
                     _ => None,
-                }),
-                _ => st.get(id, p).map(|v| format_property(p, &v)),
-            })
-            .unwrap_or_default(),
+                },
+            }
+            .unwrap_or_default()
+        }
+        ColumnId::LinkTarget | ColumnId::FileSignature | ColumnId::RecycleOrigin => {
+            let col = match col {
+                ColumnId::LinkTarget => LazyCol::LinkTarget,
+                ColumnId::FileSignature => LazyCol::Signature,
+                _ => LazyCol::RecycleOrigin,
+            };
+            match f.lazy.and_then(|l| l.get(s, id, col)) {
+                Some(LazyVal::Text(t)) => t,
+                _ => String::new(),
+            }
+        }
     }
 }
 
