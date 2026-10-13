@@ -1862,6 +1862,7 @@ dependencies = [
  "fnc-exec",
  "fnc-index",
  "fnc-ipc",
+ "fnc-platform",
  "fnc-props",
  "tempfile",
  "thiserror 2.0.21",
@@ -1951,6 +1952,7 @@ version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
  "fnc-core",
+ "fnc-exec",
  "fnc-index",
  "fnc-props",
  "interprocess",

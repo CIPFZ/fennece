@@ -192,7 +192,8 @@ pub fn open_local(a: &Args, env: &Env) -> Result<IndexBackend, Failure> {
 }
 
 /// `-offline` / `-filelist` searches: the saved property and content indexes next to
-/// `index.fnx` and the built-in extractors for unindexed files (like the window).
+/// `index.fnx`, the built-in extractors for unindexed files and the Windows Search system
+/// index (like the window).
 fn offline_options(store: &IndexStore, dir: Option<&std::path::Path>) -> fnc_exec::SearchOptions {
     let mut o = fnc_exec::SearchOptions::default();
     if let Some(dir) = dir {
@@ -208,6 +209,8 @@ fn offline_options(store: &IndexStore, dir: Option<&std::path::Path>) -> fnc_exe
     }
     let on_demand: Arc<dyn fnc_props::ondemand::OnDemand> = Arc::new(fnc_props::ondemand::DefaultOnDemand::default());
     o.on_demand = Some(fnc_exec::Shared::new(on_demand));
+    let system_index: Arc<dyn fnc_exec::SystemIndexSource> = Arc::new(fnc_platform::sysindex::WinSearch::default());
+    o.system_index = Some(fnc_exec::Shared::new(system_index));
     o
 }
 

@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 use fnc_core::settings::Settings;
 use fnc_core::{EntryFlags, EntryId};
-use fnc_exec::{SearchOptions, Shared, SlowPolicy, SystemIndexError, SystemIndexHits, SystemIndexSource};
+use fnc_exec::{SearchOptions, Shared, SlowPolicy, SystemIndexSource};
 use fnc_index::{Change, ChangeBatch, EntryRef, IndexStore, PathChange, SharedIndex};
 use fnc_props::content::{ContentExtractor, ContentIndex, ContentStore};
 use fnc_props::extract::{PropertyExtractor, PropertyProvider};
@@ -199,7 +199,7 @@ impl Stores {
             content: ContentIndex::new(ContentStore::new(0)),
             hashes: Arc::new(hashes),
             on_demand,
-            system_index: Arc::new(WinSearch::default()),
+            system_index: Arc::new(fnc_platform::sysindex::WinSearch::default()),
             cells: crate::cells::LazyCells::new(move || source.lock().clone()),
             provider,
             ansi_code_page,
@@ -330,44 +330,6 @@ impl Stores {
     fn bump_generation(&self) {
         let g = self.props.snapshot().generation() ^ self.content.snapshot().generation().rotate_left(32);
         self.generation.store(g, Ordering::Release);
-    }
-}
-
-/// `si:` through the Windows Search system index of the user running Fennec
-/// ([`fnc_platform::winsearch`]); unavailable on other platforms and without the service.
-#[derive(Clone, Debug)]
-pub struct WinSearch {
-    /// At most this many items per query (the rest is dropped with a warning).
-    pub max_results: usize,
-    /// A query that takes longer is abandoned with a warning.
-    pub timeout: Duration,
-}
-
-impl Default for WinSearch {
-    fn default() -> Self {
-        Self { max_results: 100_000, timeout: Duration::from_secs(20) }
-    }
-}
-
-impl SystemIndexSource for WinSearch {
-    fn search(&self, aqs: &str, cancel: &dyn Fn() -> bool) -> Result<SystemIndexHits, SystemIndexError> {
-        use fnc_platform::winsearch::{Error, search};
-        match search(aqs, self.max_results, self.timeout, cancel) {
-            Ok(h) => Ok(SystemIndexHits { limit: h.truncated.then_some(self.max_results), paths: h.paths }),
-            Err(Error::Unavailable(why)) => {
-                tracing::info!(%why, "Windows Search system index unavailable");
-                Err(SystemIndexError::Unavailable)
-            }
-            Err(Error::Cancelled) => Err(SystemIndexError::Cancelled),
-            Err(Error::Failed(why)) => {
-                tracing::warn!(%why, query = aqs, "Windows Search query failed");
-                Err(SystemIndexError::Failed(why))
-            }
-            Err(e @ Error::TimedOut(_)) => {
-                tracing::warn!(error = %e, query = aqs, "Windows Search query timed out");
-                Err(SystemIndexError::Failed(e.to_string()))
-            }
-        }
     }
 }
 

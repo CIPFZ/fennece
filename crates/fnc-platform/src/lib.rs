@@ -30,6 +30,8 @@ pub mod props;
 pub mod session;
 pub mod shell;
 pub mod source;
+#[cfg(feature = "sysindex")]
+pub mod sysindex;
 pub mod thumb;
 pub mod walk;
 pub mod winsearch;

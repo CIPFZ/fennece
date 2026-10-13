@@ -18,9 +18,12 @@ notify = { version = "8", default-features = false }
 # Windows Property System provider for the property index (`props`).
 fnc-props = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
+# `si:` source for the search engine (`sysindex`).
+fnc-exec = { workspace = true, optional = true }
 
 [features]
 props = ["dep:fnc-props", "dep:parking_lot"]
+sysindex = ["dep:fnc-exec"]
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
