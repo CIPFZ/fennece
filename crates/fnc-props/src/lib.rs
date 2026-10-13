@@ -11,6 +11,8 @@
 //!   token index) and [`content::ContentIndex`].
 //! * [`hash`] — CRC-32/CRC-64/MD5/SHA-1/SHA-256/SHA-512 and the [`hash::HashCache`].
 //! * [`ondemand`] — [`ondemand::OnDemand`]: file reads for searches on unindexed entries.
+//! * [`link`] / [`signature`] / [`recycle`] — `target:` (shell links, internet shortcuts,
+//!   reparse targets), `fsi:` (magic numbers) and `recycled:` (`$I` records) parsers.
 //! * [`fnx`] / [`rows`] — the `props.fnx` / `content.fnx` / `hashes.fnx` container and the
 //!   entry ↔ row mapping that survives index compaction and restarts.
 //!
@@ -80,10 +82,13 @@ pub mod content;
 pub mod extract;
 pub mod fnx;
 pub mod hash;
+pub mod link;
 #[cfg(feature = "extract")]
 pub mod ondemand;
+pub mod recycle;
 pub mod rows;
 pub mod schema;
+pub mod signature;
 pub mod store;
 pub mod value;
 
