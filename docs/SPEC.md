@@ -790,7 +790,7 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | `sibling:name` `siblingcount:` `[SHOULD]` | 同目录兄弟 |
 | `random:` `[MAY]` | 随机抽样 N |
 | `omit:` | 临时忽略（UI “Omit result”）|
-| `si:` `systemindex:` `[MAY]` | 转发 Windows Search 索引 |
+| `si:` `system-index:` `[MAY]` | 转发 Windows Search 系统索引（AQS 查询，见 §9）|
 | `eval:expr` `[SHOULD]` | 公式求值（Excel 风格函数子集：`LEN SUM IF AND OR SWITCH ISNUMBER…`，变量 `$size:` `$name:` 等）|
 | `weight:N` `[SHOULD]` | 为项设置排序权重（Everything 搜索权重）|
 | `add-prefix:` `add-suffix:` 等预处理器 `[MAY]` | 搜索预处理 |
@@ -885,7 +885,7 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | 项 | Everything 1.5 | 本项目 | 原因 |
 |---|---|---|---|
 | 正则引擎 | PCRE 风格 | Rust `regex`，回溯特性回退 `fancy-regex` | 线性时间安全 |
-| `si:` 系统索引 | 支持 | `[MAY]` | 依赖 Windows Search |
+| `si:` `system-index:` 系统索引 | 用 AQS 查询 Windows Search 系统索引 | 已实现：值原样作为 AQS（`si:"my content"` 去掉引号；`si*:"a phrase"` 保留引号成短语，`&quot:` 得字面引号；`;` 视为文本），经 `ISearchQueryHelper`（`SystemIndex` 目录）生成 SQL，由 `Search.CollatorDSO` OLE DB 执行，取 `SCOPE='file:'` 项的 `System.ItemPathDisplay`，再在**本索引**中解析为条目（不在索引中的路径忽略）；每次搜索编译时只查询一次，相同文本 30 s 内跨搜索复用；最多 100 000 项（超出时提示）、20 s 超时、可取消；按运行 Fennec 的用户做安全过滤；空值 = 系统索引中的全部项；服务未安装/未运行或非 Windows 时不匹配并在状态栏提示 | 依赖 Windows Search 服务；结果受其索引范围与延迟影响；AQS 属性关键字随 Windows 显示语言（中文系统为 `种类:文档` `文件名:`，规范名 `System.FileName:` 通用）|
 | 插件/预处理器 | DLL 插件 | 不实现 DLL ABI | 安全/范围 |
 | `fuzzy:` | 无 | 扩展，默认关 | 本项目增强 |
 | `semantic:` / `sem:` | 无 | 新增（见第 5 章）| 语义搜索 |

@@ -51,10 +51,11 @@ fn system_index_queries() {
     let root = dir.to_string_lossy().to_ascii_lowercase();
     assert!(hits.paths.iter().all(|p| p.to_ascii_lowercase().starts_with(&root)), "{:?}", hits.paths);
 
-    // Phrases, properties and the limit.
+    // Phrases, properties (canonical names: the short keywords such as `filename:` follow
+    // the display language of Windows) and the limit.
     let phrase = search(&format!("\"quarterly {token}\""), 100, Duration::from_secs(30), &|| false).unwrap();
     assert!(has(&phrase, "alpha.txt") && !has(&phrase, "beta.txt"), "{phrase:?}");
-    let named = search(&format!("{token} filename:beta.txt"), 100, Duration::from_secs(30), &|| false).unwrap();
+    let named = search(&format!("{token} System.FileName:beta.txt"), 100, Duration::from_secs(30), &|| false).unwrap();
     assert!(has(&named, "beta.txt") && !has(&named, "alpha.txt"), "{named:?}");
     let one = search(&token, 1, Duration::from_secs(30), &|| false).unwrap();
     assert_eq!(one.paths.len(), 1);

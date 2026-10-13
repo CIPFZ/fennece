@@ -120,3 +120,4 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 - [fnc-exec] reparse points with cloud-placeholder or dedup attributes are not treated as links (`symlink:`, `junction:`, `target:`).
 - [fnc-app] property columns read unindexed values for the visible rows in the background (`LazyCells`); link target, file signature and recycle bin original location columns.
 - [fnc-app] folders on indexed NTFS/ReFS volumes or inside another indexed folder are not walked twice.
+- [fnc-platform][fnc-query][fnc-exec][fnc-app] `si:` / `system-index:` query the Windows Search system index (AQS → SQL via `ISearchQueryHelper`, OLE DB `Search.CollatorDSO`); paths resolved to index entries once per search (cached 30 s), bounded, cancellable; localised warning when the service is unavailable.
