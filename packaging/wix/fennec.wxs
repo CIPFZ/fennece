@@ -20,8 +20,11 @@
     <!-- Same-version upgrades: standard 0.2.0 <-> experimental 0.2.0 replace each other. -->
     <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of Fennec is already installed." />
     <MediaTemplate EmbedCab="yes" />
-    <Icon Id="FennecIcon" SourceFile="$(var.IconFile)" />
-    <Property Id="ARPPRODUCTICON" Value="FennecIcon" />
+    <!-- The Id is the file name Windows Installer caches (C:\Windows\Installer\{ProductCode}\<Id>): without an
+         .ico/.exe extension the advertised Start menu shortcut and the installed fennec.exe's taskbar button
+         show a blank icon. -->
+    <Icon Id="fennec.ico" SourceFile="$(var.IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="fennec.ico" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/CIPFZ/fennece" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
 
@@ -61,7 +64,7 @@
       <Component Id="FennecExe" Guid="*" Win64="yes">
         <File Id="fennec.exe" Source="$(var.BinDir)\fennec.exe" KeyPath="yes" />
         <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Fennec" WorkingDirectory="INSTALLFOLDER"
-                  Icon="FennecIcon" Advertise="yes" />
+                  Icon="fennec.ico" Advertise="yes" />
         <!-- Per-user data: removed only when REMOVEUSERDATA=1 (see FENNEC_USERDATA). -->
         <util:RemoveFolderEx Id="RemoveUserData" Property="FENNEC_USERDATA" On="uninstall" />
       </Component>
