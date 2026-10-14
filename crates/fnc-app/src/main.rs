@@ -65,6 +65,10 @@ fn run() -> anyhow::Result<()> {
         ifilter::run_host(&raw_args);
     }
     let cli = cli::parse(raw_args.clone());
+    // GUI subsystem in release builds: print into the console we were started from.
+    if cli.help || cli.version || cli.tool.is_some() {
+        fnc_platform::os::attach_parent_console();
+    }
     if cli.help {
         eprintln!("{}", cli::USAGE);
         return Ok(());
