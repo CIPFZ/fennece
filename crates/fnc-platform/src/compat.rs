@@ -323,6 +323,9 @@ mod imp {
         }
     }
 
+    /// # Safety
+    /// Window procedure: only called by Windows for windows of this class, with the
+    /// message parameters the system defines (`WM_COPYDATA` `lparam` = a valid `COPYDATASTRUCT`).
     unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         if msg == WM_DESTROY {
             // SAFETY: ends this thread's message loop.

@@ -279,6 +279,10 @@ mod imp {
 
     /// Forwards owner-draw and submenu-initialisation messages to the shell menu, so
     /// "Send to", "Open with" and third-party submenus fill in (IContextMenu2/3).
+    ///
+    /// # Safety
+    /// Subclass procedure: only called by Windows for the owner window while the menu is
+    /// tracked; its reference data is the `&host` pointer, removed before `host` is dropped.
     unsafe extern "system" fn menu_proc(
         hwnd: HWND,
         msg: u32,

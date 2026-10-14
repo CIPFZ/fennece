@@ -99,6 +99,9 @@ mod imp {
     pub static CTRL_V: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     pub static SHIFT_DEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+    /// # Safety
+    /// Subclass procedure: only called by Windows (via `SetWindowSubclass`) for the window it
+    /// was installed on, with system-defined message parameters.
     unsafe extern "system" fn key_proc(
         hwnd: windows::Win32::Foundation::HWND,
         msg: u32,
