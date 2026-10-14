@@ -122,3 +122,6 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 - [fnc-app] property columns read unindexed values for the visible rows in the background (`LazyCells`); link target, file signature and recycle bin original location columns.
 - [fnc-app] folders on indexed NTFS/ReFS volumes or inside another indexed folder are not walked twice.
 - [fnc-platform][fnc-query][fnc-exec][fnc-app] `si:` / `system-index:` query the Windows Search system index (AQS → SQL via `ISearchQueryHelper`, OLE DB `Search.CollatorDSO`); paths resolved to index entries once per search (cached 30 s), bounded, cancellable; localised warning when the service is unavailable.
+
+## 0.2.0 — release
+- [0.2.0] version 0.2.0 in every crate, the MSI, `-version`, the About dialog, the Everything IPC version (`1.4.1.200`) and the HTTP `Server` header (`Fennec/0.2.0`) (REL-01).

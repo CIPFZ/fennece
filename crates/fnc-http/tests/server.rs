@@ -140,7 +140,7 @@ fn int04_json_shape() {
     let r = get(h.local_addr(), "/?search=abc&json=1", AUTH);
     assert_eq!(r.status, 200);
     assert_eq!(r.header("content-type"), Some("application/json; charset=utf-8"));
-    assert_eq!(r.header("server"), Some("Fennec"));
+    assert_eq!(r.header("server"), Some(concat!("Fennec/", env!("CARGO_PKG_VERSION"))));
     let body = r.text();
     assert_eq!(
         body,
@@ -313,7 +313,7 @@ fn request_timeout() {
     let r = get(h.local_addr(), "/?search=abc&json=1", AUTH);
     assert_eq!(r.status, 503);
     assert!(t.elapsed() < Duration::from_millis(450), "answered at the deadline");
-    assert_eq!(r.header("server"), Some("Fennec"));
+    assert_eq!(r.header("server"), Some(concat!("Fennec/", env!("CARGO_PKG_VERSION"))));
 }
 
 #[test]

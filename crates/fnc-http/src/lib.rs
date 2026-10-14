@@ -374,7 +374,7 @@ async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Res
         }
     };
     let h = resp.headers_mut();
-    h.insert(header::SERVER, HeaderValue::from_static("Fennec"));
+    h.insert(header::SERVER, HeaderValue::from_static(concat!("Fennec/", env!("CARGO_PKG_VERSION"))));
     h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));

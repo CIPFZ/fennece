@@ -951,7 +951,7 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | 属性列标题与值 | 本地化 | 全部 305 个属性的列标题（按资源管理器各语言列名翻译）、是/否、像素、星级随界面语言；其他单位用国际缩写（kbps、Hz、mm、f/2.8、fps）；列选择器的属性子菜单顶部有筛选框（按标题或搜索名）| — |
 | 未索引属性列 / 读文件的列 | 可见行按需读取 | 属性库未覆盖的条目（属性未索引、不在范围内或尚未提取）在可见行上由后台线程读取（`cells::LazyCells`：最新请求优先、队列 256、缓存 2 万项、按修改时间与大小失效），UI 线程不读盘；另有"链接目标""文件签名""回收站原位置"三列（同一机制，不可排序）；云占位文件不读取 | 按这些列排序只用属性库中的值 |
 | `count:<max>`（结果数上限）| 搜索函数，限制结果数 | `count:` 后紧跟纯数字时为结果上限（`FuncId::Count` → `SetKind::Limit`），作为最后一个集合函数在排序后截断，UI 与 IPC/HTTP/fes/兼容层一致（es 1.1.0.38 的 `-n` 以 `< count:N >` 发送）；只能在顶层；其余情况（`count:tags:>2`）仍是比较修饰符 | 同名的修饰符与函数按值区分 |
-| Everything IPC 报告版本 | Everything 自身版本 | `1.4.1.<Fennec 版本>`（0.1.0 → `1.4.1.100`），`Host::everything_version` 可改 | 客户端按 ≥ 1.4.1 启用 QUERY2/IS_DB_LOADED（ADR-031）|
+| Everything IPC 报告版本 | Everything 自身版本 | `1.4.1.<Fennec 版本>`（0.2.0 → `1.4.1.200`），`Host::everything_version` 可改 | 客户端按 ≥ 1.4.1 启用 QUERY2/IS_DB_LOADED（ADR-031）|
 | IPC `A` 变体字符串 | ANSI 代码页 | UTF-8（失败回退 Latin-1）| 无 Win32 代码页转换（SPEC-GAP）|
 | Everything 1.5 IPC3 管道 | `\\.\pipe\Everything IPC` | 不实现；es 回退 IPC2 | 原生协议另见 ADR-030 |
 | es/fes 默认日期格式 | 系统区域格式（`GetDateFormat`）| `YYYY-MM-DD HH:MM:SS` 本地时间；ISO/FILETIME 格式与 es 一致 | 跨平台、可排序（ADR-033）|

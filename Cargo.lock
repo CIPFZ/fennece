@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "criterion",
@@ -1771,7 +1771,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "fnc-macros",
@@ -1835,7 +1835,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-etp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "fnc-core",
@@ -1851,7 +1851,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-exec"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "dhat",
@@ -1873,7 +1873,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-fes"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fnc-core",
  "fnc-exec",
@@ -1887,7 +1887,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-http"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "fnc-core",
@@ -1905,7 +1905,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-index"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "fnc-core",
@@ -1920,7 +1920,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-ipc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "fnc-core",
@@ -1941,7 +1941,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1950,7 +1950,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-ntfs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fnc-core",
  "fnc-index",
@@ -1965,7 +1965,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-platform"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "fnc-core",
@@ -1985,7 +1985,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-props"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chardetng",
  "chrono",
@@ -2016,7 +2016,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-query"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "fnc-core",
@@ -2026,7 +2026,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fnc-index",
  "fnc-ipc",
@@ -2036,7 +2036,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-semantic"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "llama-cpp-2",
@@ -2052,7 +2052,7 @@ dependencies = [
 
 [[package]]
 name = "fnc-service"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fnc-core",
  "fnc-ntfs",
@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "gen-fixtures"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "fnc-core",
@@ -2255,7 +2255,7 @@ dependencies = [
 
 [[package]]
 name = "gen-icons"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "png",
@@ -4573,7 +4573,7 @@ checksum = "2ab42ca02749e120097e328d91d415325bdf43b1c72c4c8badf37375fe40a813"
 
 [[package]]
 name = "sem-eval"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "fnc-semantic",
  "walkdir",
