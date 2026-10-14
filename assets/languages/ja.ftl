@@ -782,7 +782,7 @@ options-page-etp = ETP/FTP サーバー
 options-desc-etp = Everything クライアントと FTP クライアントがこのインデックスを検索・参照できるようにします（ETP = Everything 拡張付きの FTP）。［ツール］→［ETP サーバーに接続］の設定もここにあります。ユーザー名とパスワードは平文で送信されます。
 status-etp = ETP/FTP：{ $url }
 status-etp-failed = ETP/FTP サーバー：{ $error }
-status-portable-fallback = ポータブル フォルダーに書き込めません: データは { $path } に保存されます
+status-portable-fallback = ポータブル フォルダーに書き込めません: データはユーザー プロファイルに保存されます
 status-portable-fallback-tip = { $refused } に書き込めないため、設定・インデックス・ログは { $path } に保存されます。データをプログラムの隣に置くには、Fennec を書き込み可能なフォルダーに移動してください。
 status-etp-remote = ETP：{ $host }（{ $total } 件）
 msg-etp-bad-bind = ETP/FTP のバインド アドレスが無効です：{ $value }

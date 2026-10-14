@@ -116,16 +116,7 @@ fn run() -> anyhow::Result<()> {
         tracing::warn!(switch = %u, "unknown command line switch ignored");
     }
     i18n::init(&settings.language);
-    let data_warning = paths.unwritable_portable.as_ref().map(|refused| {
-        let path = paths.root.display().to_string();
-        (
-            i18n::t_args("status-portable-fallback", &[("path", path.clone().into())]),
-            i18n::t_args(
-                "status-portable-fallback-tip",
-                &[("refused", refused.display().to_string().into()), ("path", path.into())],
-            ),
-        )
-    });
+    let data_warning = app::data_warning(&paths);
     i18n::apply_collation(settings.name_collation);
     i18n::apply_date_locale(settings.date_input_order, settings.week_start);
 

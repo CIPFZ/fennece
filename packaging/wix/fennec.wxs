@@ -25,10 +25,29 @@
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/CIPFZ/fennece" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
 
+    <!-- Full uninstall: `msiexec /x` sets REMOVE=ALL, the maintenance UI's Remove button sets REMOVE to the
+         installed feature list (e.g. "Service,Main"); Main cannot be removed alone (Absent="disallow"). -->
+    <SetProperty Id="FULLREMOVE" Value="1" After="AppSearch" Sequence="execute">
+      <![CDATA[REMOVE ~= "ALL" OR REMOVE ~>< "Main"]]>
+    </SetProperty>
     <!-- 1 = delete %APPDATA%\Fennec of the uninstalling user (checkbox or command line). -->
     <Property Id="REMOVEUSERDATA" Secure="yes" />
-    <SetProperty Id="FENNEC_USERDATA" Value="[AppDataFolder]Fennec\" After="AppSearch" Sequence="execute">
-      <![CDATA[REMOVEUSERDATA = 1 AND REMOVE ~= "ALL" AND NOT UPGRADINGPRODUCTCODE]]>
+    <SetProperty Id="FENNEC_USERDATA" Value="[AppDataFolder]Fennec\" After="SetFULLREMOVE" Sequence="execute">
+      <![CDATA[REMOVEUSERDATA = 1 AND FULLREMOVE AND NOT UPGRADINGPRODUCTCODE]]>
+    </SetProperty>
+    <!-- %ProgramData%\Fennec (service logs): removed on a real uninstall, kept across upgrades. -->
+    <SetProperty Id="FENNEC_SERVICEDATA" Value="[CommonAppDataFolder]Fennec\" After="SetFULLREMOVE" Sequence="execute">
+      <![CDATA[FULLREMOVE AND NOT UPGRADINGPRODUCTCODE]]>
+    </SetProperty>
+    <!-- WiX 3 RemoveFolderEx aborts all rows on an empty property: point the unused ones at a
+         folder that does not exist ("Search path not found; skipping"). -->
+    <SetProperty Id="FENNEC_USERDATA" Value="[TempFolder]fennec-msi-keep-8738795c\" After="SetFULLREMOVE" Sequence="execute"
+                 Action="KeepUserData">
+      <![CDATA[NOT (REMOVEUSERDATA = 1 AND FULLREMOVE AND NOT UPGRADINGPRODUCTCODE)]]>
+    </SetProperty>
+    <SetProperty Id="FENNEC_SERVICEDATA" Value="[TempFolder]fennec-msi-keep-8738795c\" After="SetFULLREMOVE" Sequence="execute"
+                 Action="KeepServiceData">
+      <![CDATA[NOT (FULLREMOVE AND NOT UPGRADINGPRODUCTCODE)]]>
     </SetProperty>
 
     <Directory Id="TARGETDIR" Name="SourceDir">
@@ -36,12 +55,6 @@
         <Directory Id="INSTALLFOLDER" Name="Fennec" />
       </Directory>
       <Directory Id="ProgramMenuFolder" />
-      <!-- fennec-service.exe logs to %ProgramData%\Fennec\logs (LocalSystem). -->
-      <Directory Id="CommonAppDataFolder">
-        <Directory Id="ProgramDataFennec" Name="Fennec">
-          <Directory Id="ProgramDataFennecLogs" Name="logs" />
-        </Directory>
-      </Directory>
     </Directory>
 
     <ComponentGroup Id="CoreFiles" Directory="INSTALLFOLDER">
@@ -49,7 +62,7 @@
         <File Id="fennec.exe" Source="$(var.BinDir)\fennec.exe" KeyPath="yes" />
         <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Fennec" WorkingDirectory="INSTALLFOLDER"
                   Icon="FennecIcon" Advertise="yes" />
-        <!-- Per-user data: removed only when REMOVEUSERDATA=1 (FENNEC_USERDATA is empty otherwise). -->
+        <!-- Per-user data: removed only when REMOVEUSERDATA=1 (see FENNEC_USERDATA). -->
         <util:RemoveFolderEx Id="RemoveUserData" Property="FENNEC_USERDATA" On="uninstall" />
       </Component>
       <Component Id="FesExe" Guid="*" Win64="yes">
@@ -72,10 +85,8 @@
                         Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" />
         <ServiceControl Id="FennecServiceControl" Name="FennecService" Start="install" Stop="both" Remove="uninstall"
                         Wait="yes" />
-        <!-- The service's own log files (not user data). -->
-        <RemoveFile Id="ServiceLogs" Directory="ProgramDataFennecLogs" Name="*" On="uninstall" />
-        <RemoveFolder Id="ServiceLogsDir" Directory="ProgramDataFennecLogs" On="uninstall" />
-        <RemoveFolder Id="ServiceDataDir" Directory="ProgramDataFennec" On="uninstall" />
+        <!-- The service's own logs (%ProgramData%\Fennec\logs, LocalSystem); not user data. -->
+        <util:RemoveFolderEx Id="RemoveServiceData" Property="FENNEC_SERVICEDATA" On="uninstall" />
       </Component>
     </ComponentGroup>
 

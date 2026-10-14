@@ -788,7 +788,7 @@ options-page-etp = ETP/FTP 服务器
 options-desc-etp = 允许 Everything 客户端和 FTP 客户端搜索、浏览本索引（ETP = 带 Everything 扩展的 FTP），以及“工具 → 连接到 ETP 服务器”的设置。用户名和密码以明文发送。
 status-etp = ETP/FTP：{ $url }
 status-etp-failed = ETP/FTP 服务器：{ $error }
-status-portable-fallback = 便携目录不可写：数据保存在 { $path }
+status-portable-fallback = 便携目录不可写：数据改存到用户目录
 status-portable-fallback-tip = 无法写入 { $refused }，设置、索引和日志改为保存在 { $path }。将 Fennec 移到可写目录即可把数据保存在程序旁边。
 status-etp-remote = ETP：{ $host }（{ $total } 个结果）
 msg-etp-bad-bind = 无效的 ETP/FTP 绑定地址：{ $value }

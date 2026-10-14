@@ -639,13 +639,18 @@ fn unindexed_property_and_file_columns_load_in_the_background() {
 #[test]
 fn read_only_portable_folder_warns_in_the_status_bar() {
     let mut deps = deps_for(None, SharedIndex::default());
-    let warning = crate::i18n::t_args(
-        "status-portable-fallback",
-        &[("path", r"C:\Users\u\AppData\Local\Fennec\portable".into())],
-    );
-    deps.data_warning = Some((warning.clone(), "tip".into()));
+    let mut paths = fnc_core::paths::DataPaths {
+        root: r"C:\Users\u\AppData\Local\Fennec\portable".into(),
+        portable: true,
+        unwritable_portable: None,
+    };
+    assert_eq!(super::data_warning(&paths), None);
+    paths.unwritable_portable = Some(r"C:\Program Files\Fennec\data".into());
+    let (warning, tip) = super::data_warning(&paths).unwrap();
+    assert_eq!(warning, t("status-portable-fallback"));
+    assert!(tip.contains(r"C:\Program Files\Fennec\data") && tip.contains(r"AppData\Local\Fennec\portable"), "{tip}");
+    deps.data_warning = Some((warning.clone(), tip));
     let mut h = harness(deps);
     h.run_steps(2);
-    assert!(warning.contains(r"C:\Users\u\AppData\Local\Fennec\portable"), "{warning}");
     h.get_by_label(&warning);
 }

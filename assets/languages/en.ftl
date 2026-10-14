@@ -806,7 +806,7 @@ options-page-etp = ETP/FTP Server
 options-desc-etp = Lets Everything clients and FTP clients search and browse this index (ETP = FTP with the Everything extension), and settings for Tools → Connect to ETP Server. User names and passwords are sent as plain text.
 status-etp = ETP/FTP: { $url }
 status-etp-failed = ETP/FTP server: { $error }
-status-portable-fallback = Portable folder is read-only: data is saved in { $path }
+status-portable-fallback = Portable folder is read-only: data is kept in your user profile
 status-portable-fallback-tip = { $refused } cannot be written, so settings, the index and logs are kept in { $path }. Move Fennec to a writable folder to keep the data next to it.
 status-etp-remote = ETP: { $host } ({ $total } results)
 msg-etp-bad-bind = Invalid ETP/FTP bind address: { $value }

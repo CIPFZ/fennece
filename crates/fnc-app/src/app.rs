@@ -240,6 +240,17 @@ pub(super) struct View {
     remote: Option<remote_ui::RemoteView>,
 }
 
+/// Status bar warning and tooltip when a read-only portable folder made the data move to
+/// the per-user fallback (REL-07); `None` otherwise.
+pub fn data_warning(paths: &fnc_core::paths::DataPaths) -> Option<(String, String)> {
+    let refused = paths.unwritable_portable.as_ref()?;
+    let tip = t_args(
+        "status-portable-fallback-tip",
+        &[("refused", refused.display().to_string().into()), ("path", paths.root.display().to_string().into())],
+    );
+    Some((t("status-portable-fallback"), tip))
+}
+
 /// Main application state.
 pub struct FennecApp {
     shared: SharedIndex,
