@@ -321,6 +321,7 @@ SVC ..> MFT : 代读 MFT/USN 并通过管道转发
 | M4 | fes CLI、IPC 兼容层、HTTP 服务器、服务模式、右键菜单集成、导入导出 | 第 4 章 |
 | M5 | 语义搜索（文件名 → 内容 → 代码 → 图片）| 第 5 章 |
 | M6 | 标签页、查找栏、高级重命名、撤销、本地化、安装包、跨平台后端 | 第 3、6 章 |
+| 0.2.0 发布 | 不加新功能：崩溃日志、升级兼容、语义关闭释放内存、读文件列排序、24 h 稳定性测试、双包（标准/实验）、安装验证、性能回归 | 第 6 章 §3 |
 
 详细验收标准见第 6 章。
 
@@ -1694,6 +1695,10 @@ UI 与引擎通过 `crossbeam-channel` 消息通信：`UiMsg::{QueryResult, Inde
 
 ### M6 打磨（3 周）
 - 标签页、会话、查找栏、文件夹/书签侧栏、高级重命名、撤销、自定义列（`eval:`）、工具栏自定义、本地化首批语言、可访问性、ETP `[MAY]`、Linux/macOS 后端 `[MAY]`。
+
+### 0.2.0 发布阶段（1–2 周，`docs/AGENT.md` v2 §7）
+- REL-01 版本 0.2.0；REL-02 全局 panic hook 与崩溃日志、下次启动提示；REL-03 数据格式版本与升级策略（ADR-038）；REL-04 关闭语义搜索/空闲卸载释放内存；REL-05 24 h soak（`tools/soak/`）；REL-06 读文件的三列"确认后后台读取再排序"；REL-07 标准包（无语义）+ 实验包（含语义）各 MSI/便携 zip + `SHA256SUMS.txt`；REL-08 安装验证；REL-09 Windows 性能回归；REL-10 ADR-037 与发布说明；REL-11 发布。
+- 验收：`docs/reports/0.2.0.md`、`docs/reports/0.2.0-install.md`、`docs/reports/soak-0.2.0.md`、`bench/results-windows.md`。
 
 ---
 
