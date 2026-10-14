@@ -19,13 +19,15 @@ use fnc_index::IndexStore;
 use parking_lot::Mutex;
 use xxhash_rust::xxh3::xxh3_64;
 
-use crate::fnx::{Dec, Enc, FnxError, FnxResult, FnxWriter, segments};
+use crate::fnx::{Dec, Enc, FnxError, FnxResult, FnxWriter, segments_versioned};
 use crate::hash::HashKey;
 
 /// `files.fnx` magic.
 pub const FILES_MAGIC: [u8; 4] = *b"FNXF";
 /// `files.fnx` layout version.
 pub const FILES_VERSION: u32 = 1;
+/// Oldest `files.fnx` layout this build reads (ADR-038).
+pub const FILES_OLDEST_READABLE: u32 = 1;
 
 /// A value read from a file for a result column.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -196,9 +198,16 @@ impl FileValueCache {
         w.finish()
     }
 
+    /// Loads `path` (layouts `FILES_OLDEST_READABLE..=FILES_VERSION`).
+    pub fn load(path: &Path) -> FnxResult<Self> {
+        Self::from_bytes(&crate::fnx::read_file(path)?)
+    }
+
     /// Decodes cache bytes.
     pub fn from_bytes(buf: &[u8]) -> FnxResult<Self> {
-        let segs = segments(buf, FILES_MAGIC, FILES_VERSION, "file value cache")?;
+        // One decoder per readable layout; layout 1 is the only one so far.
+        let (_layout, segs) =
+            segments_versioned(buf, FILES_MAGIC, FILES_OLDEST_READABLE, FILES_VERSION, "file value cache")?;
         let seg =
             segs.iter().find(|(t, _)| t == b"FVAL").map(|(_, s)| *s).ok_or(FnxError::Corrupt("missing segment"))?;
         let mut d = Dec::new(seg);
@@ -221,7 +230,7 @@ impl FileValueCache {
     /// Loads `path`; a missing or unusable file gives an empty cache (logged).
     pub fn load_or_default(path: Option<&Path>) -> Self {
         let Some(path) = path.filter(|p| p.exists()) else { return Self::new() };
-        match crate::fnx::read_file(path).and_then(|b| Self::from_bytes(&b)) {
+        match Self::load(path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(error = %e, "files.fnx unusable; starting empty");
@@ -292,6 +301,40 @@ mod tests {
         assert_eq!(small.len(), 1);
         assert_eq!(FileField::lookup("Link-Target"), Some(FileField::LinkTarget));
         assert_eq!(FileField::lookup("recycle_bin_original_path"), Some(FileField::RecycleOrigin));
+    }
+
+    #[test]
+    fn old_corrupt_and_future_files_are_set_aside() {
+        use crate::fnx::load_or_recover;
+        use fnc_core::upgrade::Unreadable;
+        let c = FileValueCache::new();
+        c.insert(HashKey { volume: 1, file: 2, size: 3, dm: 4 }, FileField::Signature, "png");
+        let good = c.to_bytes();
+        let with_version = |v: u32| {
+            let mut b = good.clone();
+            b[4..8].copy_from_slice(&v.to_le_bytes());
+            b
+        };
+        let mut bad = good.clone();
+        let n = bad.len();
+        bad[n / 2] ^= 1;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("files.fnx");
+        std::fs::write(&p, &good).unwrap();
+        let (back, rec) = load_or_recover(&p, FILES_OLDEST_READABLE, FILES_VERSION, FileValueCache::load);
+        assert_eq!((back.map(|b| b.len()), rec.is_none()), (Some(1), true));
+        for (bytes, why, bak) in [
+            (with_version(0), Unreadable::Old(0), "files.fnx.v0.bak"),
+            (with_version(FILES_VERSION + 1), Unreadable::Future(FILES_VERSION + 1), "files.fnx.v2.bak"),
+            (bad, Unreadable::Corrupt, "files.fnx.corrupt.bak"),
+        ] {
+            std::fs::write(&p, &bytes).unwrap();
+            let (back, rec) = load_or_recover(&p, FILES_OLDEST_READABLE, FILES_VERSION, FileValueCache::load);
+            let rec = rec.unwrap();
+            assert!(back.is_none());
+            assert_eq!(rec.why, why);
+            assert_eq!(std::fs::read(dir.path().join(bak)).unwrap(), bytes, "kept byte for byte");
+        }
     }
 
     #[test]

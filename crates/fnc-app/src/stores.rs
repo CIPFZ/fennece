@@ -199,6 +199,19 @@ impl Stores {
             }
             None => HashCache::default(),
         };
+        let files = match dir.as_ref().map(|d| d.join("files.fnx")) {
+            Some(p) => {
+                let (c, rec) = fnc_props::fnx::load_or_recover(
+                    &p,
+                    fnc_props::filecache::FILES_OLDEST_READABLE,
+                    fnc_props::filecache::FILES_VERSION,
+                    FileValueCache::load,
+                );
+                notices.extend(rec.map(|r| crate::upgrade::notice(&r, true)));
+                c.unwrap_or_else(FileValueCache::new)
+            }
+            None => FileValueCache::new(),
+        };
         let (tx, rx) = crossbeam_channel::unbounded();
         let on_demand = Arc::new(Mutex::new(on_demand(provider.clone(), &cfg, ansi_code_page)));
         let source = on_demand.clone();
@@ -211,7 +224,7 @@ impl Stores {
             cells: crate::cells::LazyCells::new(
                 move || source.lock().clone(),
                 // Values of the file-reading columns (REL-06), keyed by file identity.
-                Arc::new(FileValueCache::load_or_default(dir.as_ref().map(|d| d.join("files.fnx")).as_deref())),
+                Arc::new(files),
             ),
             provider,
             ansi_code_page,

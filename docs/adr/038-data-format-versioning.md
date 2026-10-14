@@ -5,7 +5,7 @@
 ## Background
 0.2.0 must start on a 0.1.0 data folder without losing anything. Every binary store already
 had `magic | version u32` (`index.fnx` "FNX1", `props.fnx` "FNXP", `content.fnx` "FNXC",
-`hashes.fnx` "FNXH", semantic `store.bin` "FSEM"), but any other version was treated like
+`hashes.fnx` "FNXH", semantic `store.bin` "FSEM"; 0.2.0 adds `files.fnx` "FNXF"), but any other version was treated like
 damage, and a file that failed to load was renamed `index.fnx.bad` (index) or simply left to
 be overwritten by the next save (property/content/hash/vector stores, `filters.toml`,
 `bookmarks.toml`, `search_history.toml`, `session.toml`, a bad `settings.toml`). A newer
