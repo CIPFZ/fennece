@@ -417,7 +417,7 @@ fn forwarded_command_lines() {
 }
 
 /// Indexes the files of `dir` into `shared` (folder source).
-fn index_folder(shared: &SharedIndex, dir: &std::path::Path) {
+pub(super) fn index_folder(shared: &SharedIndex, dir: &std::path::Path) {
     let mut store = fnc_index::IndexStore::default();
     let mut src = fnc_platform::walk::FolderSource::new(dir);
     let vol = store.add_volume(fnc_platform::VolumeSource::info(&src), Some(1)).unwrap();
@@ -444,7 +444,7 @@ fn png(w: u32, h: u32) -> Vec<u8> {
     out
 }
 
-fn wait_query(h: &mut Harness<'_, FennecApp>, q: &str, n: usize) {
+pub(super) fn wait_query(h: &mut Harness<'_, FennecApp>, q: &str, n: usize) {
     h.state_mut().set_query(q.into());
     wait_until(h, q, |a| {
         a.v.sent_query.as_deref() == Some(q) && a.v.latest_shown + 1 == a.v.next_id && a.v.results.len() == n

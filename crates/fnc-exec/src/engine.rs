@@ -16,6 +16,7 @@ use fnc_query::{Expr, FilterSet, ModSet, Modifier, Term, Value, parse, plan};
 use parking_lot::Mutex;
 
 use fnc_props::content::ContentIndex;
+use fnc_props::filecache::FileValueCache;
 use fnc_props::hash::HashCache;
 use fnc_props::ondemand::OnDemand;
 use fnc_props::store::PropertyIndex;
@@ -74,6 +75,9 @@ pub struct SearchOptions {
     /// [`crate::SortKey::Custom`] sorts (`None` = the column's formula did not parse).
     /// Compared by identity: keep reusing the same `Arc`s while the setting is unchanged.
     pub formulas: Vec<Option<Shared<fnc_query::formula::Formula>>>,
+    /// Values read from files for [`crate::SortKey::File`] sorts (the app's cache, filled
+    /// by its file-reading columns); `None` = such sorts see no values.
+    pub file_values: Option<Shared<FileValueCache>>,
 }
 
 impl Default for SearchOptions {
@@ -97,6 +101,7 @@ impl Default for SearchOptions {
             system_index: None,
             semantic_fuse: false,
             formulas: Vec::new(),
+            file_values: None,
         }
     }
 }
@@ -406,6 +411,7 @@ fn run(
     if cancel.is_cancelled() {
         return Err(Cancelled);
     }
+    let file_values = req.options.file_values.as_ref().map(|f| &*f.0);
     let ext_generation = ext.generation();
     let last = last.filter(|l| {
         l.results.is_current(&snap) && l.results.ext_generation == ext_generation && *l.req.options == *req.options
@@ -433,7 +439,7 @@ fn run(
     if results.sort != Some(req.sort) || fresh_post {
         let ts = Instant::now();
         // With set functions, the pre-set results are sorted and the sets re-applied.
-        let sx = SortExt { props: ext.props, formulas: &req.options.formulas };
+        let sx = SortExt { props: ext.props, formulas: &req.options.formulas, files: file_values };
         match base_ids_mut(&mut results) {
             Some(base) => sort_ids_with(base, &req.sort, &snap, caches, cancel, sx)?,
             None => sort_ids_with(&mut results.ids, &req.sort, &snap, caches, cancel, sx)?,
@@ -477,7 +483,7 @@ fn run(
                     // Semantic-only hits join the results in the requested order.
                     let known: std::collections::HashSet<u32> = results.ids.iter().map(|id| id.0).collect();
                     results.ids.extend(hits.iter().map(|h| h.id).filter(|id| !known.contains(&id.0)));
-                    let sx = SortExt { props: ext.props, formulas: &req.options.formulas };
+                    let sx = SortExt { props: ext.props, formulas: &req.options.formulas, files: file_values };
                     sort_ids_with(&mut results.ids, &req.sort, &snap, caches, cancel, sx)?;
                 }
             }

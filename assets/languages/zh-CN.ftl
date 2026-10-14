@@ -811,3 +811,9 @@ etp-link-share = \\Server\C（Windows 共享）
 etp-link-admin-share = \\Server\C$（管理共享）
 etp-plain-text-warning = 用户名和密码以明文发送。
 etp-connect = 连接
+
+# Sorting by the file-reading columns (REL-06)
+dialog-read-files-title = 按文件内容排序
+dialog-read-files = 需读取 { $count } 个文件（预计 { $secs } 秒），继续？
+dialog-continue = 继续
+status-reading-files = 正在读取 { $done } / { $total }

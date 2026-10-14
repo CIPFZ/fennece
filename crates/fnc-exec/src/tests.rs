@@ -164,6 +164,7 @@ fn sorting() {
         then: [None; 2],
         props: [None; 3],
         custom: [None; 3],
+        files: [None; 3],
     };
     let r = run_on(&s, "file", Some(name));
     assert_eq!(r.iter().map(|p| leaf_name(p)).collect::<Vec<_>>(), vec!["file2.txt", "file10.txt"]);
@@ -177,6 +178,7 @@ fn sorting() {
         then: [None; 2],
         props: [None; 3],
         custom: [None; 3],
+        files: [None; 3],
     };
     let r = run_on(&s, "ext:jpg;png;flac", Some(size));
     assert_eq!(
@@ -190,6 +192,7 @@ fn sorting() {
         then: [None; 2],
         props: [None; 3],
         custom: [None; 3],
+        files: [None; 3],
     };
     let r = run_on(&s, "bob\\", Some(ff));
     let first_file = r.iter().position(|p| p.contains('.') || p.ends_with("README")).unwrap();
@@ -201,6 +204,7 @@ fn sorting() {
         then: [None; 2],
         props: [None; 3],
         custom: [None; 3],
+        files: [None; 3],
     };
     let r = run_on(&s, "file:", Some(path));
     assert_eq!(r.first().map(String::as_str), Some("C:\\Users\\bob\\file2.txt"));
@@ -334,6 +338,7 @@ fn engine_refresh_after_index_change() {
         then: [None; 2],
         props: [None; 3],
         custom: [None; 3],
+        files: [None; 3],
     };
     engine.search(r);
     let EngineEvent::Done(o) = rx.recv_timeout(Duration::from_secs(5)).unwrap();

@@ -126,3 +126,4 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 ## 0.2.0 — release
 - [0.2.0] version 0.2.0 in every crate, the MSI, `-version`, the About dialog, the Everything IPC version (`1.4.1.200`) and the HTTP `Server` header (`Fennec/0.2.0`) (REL-01).
 - [0.2.0][docs] ADR-037: `unsafe` scope (fnc-ntfs, fnc-platform, fnc-ipc, fnc-sdk, fnc-service; per-crate sites, purpose, lint overrides; new crates need an ADR); SPEC ch.6 §5 points to it (REL-10).
+- [0.2.0][fnc-app][fnc-exec][fnc-props] link target / file signature / recycle bin original location columns sortable: header click counts the unread files of the whole result, asks "N files need to be read (about X s)", reads them in the background (status bar progress, Cancel/Esc/new search cancel), then sorts (`SortKey::File`, `SortSpec::files`); values persist in `files.fnx` (file identity + size + date modified) (REL-06).

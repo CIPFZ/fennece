@@ -44,6 +44,11 @@ pub(super) enum Dialog {
     ConfirmDelete {
         paths: Vec<PathBuf>,
     },
+    /// Sorting by a file-reading column needs `count` files read (about `secs` seconds).
+    ReadFiles {
+        count: usize,
+        secs: u64,
+    },
     Journal {
         records: Vec<crate::journal::Record>,
         filter: String,
@@ -281,6 +286,7 @@ impl FennecApp {
             Dialog::Export { .. } => t("cmd-export"),
             Dialog::Transfer { action, .. } => action.command().label(),
             Dialog::ConfirmDelete { .. } => t("cmd-delete-permanently"),
+            Dialog::ReadFiles { .. } => t("dialog-read-files-title"),
             Dialog::Journal { .. } => t("cmd-index-journal"),
             Dialog::ContextMenu { .. } => String::new(),
             Dialog::ConnectEtp(_) => t("cmd-connect-etp"),
@@ -524,6 +530,19 @@ impl FennecApp {
                     return Act::Close;
                 }
                 if cancel { Act::Close } else { Act::Keep }
+            }
+            Dialog::ReadFiles { count, secs } => {
+                ui.label(t_args("dialog-read-files", &[("count", (*count).into()), ("secs", (*secs).into())]));
+                let (ok, cancel) = buttons(ui, "dialog-continue");
+                if ok {
+                    self.confirm_file_read();
+                    return Act::Close;
+                }
+                if cancel {
+                    self.cancel_file_sort();
+                    return Act::Close;
+                }
+                Act::Keep
             }
             Dialog::Journal { records, filter } => {
                 ui.horizontal(|ui| {

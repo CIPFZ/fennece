@@ -32,6 +32,7 @@ use fnc_exec::{SearchOptions, Shared, SlowPolicy, SystemIndexSource};
 use fnc_index::{Change, ChangeBatch, EntryRef, IndexStore, PathChange, SharedIndex};
 use fnc_props::content::{ContentExtractor, ContentIndex, ContentStore};
 use fnc_props::extract::{PropertyExtractor, PropertyProvider};
+use fnc_props::filecache::FileValueCache;
 use fnc_props::hash::HashCache;
 use fnc_props::ondemand::{DefaultOnDemand, OnDemand};
 use fnc_props::{ContentIndexConfig, ContentLimits, PropertyIndex, PropertyIndexConfig, PropertyStore, Scope};
@@ -200,7 +201,11 @@ impl Stores {
             hashes: Arc::new(hashes),
             on_demand,
             system_index: Arc::new(fnc_platform::sysindex::WinSearch::default()),
-            cells: crate::cells::LazyCells::new(move || source.lock().clone()),
+            cells: crate::cells::LazyCells::new(
+                move || source.lock().clone(),
+                // Values of the file-reading columns (REL-06), keyed by file identity.
+                Arc::new(FileValueCache::load_or_default(dir.as_ref().map(|d| d.join("files.fnx")).as_deref())),
+            ),
             provider,
             ansi_code_page,
             dir,
@@ -238,6 +243,7 @@ impl Stores {
         o.hashes = Some(Shared::new(self.hashes.clone()));
         o.on_demand = Some(Shared::new(self.on_demand.lock().clone()));
         o.system_index = Some(Shared::new(self.system_index.clone()));
+        o.file_values = Some(Shared::new(self.cells.file_values()));
         o.slow = cfg.slow;
     }
 
@@ -456,6 +462,11 @@ impl IndexHooks for Stores {
                 Ok(()) => saved.2 = hg,
                 Err(e) => tracing::warn!(error = %e, "cannot save hashes.fnx"),
             }
+        }
+        if let Some(path) = self.path("files.fnx")
+            && let Err(e) = self.cells.file_values().save_if_changed(&path)
+        {
+            tracing::warn!(error = %e, "cannot save files.fnx");
         }
         tracing::debug!(elapsed = ?t.elapsed(), "stores saved");
     }

@@ -166,14 +166,16 @@ impl FennecApp {
             let first_asc = !col.sort_descending_first();
             let single = self.v.sort.then.iter().all(Option::is_none);
             let primary = self.v.sort.sort_keys().next().map(|(k, _)| k);
+            let mut spec = self.v.sort;
             if ctrl {
-                self.v.sort.push_sort_key(key, first_asc);
+                spec.push_sort_key(key, first_asc);
             } else if primary == Some(key) && single {
-                self.v.sort.ascending = !self.v.sort.ascending;
+                spec.ascending = !spec.ascending;
             } else {
-                self.v.sort = fnc_exec::SortSpec::by_key(key, first_asc, self.settings.folders_first);
+                spec = fnc_exec::SortSpec::by_key(key, first_asc, self.settings.folders_first);
             }
-            self.send_search();
+            // File-reading columns may ask and read first (REL-06).
+            self.request_sort(spec);
             // Keep typing in the search box after sorting.
             if self.v.focus == Focus::Search {
                 self.v.keep_focus = true;
