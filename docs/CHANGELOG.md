@@ -125,3 +125,5 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 
 ## 0.2.0 — release
 - [0.2.0] version 0.2.0 in every crate, the MSI, `-version`, the About dialog, the Everything IPC version (`1.4.1.200`) and the HTTP `Server` header (`Fennec/0.2.0`) (REL-01).
+- [packaging] build matrix: `build.ps1 -Variant standard|experimental|all` → `fennec-<ver>-x64-{standard,experimental}.msi` + `-portable.zip` + `SHA256SUMS.txt`; separate target folders, fes/service built once; MSI product name shows the variant, one upgrade code (variants replace each other, 0.1.0 upgrades); uninstall (not upgrades) removes `%ProgramData%\Fennec` (service logs) and, with the Remove-page checkbox or `REMOVEUSERDATA=1`, the user's `%APPDATA%\Fennec` (default keep) (REL-07).
+- [fnc-core][fnc-app] portable copy in a read-only folder: data falls back to `%LOCALAPPDATA%\Fennec\portable` with a permanent status-bar warning; an unwritable log folder no longer stops start-up (REL-07).

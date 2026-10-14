@@ -277,6 +277,8 @@ SVC ..> MFT : 代读 MFT/USN 并通过管道转发
 
 - 安装模式：`%APPDATA%\Fennec\{settings.toml, index.fnx, content.fnx, vectors/, logs/}`。
 - 便携模式：可执行文件同目录存在 `portable` 空文件时，所有数据写入同目录 `data/`。
+- 便携目录不可写（如解压到 `C:\Program Files` 下且以普通用户运行，或 ACL 拒绝写入）：启动时以探测文件检测，数据改写到 `%LOCALAPPDATA%\Fennec\portable`（多实例为其下 `instances/<name>`），状态栏常驻警告并在悬停提示中给出被拒绝的目录；不静默退出、不丢数据。程序目录本身从不被写入。（0.2.0，REL-07）
+- 卸载（MSI）：删除程序文件、服务（先停止）、HKLM 右键菜单键、HKLM `Run` 值、开始菜单快捷方式与 `%ProgramData%\Fennec`（服务日志）；`%APPDATA%\Fennec` 默认保留，维护界面"删除"页勾选或 `msiexec /x … REMOVEUSERDATA=1` 时删除卸载者本人的数据（其他用户、便携数据、`-install-*` 命令行开关写入的 HKCU 项不动）。
 - 多实例：`-instance <name>` 使用独立数据目录与互斥量。
 
 ### 6.5 兼容性承诺
@@ -1378,7 +1380,8 @@ Response { id, status, payload: Columns as arrays (列式) }
 
 ## 9. 更新与打包 `[SHOULD]`
 
-- 便携 zip（`fennec.exe`、`fes.exe`、`fennec-service.exe`、`languages/`、`LICENSE`）与 MSI（`cargo-wix`）；`x64` 与 `arm64`。
+- 便携 zip（`fennec.exe`、`fes.exe`、`fennec-service.exe`、`LICENSE-MIT`/`LICENSE-APACHE`、`README.md`、`portable` 标记；语言文件嵌入 `fennec.exe`，无 `languages/` 目录）与 MSI（WiX 3，`packaging/wix/fennec.wxs`）；`x64` 与 `arm64`。
+  - 0.2.0 实际产物（`packaging/build.ps1`，REL-07）：`fennec-<版本>-x64-standard.msi` / `-standard-portable.zip`（`--no-default-features`，不含语义搜索）与 `fennec-<版本>-x64-experimental.msi` / `-experimental-portable.zip`（默认 feature，含 `semantic`），外加 `SHA256SUMS.txt`。两个 MSI 共用 UpgradeCode（并允许同版本升级）：安装其一即替换另一个，并可从 0.1.0 升级；"应用和功能"中显示为 "Fennec" / "Fennec (experimental)"。已知缺口：未构建 `arm64`；未签名。
 - 可选检查更新（默认关闭，无遥测，仅 GET 版本 JSON）。
 - 代码签名位（CI 中注入）。
 
