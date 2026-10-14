@@ -119,6 +119,8 @@ pub struct Args {
     pub ignored: Vec<String>,
     /// Raw switch arguments worth saving with `-save-settings`.
     pub settings: Vec<String>,
+    /// `-debug-panic` (hidden, not in the help): panic to test the crash report (REL-02).
+    pub debug_panic: bool,
 }
 
 impl Default for Args {
@@ -155,6 +157,7 @@ impl Default for Args {
             db: None,
             ignored: Vec::new(),
             settings: Vec::new(),
+            debug_panic: false,
         }
     }
 }
@@ -647,6 +650,8 @@ pub fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Args, ArgErro
             a.clear_settings = true;
         } else if any(n, &["?", "help", "h"]) {
             a.mode = Mode::Help;
+        } else if option_eq(n, "debug-panic") {
+            a.debug_panic = true;
         } else if option_eq(n, "version") {
             a.mode = Mode::Version;
         } else if option_eq(n, "get-everything-version") {
@@ -1010,6 +1015,7 @@ mod tests {
         assert_eq!(p(&["-get-total-size"]).mode, Mode::TotalSize);
         assert_eq!(p(&["-get-everything-version"]).mode, Mode::EverythingVersion);
         assert_eq!(p(&["-version"]).mode, Mode::Version);
+        assert!(p(&["-debug-panic"]).debug_panic && !p(&["-debug"]).debug_panic);
         assert_eq!(p(&["-help"]).mode, Mode::Help);
         assert_eq!(p(&["/?"]).mode, Mode::Help);
         assert_eq!(p(&["-set-run-count", "C:\\a", "3"]).mode, Mode::SetRunCount("C:\\a".into(), 3));

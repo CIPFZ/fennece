@@ -8,6 +8,7 @@ mod cells;
 mod cli;
 mod columns;
 mod commands;
+mod crash;
 mod exclude;
 mod export;
 mod filters;
@@ -44,23 +45,30 @@ use fnc_index::SharedIndex;
 use fnc_platform::instance::{Instance, acquire};
 
 fn main() -> ExitCode {
-    match run() {
+    let code = match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("{e:#}");
             eprintln!("fennec: {e:#}");
             ExitCode::FAILURE
         }
-    }
+    };
+    // Ended normally: panics contained so far were not fatal (REL-02).
+    fnc_core::crash::mark_survived();
+    code
 }
 
 fn run() -> anyhow::Result<()> {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     // Hidden mode: IFilter host process of the content extraction (ADR-035).
     if ifilter::is_host_invocation(&raw_args) {
-        ifilter::run_host();
+        ifilter::run_host(&raw_args);
     }
     let cli = cli::parse(raw_args.clone());
+    // GUI subsystem in release builds: print into the console we were started from.
+    if cli.help || cli.version || cli.tool.is_some() {
+        fnc_platform::os::attach_parent_console();
+    }
     if cli.help {
         eprintln!("{}", cli::USAGE);
         return Ok(());
@@ -90,6 +98,7 @@ fn run() -> anyhow::Result<()> {
         }
         None => (paths.logs_dir(), "fennec".to_string()),
     };
+    crash::install(&logs, settings.crash_redact_queries);
     let _log_guard = init_logging(&LogConfig {
         dir: Some(&logs),
         prefix: &prefix,
@@ -103,6 +112,9 @@ fn run() -> anyhow::Result<()> {
     }
     for u in &cli.unknown {
         tracing::warn!(switch = %u, "unknown command line switch ignored");
+    }
+    if cli.debug_panic {
+        crash::arm_debug_panic();
     }
     i18n::init(&settings.language);
     i18n::apply_collation(settings.name_collation);
@@ -169,6 +181,7 @@ fn run() -> anyhow::Result<()> {
         tracing::warn!(error = %e, "cannot size the search thread pool");
     }
     let shared = SharedIndex::default();
+    crash::register_state(shared.clone());
     let (engine_tx, engine_rx) = crossbeam_channel::unbounded();
     let engine = SearchEngine::spawn(shared.clone(), engine_tx, Box::new(wake.clone()));
     let new_engine: Arc<dyn Fn() -> (SearchEngine, crossbeam_channel::Receiver<fnc_exec::EngineEvent>) + Send + Sync> = {

@@ -69,6 +69,9 @@ pub struct Cli {
     pub modifiers: Vec<&'static str>,
     /// `-connect [user:password@]host[:port]`: search an ETP server (Everything's option).
     pub connect: Option<String>,
+    /// `-debug-panic` (hidden, not in the usage text): panic on the UI thread to test
+    /// the crash report (REL-02).
+    pub debug_panic: bool,
     /// Unknown switches (reported as warnings).
     pub unknown: Vec<String>,
 }
@@ -309,6 +312,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Cli {
             "db" => cli.db = value(&mut it),
             "help" | "h" | "?" => cli.help = true,
             "version" | "v" => cli.version = true,
+            "debug-panic" => cli.debug_panic = true,
             _ => cli.unknown.push(a),
         }
     }
@@ -400,5 +404,14 @@ mod tests {
         assert_eq!(p(&["-search*", "a | b"]).search.as_deref(), Some("\"a | b\""));
         assert!(p(&["-rebuild"]).reindex && p(&["-update"]).update && p(&["-save-db"]).save_db);
         assert_eq!(p(&["-start-service"]).service, Some(ServiceAction::Start));
+    }
+
+    /// `-debug-panic` is parsed but hidden from the usage text (REL-02).
+    #[test]
+    fn hidden_debug_panic() {
+        let c = p(&["-debug-panic", "abc"]);
+        assert!(c.debug_panic && c.unknown.is_empty());
+        assert_eq!(c.search.as_deref(), Some("abc"));
+        assert!(!USAGE.contains("debug-panic"));
     }
 }

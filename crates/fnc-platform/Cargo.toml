@@ -53,6 +53,8 @@ windows = { workspace = true, features = [
     "Win32_Storage_IndexServer",
     "Win32_System_JobObjects",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_Console",
+    "Win32_System_Kernel",
 ] }
 windows-core = "0.62"
 

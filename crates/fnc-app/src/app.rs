@@ -310,6 +310,8 @@ pub struct FennecApp {
     sidebar_cache: sidebar::SidebarCache,
     /// IPC, Everything-compatible and HTTP servers.
     servers: Option<integration::AppServers>,
+    /// "Did not exit normally last time" status-bar item (REL-02).
+    crash: crate::crash::CrashPrompt,
 }
 
 impl FennecApp {
@@ -443,6 +445,7 @@ impl FennecApp {
             tabs: Default::default(),
             sidebar_cache: Default::default(),
             servers: None,
+            crash: crate::crash::CrashPrompt::detect(),
         };
         app.semantic_init();
         app.rebuild_search_options();
@@ -515,6 +518,7 @@ impl FennecApp {
             self.v.history_idle_since = Some(Instant::now());
         }
         self.v.sent_query = Some(self.v.query.clone());
+        fnc_core::crash::record_query(&self.v.query);
         self.v.edited_at = None;
         if self.send_remote_search(id) {
             return;
@@ -643,7 +647,10 @@ impl FennecApp {
         self.drain_remote();
         while let Ok(ev) = self.index_rx.try_recv() {
             match ev {
-                IndexEvent::Status(s) => self.status = s,
+                IndexEvent::Status(s) => {
+                    crate::crash::set_phase(&s);
+                    self.status = s;
+                }
                 IndexEvent::Message(m) => self.message = Some((m, Instant::now())),
                 IndexEvent::Compacted { old_instance, remap } => self.on_compacted(old_instance, &remap),
             }
@@ -1846,6 +1853,9 @@ impl FennecApp {
                 ui.separator();
                 ui.label(self.active_filter_name());
             }
+            if let Some(m) = self.crash.ui(ui) {
+                self.say(m);
+            }
             if let Some(d) = self.v.diagnostics.first() {
                 ui.separator();
                 ui.colored_label(ui.visuals().warn_fg_color, d);
@@ -1897,6 +1907,7 @@ impl FennecApp {
         if old.theme != s.theme {
             apply_theme(ctx, s.theme);
         }
+        fnc_core::crash::set_redact_queries(s.crash_redact_queries);
         if (old.ui_scale - s.ui_scale).abs() > f32::EPSILON {
             ctx.set_zoom_factor(s.ui_scale.clamp(0.5, 3.0));
         }
@@ -2323,6 +2334,7 @@ impl eframe::App for FennecApp {
         self.hwnd = hwnd;
         self.handle_keys(&ctx);
         self.draw_main(ui, true);
+        crate::crash::debug_panic_tick(&ctx, matches!(self.status, IndexStatus::Ready { .. }));
         self.dialogs(&ctx);
         self.options_viewport(&ctx);
         self.semantic_setup_window(&ctx);
