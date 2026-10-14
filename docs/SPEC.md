@@ -1711,7 +1711,7 @@ UI 与引擎通过 `crossbeam-channel` 消息通信：`UiMsg::{QueryResult, Inde
 
 ## 5. 编码规范
 
-- `#![deny(unsafe_op_in_unsafe_fn)]`，`unsafe` 仅限 `fnc-ntfs`/`fnc-platform`，每处注释安全性论证。
+- `#![deny(unsafe_op_in_unsafe_fn)]`，`unsafe` 仅限 `fnc-ntfs`/`fnc-platform`/`fnc-ipc`/`fnc-sdk`/`fnc-service`（范围与理由见 ADR-037，新增 crate 需先写 ADR），每处注释安全性论证。
 - 无 `unwrap()` 于非测试代码（`clippy::unwrap_used` 报错），错误用 `thiserror` 定义，UI 层 `anyhow` 汇报。
 - 热路径禁止分配：匹配、排序比较、路径拼接使用复用缓冲。
 - 所有可配置项集中在 `Settings` 结构，字段带 `#[setting(key="search_delay", default=0, page="search")]` 派生宏生成"高级"页与文档。
