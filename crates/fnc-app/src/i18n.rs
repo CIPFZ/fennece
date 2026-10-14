@@ -210,6 +210,27 @@ mod tests {
         }
     }
 
+    /// The missing-model hint names the menu item that has the download button (it pointed to
+    /// an Options page without one; found by the 0.2.0 install pass, REL-08).
+    #[test]
+    fn missing_model_hint_names_the_semantic_setup_menu() {
+        for (tag, src) in LANGUAGES {
+            let b = bundle(tag, src);
+            let text = |key: &str| {
+                let msg = b.get_message(key).and_then(|m| m.value()).unwrap_or_else(|| panic!("{tag}: {key}"));
+                let mut args = FluentArgs::new();
+                args.set("path", "model.gguf");
+                let mut errs = Vec::new();
+                b.format_pattern(msg, Some(&args), &mut errs).into_owned()
+            };
+            let hint = text("sem-err-no-model");
+            for key in ["menu-tools", "cmd-semantic-setup"] {
+                let label = text(key);
+                assert!(hint.contains(&label), "{tag}: sem-err-no-model {hint:?} does not name {key} {label:?}");
+            }
+        }
+    }
+
     #[test]
     fn formats_with_arguments() {
         init("en");
