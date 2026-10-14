@@ -54,4 +54,7 @@ fingerprint; a mismatch only triggers a rebuild), the thumbnail cache, logs, `mo
 Unit tests cover current round trip / old / corrupt / future headers for every store and
 TOML file; `tests/fixtures/0.1.0/` holds files written by the 0.1.0 sources that must keep
 loading. Bumping a format = raise `VERSION`, add a decoder (or raise `*_OLDEST_READABLE`
-to force a rebuild), add a fixture of the old layout.
+to force a rebuild), add a fixture of the old layout. Known limit: run counts live in
+`index.fnx`, so a rebuilt index starts without them (they stay in the backup), and the
+property/content stores re-extract after a full rebuild (rows re-attach by size/date, which
+NTFS fills in after the index is published).

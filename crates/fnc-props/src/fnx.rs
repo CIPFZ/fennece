@@ -196,12 +196,7 @@ pub type Segments<'a> = Vec<([u8; 4], &'a [u8])>;
 
 /// Verifies header, footer and every checksum; returns the segments in file order.
 /// Only layout `version` is accepted.
-pub fn segments<'a>(
-    buf: &'a [u8],
-    magic: [u8; 4],
-    version: u32,
-    what: &'static str,
-) -> FnxResult<Segments<'a>> {
+pub fn segments<'a>(buf: &'a [u8], magic: [u8; 4], version: u32, what: &'static str) -> FnxResult<Segments<'a>> {
     segments_versioned(buf, magic, version, version, what).map(|(_, segs)| segs)
 }
 

@@ -173,6 +173,45 @@ mod tests {
     }
 
     #[test]
+    fn data_written_by_0_1_0_on_windows_is_kept() {
+        // `tests/fixtures/0.1.0/windows`: written by the 0.1.0 binaries on Windows (REL-03).
+        crate::i18n::init("en");
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/0.1.0/windows");
+        let d = tempfile::tempdir().unwrap();
+        for f in ["filters.toml", "bookmarks.toml", "search_history.toml", "settings.toml"] {
+            std::fs::copy(src.join(f), d.path().join(f)).unwrap();
+        }
+        let file = |n: &str| d.path().join(n);
+        let (settings, load) = fnc_core::settings::Settings::load_checked(&file("settings.toml"));
+        assert_eq!((load.schema, load.recovery.is_none()), (1, true));
+        assert_eq!((settings.search_delay, settings.log_max_files, settings.search_history_max), (120, 9, 77));
+        assert!(settings.content_enabled && settings.property_names == ["width", "height"]);
+        let filters = crate::filters::Filters::load(Some(file("filters.toml")));
+        let f = &filters.list[filters.find("REL03 Filter").unwrap()];
+        assert_eq!((f.search.as_str(), f.macro_name.as_str(), f.path), ("rel03 ext:txt", "rel03f", true));
+        let bookmarks = crate::filters::Bookmarks::load(Some(file("bookmarks.toml")));
+        assert_eq!(bookmarks.list[0].name, "REL03 Bookmark");
+        assert_eq!(bookmarks.list[0].search, "rel03 bookmark query ext:txt");
+        let history = crate::history::SearchHistory::load(file("search_history.toml"), 100);
+        let texts: Vec<&str> = history.entries().iter().map(|e| e.text.as_str()).collect();
+        for t in ["width:321", "notepad.exe", "rel03-run-target.txt", "dm:today rel03"] {
+            assert!(texts.contains(&t), "{t} in {texts:?}");
+        }
+        assert!(filters.recovery.is_none() && bookmarks.recovery.is_none() && history.recovery.is_none());
+        // Saved again by this version: versioned, and the same data reloads.
+        filters.save().unwrap();
+        bookmarks.save().unwrap();
+        settings.save(&file("settings.toml")).unwrap();
+        for f in ["filters.toml", "bookmarks.toml", "settings.toml"] {
+            assert!(std::fs::read_to_string(file(f)).unwrap().starts_with("schema_version = 1\n"), "{f}");
+        }
+        let again = crate::filters::Filters::load(Some(file("filters.toml")));
+        assert_eq!(again.list, filters.list);
+        assert_eq!(crate::filters::Bookmarks::load(Some(file("bookmarks.toml"))).list, bookmarks.list);
+        assert_eq!(fnc_core::settings::Settings::load(&file("settings.toml")).unwrap(), settings);
+    }
+
+    #[test]
     fn settings_notices() {
         crate::i18n::init("en");
         let d = tempfile::tempdir().unwrap();
