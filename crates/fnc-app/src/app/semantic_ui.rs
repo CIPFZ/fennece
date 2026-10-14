@@ -285,6 +285,12 @@ impl FennecApp {
             s.stop();
         }
     }
+
+    /// The running engine, weakly (tests).
+    #[cfg(all(test, feature = "semantic"))]
+    pub(super) fn semantic_engine(&self) -> Option<std::sync::Weak<fnc_semantic::SemanticEngine>> {
+        self.sem.search.as_ref().map(crate::semantic::SemanticSearch::engine_weak)
+    }
 }
 
 #[cfg(test)]

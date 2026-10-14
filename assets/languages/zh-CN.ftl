@@ -665,6 +665,7 @@ prop-link-target-extension = 链接目标扩展名
 prop-date-visited = 访问日期
 sem-err-no-model = 语义搜索需要模型文件 { $path }（选项 → 索引 → 语义 → 下载模型）
 sem-err-no-images = 以文搜图（semimage:）需要多模态投影模型，本版本未包含
+sem-err-off = 语义搜索已关闭
 sem-err-no-url = 此模型没有下载地址；请自行下载并在选项中指定文件
 sem-status-idle = 语义：未选择文件夹
 sem-status-no-model = 语义：缺少模型

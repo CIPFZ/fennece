@@ -277,6 +277,8 @@ pub struct SemanticEngine {
     text: Arc<dyn TextSource>,
     wake: (Sender<()>, Receiver<()>),
     stop: AtomicBool,
+    /// Set by [`SemanticEngine::unload`]: queries fail, nothing loads again.
+    closed: AtomicBool,
     generation: AtomicU64,
     query_cache: Mutex<VecDeque<CachedQuery>>,
     model_path: RwLock<PathBuf>,
@@ -302,6 +304,7 @@ impl SemanticEngine {
             text,
             wake: crossbeam_channel::unbounded(),
             stop: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
             generation: AtomicU64::new(1),
             query_cache: Mutex::new(VecDeque::new()),
             model_path: RwLock::new(model_path),
@@ -320,8 +323,52 @@ impl SemanticEngine {
         let _ = self.wake.0.send(());
     }
 
+    /// Turns semantic search off for good and returns its memory (REL-04): stops the
+    /// indexer, saves the store, then drops the model (llama.cpp contexts, weights and
+    /// backend, through the same path as the idle unload), the vectors with their chunk
+    /// tables, and the query cache. Later queries fail with [`SemError::Off`] instead of
+    /// loading the model again. Call after joining the indexer thread (from
+    /// [`SemanticEngine::start`]) so it cannot write to the store meanwhile.
+    pub fn unload(&self) {
+        self.stop();
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (dir, model_id, dim) = {
+            let c = self.config.read();
+            (c.dir.clone(), c.model_id.clone(), c.dim)
+        };
+        let empty = match VectorStore::new(&model_id, dim) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot release the semantic store");
+                return;
+            }
+        };
+        let old = {
+            let mut s = self.store.write();
+            if let Err(e) = s.save(&dir) {
+                tracing::warn!(error = %e, "cannot save the semantic store");
+            }
+            std::mem::replace(&mut *s, empty)
+        };
+        drop(old);
+        self.query_cache.lock().clear();
+        self.host.unload();
+        *self.status.lock() = Status::Idle;
+        self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `true` after [`SemanticEngine::unload`].
+    pub fn is_unloaded(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     /// Applies new settings; a different model or dimension starts a new store.
     pub fn set_config(&self, config: EngineConfig, model_path: PathBuf) -> Result<()> {
+        if self.is_unloaded() {
+            return Err(SemError::Off);
+        }
         let old = self.config.read().clone();
         if old.model_id != config.model_id || old.dim != config.dim || old.dir != config.dir {
             let _ = self.store.write().save(&old.dir);
@@ -376,6 +423,9 @@ impl SemanticEngine {
 
     /// The query's embedding (cached for the last few queries: typing re-runs them).
     pub fn query_vector(&self, task: Task, text: &str) -> Result<Arc<Vec<f32>>> {
+        if self.is_unloaded() {
+            return Err(SemError::Off);
+        }
         if let Some(v) = self.query_cache.lock().iter().find(|(t, s, _)| *t == task && s == text).map(|e| e.2.clone()) {
             return Ok(v);
         }
@@ -414,6 +464,9 @@ impl SemanticEngine {
 
     /// Forgets every vector (Options → "rebuild").
     pub fn rebuild(&self) -> Result<()> {
+        if self.is_unloaded() {
+            return Err(SemError::Off);
+        }
         let c = self.config.read().clone();
         *self.store.write() = VectorStore::new(&c.model_id, c.dim)?;
         self.query_cache.lock().clear();
@@ -497,7 +550,10 @@ impl SemanticEngine {
                 self.host.unload_if_idle();
             }
         }
-        self.save_and_compact(&self.config.read().dir.clone());
+        // After `unload` the store was saved and emptied: saving now would overwrite it.
+        if !self.is_unloaded() {
+            self.save_and_compact(&self.config.read().dir.clone());
+        }
     }
 
     fn save_and_compact(&self, dir: &Path) {
@@ -635,6 +691,8 @@ impl SemanticEngine {
 mod tests {
     use super::*;
     use crate::embed::HashEmbedder;
+    use crate::embed::testing::{Counted, ManualClock};
+    use std::sync::atomic::AtomicUsize;
 
     #[derive(Default)]
     struct FakeCatalog {
@@ -762,5 +820,98 @@ mod tests {
         wait_for(&e, |e| matches!(e.status(), Status::NoModel(_)));
         assert!(matches!(e.search(&SemQuery::new("x")), Err(SemError::ModelMissing(_) | SemError::Load(_))));
         e.stop();
+    }
+
+    /// An engine over `n` text files with a counting embedder on a manual clock.
+    fn counted_engine(
+        d: &Path,
+        n: usize,
+        idle: Duration,
+    ) -> (Arc<SemanticEngine>, Arc<AtomicUsize>, Arc<AtomicUsize>, Arc<ManualClock>, EngineConfig) {
+        let root = d.join("docs");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut files = Vec::new();
+        for i in 0..n {
+            let p = root.join(format!("note{i}.txt"));
+            std::fs::write(&p, format!("Meeting notes number {i} about the quarterly budget.")).unwrap();
+            files.push(Candidate {
+                path: p.display().to_string(),
+                size: std::fs::metadata(&p).unwrap().len(),
+                mtime: 1,
+            });
+        }
+        let catalog = Arc::new(FakeCatalog::default());
+        catalog.set(files);
+        let (live, loads) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let clock = ManualClock::new();
+        let host =
+            Arc::new(ModelHost::with_clock(Counted::loader(64, live.clone(), loads.clone()), idle, clock.clock()));
+        let mut cfg = EngineConfig::new(d.join("sem"), "hash");
+        cfg.dim = 64;
+        cfg.min_score = 0.05;
+        cfg.idle_unload = idle;
+        cfg.scope.folders = vec![root.display().to_string()];
+        let e = SemanticEngine::new(cfg.clone(), host, "m.gguf".into(), catalog, Arc::new(PlainText)).unwrap();
+        (e, live, loads, clock, cfg)
+    }
+
+    #[test]
+    fn unload_returns_model_vectors_and_caches_and_keeps_the_saved_store() {
+        let d = tempfile::tempdir().unwrap();
+        let (e, live, loads, _clock, cfg) = counted_engine(d.path(), 20, Duration::from_secs(600));
+        let t = e.start().unwrap();
+        wait_for(&e, |e| matches!(e.status(), Status::Ready { docs: 20, .. }));
+        assert!(!e.search(&SemQuery::new("quarterly budget")).unwrap().is_empty());
+        assert_eq!(live.load(Ordering::SeqCst), 1);
+        assert!(e.stats().1 >= 20);
+
+        e.stop();
+        t.join().unwrap();
+        e.unload();
+        assert!(e.is_unloaded() && !e.model_loaded());
+        assert_eq!(live.load(Ordering::SeqCst), 0, "the embedder is dropped");
+        assert_eq!(e.stats().1, 0, "vectors and chunk tables are dropped");
+        assert!(e.query_cache.lock().is_empty());
+        // Nothing loads again through this engine.
+        assert!(matches!(e.search(&SemQuery::new("budget")), Err(SemError::Off)));
+        assert!(matches!(e.score_paths(&SemQuery::new("budget"), std::iter::empty()), Err(SemError::Off)));
+        assert!(matches!(e.rebuild(), Err(SemError::Off)));
+        assert_eq!((loads.load(Ordering::SeqCst), live.load(Ordering::SeqCst)), (1, 0));
+        e.unload();
+        // The only reference left is ours: dropping it frees the rest.
+        assert_eq!(Arc::strong_count(&e), 1);
+        drop(e);
+
+        // Turning it on again: a new engine finds the saved vectors and reloads lazily.
+        let (s, rebuilt) = VectorStore::open(&cfg.dir, "hash", 64).unwrap();
+        assert!(!rebuilt && s.doc_count() == 20, "saved before the store was dropped");
+        let (e, live, loads, _clock, _) = counted_engine(d.path(), 20, Duration::from_secs(600));
+        assert_eq!(e.stats().0, 20);
+        assert!(!e.model_loaded() && live.load(Ordering::SeqCst) == 0, "lazy");
+        assert!(!e.search(&SemQuery::new("quarterly budget")).unwrap().is_empty());
+        assert_eq!((loads.load(Ordering::SeqCst), live.load(Ordering::SeqCst)), (1, 1));
+    }
+
+    #[test]
+    fn indexer_unloads_the_idle_model_through_the_same_path() {
+        let d = tempfile::tempdir().unwrap();
+        // The default idle time: the test moves the clock instead of waiting 10 minutes.
+        let (e, live, loads, clock, _) = counted_engine(d.path(), 5, Duration::from_secs(600));
+        let t = e.start().unwrap();
+        wait_for(&e, |e| matches!(e.status(), Status::Ready { docs: 5, .. }));
+        assert!(e.model_loaded());
+        clock.advance(Duration::from_secs(590));
+        // The indexer checks at least every 2 s; 10 s short of the limit it keeps the model.
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(e.model_loaded());
+        clock.advance(Duration::from_secs(10));
+        wait_for(&e, |e| !e.model_loaded());
+        assert_eq!(live.load(Ordering::SeqCst), 0, "idle unload frees the embedder");
+        assert_eq!(e.stats().0, 5, "vectors stay: only the model is unloaded when idle");
+        // The next query loads it again.
+        assert!(!e.search(&SemQuery::new("meeting notes")).unwrap().is_empty());
+        assert_eq!((loads.load(Ordering::SeqCst), live.load(Ordering::SeqCst)), (2, 1));
+        e.stop();
+        t.join().unwrap();
     }
 }
