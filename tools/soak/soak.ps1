@@ -5,12 +5,13 @@
   into soak-<start>.csv. See tools/soak/README.md.
 
 .DESCRIPTION
-  * Runs best as the interactive (console) user, elevated, e.g. from
-      schtasks /Create /TN fennec-soak /SC ONCE /ST 23:59 /RU Administrator /IT /RL HIGHEST /F /TR "powershell -NoProfile -ExecutionPolicy Bypass -File D:\soak\soak.ps1 ..."
-    so that fennec.exe starts on the interactive desktop.
-  * Started from session 0 (a SYSTEM scheduled task, a service, WinRM), the script
-    launches fennec.exe through a one-shot interactive task (schtasks /IT /RU <console
-    user> /RL HIGHEST) so it still lands on the console desktop.
+  * Runs best as the interactive (console) user, elevated: from a SYSTEM job or a
+    remote shell use -Detach, which re-launches the script with the same parameters
+    through an interactive scheduled task (= schtasks /RU <console user> /IT /RL
+    HIGHEST, but registered with the cmdlets: no 261-char /TR limit, no 72 h limit)
+    and returns at once. fennec.exe then starts on the interactive desktop.
+  * Started from session 0 without -Detach, the script launches only fennec.exe
+    through such an interactive task, so it still lands on the console desktop.
   * fennec.exe is restarted if it exits (recorded in the note column, and as a PID
     change in the report); stop early by creating <OutDir>\soak.stop or Ctrl+C.
 #>
@@ -32,16 +33,17 @@ param(
     [double]$IntervalMinutes = 5,
     # Steady change rate (changes per second).
     [double]$Rate = 50,
-    # Extra soak-churn options, e.g. '--subtree','20000','--subtree-every','10m'.
-    [string[]]$ChurnArgs = @(),
+    # Extra soak-churn options, one string (works with powershell -File), e.g.
+    # '--subtree 20000 --subtree-every 10m'.
+    [string]$ChurnArgs = '',
     # soak-churn.exe (default: next to this script).
     [string]$ChurnExe = '',
     # Where the CSV, churn log and report go (default: the script folder).
     [string]$OutDir = '',
     # Fail unless FennecService is running (the service path: run fennec non-elevated).
     [switch]$ExpectService,
-    # Extra fennec.exe arguments (default: start hidden in the tray).
-    [string[]]$AppArgs = @('-startup'),
+    # Extra fennec.exe arguments, one string (default: start hidden in the tray).
+    [string]$AppArgs = '-startup',
     # User whose desktop gets fennec.exe when this script runs in session 0.
     [string]$InteractiveUser = '',
     # Run level of that interactive task: HIGHEST (elevated, indexes NTFS directly) or LIMITED.
@@ -50,14 +52,19 @@ param(
     [switch]$KeepApp,
     # Do not restart fennec.exe when it exits.
     [switch]$NoRestart,
-    # Minimum minutes of index loading to wait for before the churn starts.
-    [double]$LoadTimeoutMinutes = 20
+    # Maximum minutes to wait for the index to be ready before the churn starts.
+    [double]$LoadTimeoutMinutes = 20,
+    # Re-launch this script (same parameters) on the console user's desktop, elevated,
+    # through a scheduled task, and return at once. Use from SYSTEM jobs / remote shells.
+    [switch]$Detach
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $inv = [Globalization.CultureInfo]::InvariantCulture
 
+$ChurnArgv = @($ChurnArgs -split '[\s,]+' | Where-Object { $_ })
+$AppArgv = @($AppArgs -split '\s+' | Where-Object { $_ })
 if (-not $ChurnExe) { $ChurnExe = Join-Path $PSScriptRoot 'soak-churn.exe' }
 if (-not $OutDir) { $OutDir = $PSScriptRoot }
 $fennec = Join-Path $InstallDir 'fennec.exe'
@@ -88,6 +95,24 @@ function Get-ConsoleUser {
 function Get-ProfileDir([string]$user) {
     $sid = (New-Object Security.Principal.NTAccount($user)).Translate([Security.Principal.SecurityIdentifier]).Value
     (Get-CimInstance Win32_UserProfile -Filter "SID='$sid'").LocalPath
+}
+if ($Detach) {
+    # Same parameters minus -Detach, as one argument string (no /TR 261-char limit).
+    $parts = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $PSCommandPath + '"'))
+    foreach ($k in $PSBoundParameters.Keys) {
+        if ($k -eq 'Detach') { continue }
+        $v = $PSBoundParameters[$k]
+        if ($v -is [switch]) { if ($v) { $parts += "-$k" } } else { $parts += "-$k"; $parts += ('"' + [string]$v + '"') }
+    }
+    $user = Get-ConsoleUser
+    $tn = 'fennec-soak-' + ($(if ($Instance) { $Instance } else { 'default' }))
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ($parts -join ' ') -WorkingDirectory $PSScriptRoot
+    $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName $tn -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+    Start-ScheduledTask -TaskName $tn
+    Write-Host "soak started as task '$tn' on the desktop of $user; log: $OutDir\soak-*.log; stop early: New-Item $OutDir\soak.stop"
+    return
 }
 if (-not $DataDir) {
     if (Test-Path (Join-Path $InstallDir 'portable')) {
@@ -145,7 +170,7 @@ function Find-App {
 }
 
 function Start-App {
-    $argv = $instArgs + $AppArgs
+    $argv = $instArgs + $AppArgv
     if ($mySession -ne 0) {
         if ($argv.Count -gt 0) {
             Start-Process -FilePath $fennec -ArgumentList $argv -WorkingDirectory $InstallDir | Out-Null
@@ -261,20 +286,31 @@ if (-not $durSec) { throw "bad -Duration $Duration" }
 
 $churn = $null
 $appId = $null
+trap { Log "ERROR: $_"; break }
 try {
     Log 'preparing the churn tree (soak-churn prepare)'
-    & $ChurnExe prepare --root $ChurnRoot @ChurnArgs --log $churnLog | Out-Null
+    & $ChurnExe prepare --root $ChurnRoot @ChurnArgv --log $churnLog | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "soak-churn prepare failed ($LASTEXITCODE)" }
 
     $appId = Find-App
     if ($appId) { Log "fennec already running (pid $appId); attaching" } else { $appId = Start-App; Log "started fennec (pid $appId)" }
+    # Loaded = a non-zero entry count that holds still for 10 s (the churn is not
+    # running yet, so only the initial scan / USN catch-up moves it).
     $deadline = (Get-Date).AddMinutes($LoadTimeoutMinutes)
-    while ($null -eq (Get-Count '') -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 5 }
+    $last = $null; $stable = 0; $n = $null
+    while ((Get-Date) -lt $deadline) {
+        $n = Get-Count ''
+        if ($n -gt 0 -and $last -gt 0 -and [math]::Abs($n - $last) -le [math]::Max(100, $last * 0.001)) { $stable++ } else { $stable = 0 }
+        if ($stable -ge 2) { break }
+        $last = $n
+        Start-Sleep -Seconds 5
+    }
+    Log "index ready: $n entries"
     $script:compactBase = Get-Compactions
     $runStart = Get-Date
     Write-Sample $appId 'start'
 
-    $cargs = @('run', '--root', $ChurnRoot, '--rate', ([string]$Rate), '--duration', $Duration, '--log', $churnLog) + $ChurnArgs
+    $cargs = @('run', '--root', $ChurnRoot, '--rate', ([string]$Rate), '--duration', $Duration, '--log', $churnLog) + $ChurnArgv
     $churn = Start-Process -FilePath $ChurnExe -ArgumentList $cargs -WindowStyle Hidden -PassThru
     Log "started soak-churn (pid $($churn.Id))"
 
