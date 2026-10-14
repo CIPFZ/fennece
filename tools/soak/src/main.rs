@@ -216,7 +216,8 @@ fn churn_main(cfg: &Config, prepare_only: bool) -> anyhow::Result<()> {
 
     let start = Instant::now();
     let mut rng = Rng::new(cfg.seed);
-    let mut bucket = TokenBucket::new(cfg.rate, (cfg.rate / 5.0).max(1.0));
+    // One second of burst: a stall (slow disk, AV scan) is made up instead of lost.
+    let mut bucket = TokenBucket::new(cfg.rate, cfg.rate.max(1.0));
     let mut minute = Every::new(Duration::from_secs(60), Duration::from_secs(60));
     let mut poll = Every::new(Duration::from_secs(1), Duration::from_secs(1));
     let mut last_ops = 0;
