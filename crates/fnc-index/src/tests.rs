@@ -217,6 +217,43 @@ fn idx03_rename_folder_with_100k_children() {
 }
 
 #[test]
+fn compacted_copy_leaves_the_original_and_new_rows_do_not_double_the_columns() {
+    // REL-05: a long-running index is compacted (or loaded) with exactly full columns.
+    let mut s = IndexStore::default();
+    let vol = s.add_volume(VolumeInfo::new(VolumeKind::Ntfs, "C:\\"), Some(5)).unwrap();
+    let mut b = s.bulk_load(vol);
+    b.push(6, 5, &u16s("d"), &dir()).unwrap();
+    for i in 0..200_000u64 {
+        b.push(100 + i, 6, &u16s(&format!("file{i:06}.dat")), &file(i)).unwrap();
+    }
+    b.finish().unwrap();
+    let dead: Vec<Change> = (0..50_000u64).map(|i| Change::Delete(EntryRef::Frn(vol, 100 + i * 4))).collect();
+    s.apply(dead);
+    let before = all_paths(&s);
+    let (mut c, remap) = s.compacted();
+    assert_eq!((s.len(), s.live_count()), (200_002, 150_002), "original untouched");
+    assert_eq!(all_paths(&s), before);
+    assert_ne!(c.instance(), s.instance(), "a new id space");
+    assert_eq!(remap.iter().filter(|&&r| r == u32::MAX).count(), 50_000);
+    assert_eq!((c.len(), c.live_count()), (150_002, 150_002));
+    assert_eq!(all_paths(&c), before);
+    let kept = s.resolve(EntryRef::Frn(vol, 101)).unwrap();
+    assert_eq!(c.resolve(EntryRef::Frn(vol, 101)), Some(fnc_core::EntryId(remap[kept.idx()])));
+    c.shrink_to_fit();
+    let exact = c.heap_bytes();
+    c.apply(vec![Change::Create {
+        volume: vol,
+        frn: 1_000_000,
+        parent: EntryRef::Frn(vol, 6),
+        name: u16s("new.dat"),
+        meta: file(1),
+    }]);
+    let grown = c.heap_bytes();
+    assert!(grown < exact + exact * 2 / 5, "one new row grew {exact} to {grown} bytes (doubling)");
+    assert_eq!(path(&c, c.resolve(EntryRef::Frn(vol, 1_000_000)).unwrap()), "C:\\d\\new.dat");
+}
+
+#[test]
 fn compact_preserves_content() {
     let (mut s, vol) = sample();
     s.apply(vec![Change::Delete(EntryRef::Frn(vol, 20))]);

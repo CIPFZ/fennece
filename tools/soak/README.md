@@ -313,3 +313,52 @@ cpu-probe.ps1 -InstallDir D:\soak-rel05-bin -Instance rel05cpu -ChurnRoot D:\soa
 ```
 
 Run it on the desktop, elevated, while holding the GUI lock.
+
+## Root causes of the trial signals (REL-05, second pass)
+
+Found with `handle-probe.py` (this folder: handle changes by type and name, thread
+names, DLL loads, private bytes; Python with ctypes, no Sysinternals) and a counting
+allocator (Linux harness and a temporary Windows build).
+
+| Signal | Cause | Fix |
+|---|---|---|
+| +35 to +80 handles at most live compactions | `-startup` did not keep the window hidden: eframe creates every window hidden and shows it after painting the first frame, whatever `with_visible(false)` said. Fennec treated it as hidden (no refresh on index changes), but the window was on screen and drawn. A compaction re-ran the search, the rows were drawn again and their icons were read through the shell on the thumbnail threads, which loaded more shell components each time: Explorer icon-cache mutexes (16 per load), known-folder and namespace keys, `thumbcache.dll`, namespace extensions. These handles are never released (a separate test, 712 icons on one thread, gave a one-time +112 to +139 handles whether or not the thread pumped messages). | The window is hidden again after the first frame, and a hidden window draws nothing (eframe still runs the UI of hidden windows). |
+| Private bytes +35–45 MiB/h, no drop after compactions | (1) After a load or a live compaction every index column is exactly full, so the next new entry doubled all of them, and Windows commits that capacity. (2) A live compaction cloned the whole index and then compacted the clone, so three copies existed at the peak. (3) The index journal (`journal.tsv`, up to 1.1 M records) was trimmed every ~100 k changes by reading the whole file into memory: 323 MiB and 3.3 M allocations each time, under the index write lock. | Large columns grow by a quarter. The compacted index is built straight from the live one, and the old one is freed outside the lock. The journal is trimmed by streaming, outside the lock. |
+
+### A/B run: master 3d10abe vs the fixes, same time, same load
+
+* Both builds ran at the same time for 100 min, hidden in the tray (`-startup`).
+* Each used its own churn root, with `--subtree 50000 --subtree-every 4m`. Both indexed
+  both roots, so each saw about 100 changes/s plus two 50 k subtrees every 4 min.
+* Each had 12 live compactions, and its index varied between 750 k and 1.03 M rows.
+
+| | master 3d10abe | fixes |
+|---|---|---|
+| Verdict (`soak-churn report`, trial) | **FAIL** | **PASS** |
+| Handles, first → last sample | 402 → 499 | 371 → 358 |
+| Handle steps at compactions | +47, +28, +12, +28, then flat at ~499 | none (357–364 throughout) |
+| Private bytes, window growth | +15.2 % (421 → 486 MiB) | +2.6 % (330 → 339 MiB) |
+| Private bytes, max | 565 MiB | 347 MiB |
+| Private bytes, means per 20 min | 418, 454, 484, 477, 488 | 330, 333, 335, 336, 339 |
+| Working set, window growth | +18.6 % | −5.0 % |
+| CPU, mean | 9.8 % of one core | 4.6 % |
+
+Each compaction removed about 215 k rows. It took 237–393 ms with the fixes (median
+266 ms) and 311–414 ms on master (median 332 ms), because there is no full clone now.
+
+### Long run with a counting allocator (fixes + temporary heap counter, not committed)
+
+* The run took 162 min at `-Rate 100` with `--subtree 50000 --subtree-every 2m`, and had
+  20 live compactions.
+* The build was temporary: the fixes plus a global allocator that logged the live Rust
+  heap every minute.
+
+| Series | means per 30 min |
+|---|---|
+| Live Rust heap (MiB) | 239, 244, 244, 244, 244, 245 |
+| Private bytes (MiB) | 326, 335, 336, 339, 339, 339 |
+| Handles | 363, 362, 362, 362, 362, 362 |
+
+The heap and private bytes level off after the first compaction. The 90–95 MiB gap between
+private bytes and the Rust heap stays constant: it is the allocator's and the process's
+fixed overhead (GL driver, fonts, DLLs).

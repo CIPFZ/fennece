@@ -114,6 +114,28 @@ fn typing_searches_and_keyboard_navigates() {
 }
 
 #[test]
+fn hidden_window_draws_nothing_until_shown() {
+    // REL-05: a window hidden in the tray (`-startup`, close to tray) formats no rows and
+    // asks for no icons; eframe still runs its UI.
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut deps = deps_for(Some(efu), SharedIndex::default());
+    deps.start_hidden = true;
+    let mut h = harness(deps);
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.v.results.len() == 7);
+    h.run_steps(3);
+    assert!(!h.state().rehide, "hidden again after the first frame");
+    assert!(h.state().v.rows.is_empty(), "no rows formatted while hidden");
+    assert!(h.query_by_role(Role::TextInput).is_none(), "nothing drawn while hidden");
+    let ctx = h.ctx.clone();
+    h.state_mut().show_window(&ctx);
+    h.run_steps(3);
+    assert_eq!(h.state().v.rows.len(), 7, "rows drawn once shown");
+    h.get_by_role(Role::TextInput);
+}
+
+#[test]
 fn ui02_fast_typing_shows_only_the_final_query() {
     let dir = tempfile::tempdir().unwrap();
     let efu = dir.path().join("big.efu");

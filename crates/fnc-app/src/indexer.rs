@@ -1013,13 +1013,16 @@ fn compact_live(shared: &EpochIndex) -> Option<(u64, Vec<u32>, u64)> {
         return None;
     }
     let old = guard.instance();
-    let mut copy = (*guard).clone();
-    let remap = copy.compact();
+    // Built straight from the live index (no full clone first: peak = old + compacted).
+    let (mut copy, remap) = guard.compacted();
     copy.rebuild_name_order();
     copy.shrink_to_fit();
     let mut w = parking_lot::RwLockUpgradableReadGuard::upgrade(guard);
     let new = copy.instance();
-    *w = copy;
+    let replaced = std::mem::replace(&mut *w, copy);
+    drop(w);
+    // Freeing the old columns is not done under the write lock.
+    drop(replaced);
     Some((old, remap, new))
 }
 
@@ -1236,6 +1239,10 @@ impl WatchSink {
             }
             drop(w);
             tracing::trace!(?stats, held = ?t.elapsed(), "applied USN batch");
+            // Rewriting the journal file can take a second; not under the index lock.
+            if let Some(j) = &self.journal {
+                j.lock().trim_if_due();
+            }
             changed |= stats.changed();
             batch = rest;
         }
