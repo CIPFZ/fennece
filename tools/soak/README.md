@@ -345,3 +345,20 @@ allocator (Linux harness and a temporary Windows build).
 
 Each compaction removed about 215 k rows. It took 237–393 ms with the fixes (median
 266 ms) and 311–414 ms on master (median 332 ms), because there is no full clone now.
+
+### Long run with a counting allocator (fixes + temporary heap counter, not committed)
+
+* The run took 162 min at `-Rate 100` with `--subtree 50000 --subtree-every 2m`, and had
+  20 live compactions.
+* The build was temporary: the fixes plus a global allocator that logged the live Rust
+  heap every minute.
+
+| Series | means per 30 min |
+|---|---|
+| Live Rust heap (MiB) | 239, 244, 244, 244, 244, 245 |
+| Private bytes (MiB) | 326, 335, 336, 339, 339, 339 |
+| Handles | 363, 362, 362, 362, 362, 362 |
+
+The heap and private bytes level off after the first compaction. The 90–95 MiB gap between
+private bytes and the Rust heap stays constant: it is the allocator's and the process's
+fixed overhead (GL driver, fonts, DLLs).
