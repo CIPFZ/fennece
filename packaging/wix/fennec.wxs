@@ -1,23 +1,47 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Fennec MSI (SPEC ch.4 §9). Built by packaging/build.ps1 with WiX 3.x:
-     candle -arch x64 -dVersion=... -dBinDir=... fennec.wxs ; light -ext WixUIExtension -->
-<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="Fennec" Language="1033" Version="$(var.Version)" Manufacturer="The Fennec authors"
+     candle -arch x64 -ext WixUtilExtension -dVersion=... -dVariant=standard|experimental -dBinDir=... fennec.wxs
+     light -ext WixUIExtension -ext WixUtilExtension
+     Both variants share the UpgradeCode (and AllowSameVersionUpgrades), so installing one
+     replaces the other or any older Fennec (0.1.0 included).
+     Uninstall: `msiexec /x <msi|product code> REMOVEUSERDATA=1` also deletes the uninstalling
+     user's %APPDATA%\Fennec; the Remove path of the maintenance UI has a checkbox for it.
+     Default (and the Settings app's basic-UI uninstall): keep it. Portable data is never touched. -->
+<?if $(var.Variant) = "experimental" ?>
+<?define ProductName = "Fennec (experimental)" ?>
+<?else?>
+<?define ProductName = "Fennec" ?>
+<?endif?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi" xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <Product Id="*" Name="$(var.ProductName)" Language="1033" Version="$(var.Version)" Manufacturer="The Fennec authors"
            UpgradeCode="8738795c-c37e-40fe-b304-eee4a13b0386">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64"
-             Description="Fennec file search" Comments="Find anything in a blink." />
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Fennec is already installed." />
+             Description="$(var.ProductName) file search" Comments="Find anything in a blink." />
+    <!-- Same-version upgrades: standard 0.2.0 <-> experimental 0.2.0 replace each other. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of Fennec is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="FennecIcon" SourceFile="$(var.IconFile)" />
     <Property Id="ARPPRODUCTICON" Value="FennecIcon" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/fennec-search/fennec" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/CIPFZ/fennece" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+
+    <!-- 1 = delete %APPDATA%\Fennec of the uninstalling user (checkbox or command line). -->
+    <Property Id="REMOVEUSERDATA" Secure="yes" />
+    <SetProperty Id="FENNEC_USERDATA" Value="[AppDataFolder]Fennec\" After="AppSearch" Sequence="execute">
+      <![CDATA[REMOVEUSERDATA = 1 AND REMOVE ~= "ALL" AND NOT UPGRADINGPRODUCTCODE]]>
+    </SetProperty>
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">
         <Directory Id="INSTALLFOLDER" Name="Fennec" />
       </Directory>
       <Directory Id="ProgramMenuFolder" />
+      <!-- fennec-service.exe logs to %ProgramData%\Fennec\logs (LocalSystem). -->
+      <Directory Id="CommonAppDataFolder">
+        <Directory Id="ProgramDataFennec" Name="Fennec">
+          <Directory Id="ProgramDataFennecLogs" Name="logs" />
+        </Directory>
+      </Directory>
     </Directory>
 
     <ComponentGroup Id="CoreFiles" Directory="INSTALLFOLDER">
@@ -25,6 +49,8 @@
         <File Id="fennec.exe" Source="$(var.BinDir)\fennec.exe" KeyPath="yes" />
         <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Fennec" WorkingDirectory="INSTALLFOLDER"
                   Icon="FennecIcon" Advertise="yes" />
+        <!-- Per-user data: removed only when REMOVEUSERDATA=1 (FENNEC_USERDATA is empty otherwise). -->
+        <util:RemoveFolderEx Id="RemoveUserData" Property="FENNEC_USERDATA" On="uninstall" />
       </Component>
       <Component Id="FesExe" Guid="*" Win64="yes">
         <File Id="fes.exe" Source="$(var.BinDir)\fes.exe" KeyPath="yes" />
@@ -46,6 +72,10 @@
                         Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" />
         <ServiceControl Id="FennecServiceControl" Name="FennecService" Start="install" Stop="both" Remove="uninstall"
                         Wait="yes" />
+        <!-- The service's own log files (not user data). -->
+        <RemoveFile Id="ServiceLogs" Directory="ProgramDataFennecLogs" Name="*" On="uninstall" />
+        <RemoveFolder Id="ServiceLogsDir" Directory="ProgramDataFennecLogs" On="uninstall" />
+        <RemoveFolder Id="ServiceDataDir" Directory="ProgramDataFennec" On="uninstall" />
       </Component>
     </ComponentGroup>
 
@@ -84,7 +114,7 @@
       </Component>
     </ComponentGroup>
 
-    <Feature Id="Main" Title="Fennec" Description="Fennec and the fes command line tool." Level="1"
+    <Feature Id="Main" Title="$(var.ProductName)" Description="Fennec and the fes command line tool." Level="1"
              Absent="disallow" Display="expand" ConfigurableDirectory="INSTALLFOLDER">
       <ComponentGroupRef Id="CoreFiles" />
       <Feature Id="Service" Title="Fennec Service" Level="1"
@@ -100,7 +130,77 @@
       </Feature>
     </Feature>
 
-    <UIRef Id="WixUI_FeatureTree" />
+    <UIRef Id="WixUI_FennecFeatureTree" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
   </Product>
+
+  <!-- WixUI_FeatureTree (WiX 3.14) plus RemoveDataDlg between "Remove" and the confirmation. -->
+  <Fragment>
+    <UI Id="WixUI_FennecFeatureTree">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <Property Id="WixUI_Mode" Value="FeatureTree" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <Dialog Id="RemoveDataDlg" Width="370" Height="270" Title="!(loc.MaintenanceTypeDlg_Title)">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no"
+                 Text="!(loc.MaintenanceTypeDlgBannerBitmap)" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="{\WixUI_Font_Title}Remove Fennec" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="340" Height="15" Transparent="yes" NoPrefix="yes"
+                 Text="Choose what happens to your Fennec data." />
+        <Control Id="Text" Type="Text" X="25" Y="60" Width="320" Height="50" NoPrefix="yes"
+                 Text="Your settings, index, filters, bookmarks, search history and logs are in [AppDataFolder]Fennec. They are kept unless you tick the box below (data of other users and of portable copies is never touched)." />
+        <Control Id="RemoveData" Type="CheckBox" X="25" Y="120" Width="320" Height="18" Property="REMOVEUSERDATA"
+                 CheckBoxValue="1" Text="&amp;Also delete my Fennec settings and index" />
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="MaintenanceTypeDlg">1</Publish>
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="!(loc.WixUINext)">
+          <Publish Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes"
+                 Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999">1</Publish>
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="LicenseAgreementDlg">NOT Installed</Publish>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg">Installed AND PATCH</Publish>
+
+      <Publish Dialog="LicenseAgreementDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg">1</Publish>
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog" Value="CustomizeDlg">LicenseAccepted = "1"</Publish>
+
+      <Publish Dialog="CustomizeDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="1">Installed</Publish>
+      <Publish Dialog="CustomizeDlg" Control="Back" Event="NewDialog" Value="LicenseAgreementDlg" Order="2">NOT Installed</Publish>
+      <Publish Dialog="CustomizeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="CustomizeDlg" Order="1">NOT Installed OR WixUI_InstallMode = "Change"</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2">Installed AND NOT PATCH AND WixUI_InstallMode = "Repair"</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="RemoveDataDlg" Order="3">Installed AND NOT PATCH AND WixUI_InstallMode = "Remove"</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="4">Installed AND PATCH</Publish>
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg">1</Publish>
+
+      <Publish Dialog="MaintenanceTypeDlg" Control="ChangeButton" Event="NewDialog" Value="CustomizeDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="RemoveDataDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg">1</Publish>
+    </UI>
+    <UIRef Id="WixUI_Common" />
+  </Fragment>
 </Wix>
