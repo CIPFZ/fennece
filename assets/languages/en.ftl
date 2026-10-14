@@ -676,6 +676,7 @@ prop-link-target-extension = Link target extension
 prop-date-visited = Date visited
 sem-err-no-model = Semantic search needs the model file { $path } (Options → Index → Semantic → Download model)
 sem-err-no-images = Picture search (semimage:) needs the multimodal projector, which this build does not include
+sem-err-off = Semantic search is off
 sem-err-no-url = This model has no download address; download it yourself and set its file in the options
 sem-status-idle = Semantic: no folders
 sem-status-no-model = Semantic: model missing

@@ -657,6 +657,7 @@ prop-link-target-extension = Bağlantı hedefi uzantısı
 prop-date-visited = Ziyaret tarihi
 sem-err-no-model = Anlamsal arama için { $path } model dosyası gerekiyor (Seçenekler → Dizinler → Anlamsal arama → Modeli indir)
 sem-err-no-images = Resim araması (semimage:) çok modlu projektör gerektirir; bu derleme bunu içermiyor
+sem-err-off = Anlamsal arama kapalı
 sem-err-no-url = Bu modelin indirme adresi yok; modeli kendiniz indirip dosyasını seçeneklerde belirtin
 sem-status-idle = Anlamsal: klasör yok
 sem-status-no-model = Anlamsal: model eksik

@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use fnc_core::EntryId;
@@ -54,25 +54,38 @@ impl Catalog for IndexCatalog {
 }
 
 /// `sem:` terms for the search engine.
+///
+/// Search options are cloned into every view, tab, window, the IPC host and the last
+/// request each search thread keeps, so the source holds the engine weakly: only
+/// [`SemanticSearch`] owns it, and turning semantic search off frees it however many
+/// copies of the options are still around (REL-04).
 struct Source {
-    engine: Arc<SemanticEngine>,
+    engine: Weak<SemanticEngine>,
+}
+
+impl Source {
+    fn engine(&self) -> Result<Arc<SemanticEngine>, String> {
+        self.engine.upgrade().ok_or_else(|| t("sem-err-off"))
+    }
 }
 
 /// User-facing reason for a failed semantic query.
 fn reason(e: &SemError) -> String {
     match e {
         SemError::ModelMissing(p) => t_args("sem-err-no-model", &[("path", p.display().to_string().into())]),
+        SemError::Off => t("sem-err-off"),
         e => e.to_string(),
     }
 }
 
 impl SemanticSource for Source {
     fn generation(&self) -> u64 {
-        self.engine.generation()
+        self.engine.upgrade().map_or(0, |e| e.generation())
     }
 
     fn default_top(&self) -> usize {
-        self.engine.defaults().1
+        // Off: the search reports it; the count does not matter.
+        self.engine.upgrade().map_or(0, |e| e.defaults().1)
     }
 
     fn search(
@@ -85,6 +98,7 @@ impl SemanticSource for Source {
         if q.kinds == fnc_query::semantic::kinds::IMAGE {
             return Err(t("sem-err-no-images"));
         }
+        let engine = self.engine()?;
         // Bits of `fnc_query::semantic::kinds` equal `Kind::bit()`.
         let query = SemQuery { text: q.text.clone(), kinds: q.kinds, min_score: q.min_score_f32(), top: Some(top) };
         let hit = |id: EntryId, h: &fnc_semantic::DocHit| SemHit {
@@ -99,12 +113,12 @@ impl SemanticSource for Source {
                 let mut p = String::new();
                 for &id in ids {
                     s.full_path(id, &mut p);
-                    if self.engine.has_doc(&p) {
+                    if engine.has_doc(&p) {
                         by_path.insert(p.to_lowercase(), id);
                         paths.push(p.clone());
                     }
                 }
-                let hits = self.engine.score_paths(&query, paths.iter().map(String::as_str)).map_err(|e| reason(&e))?;
+                let hits = engine.score_paths(&query, paths.iter().map(String::as_str)).map_err(|e| reason(&e))?;
                 Ok(hits
                     .iter()
                     .filter_map(|h| by_path.get(&h.path.to_lowercase()).map(|&id| hit(id, h)))
@@ -112,7 +126,7 @@ impl SemanticSource for Source {
                     .collect())
             }
             None => {
-                let hits = self.engine.search(&query).map_err(|e| reason(&e))?;
+                let hits = engine.search(&query).map_err(|e| reason(&e))?;
                 Ok(hits.iter().filter_map(|h| s.find_path(&h.path).map(|id| hit(id, h))).collect())
             }
         }
@@ -271,7 +285,7 @@ impl SemanticSearch {
         let host = Arc::new(ModelHost::new(loader, cfg.idle_unload));
         let engine = SemanticEngine::new(cfg, host, path.clone(), Arc::new(IndexCatalog { shared }), text)?;
         let worker = engine.start()?;
-        let source: Arc<dyn SemanticSource> = Arc::new(Source { engine: engine.clone() });
+        let source: Arc<dyn SemanticSource> = Arc::new(Source { engine: Arc::downgrade(&engine) });
         Ok(Self {
             engine,
             source: Shared::new(source),
@@ -427,7 +441,10 @@ impl SemanticSearch {
         Some(r)
     }
 
-    /// Stops the indexer (saves the vectors) and waits for it.
+    /// Turns semantic search off (or exits): stops the indexer, which saves the vectors,
+    /// waits for it, then unloads model, vectors and caches (REL-04) and drops the
+    /// engine. A query still running holds the engine until it returns; what it holds is
+    /// already empty.
     pub fn stop(mut self) {
         if let Some(d) = &self.download {
             d.cancel();
@@ -436,6 +453,15 @@ impl SemanticSearch {
         if let Some(w) = self.worker.take() {
             let _ = w.join();
         }
+        self.engine.unload();
+        let in_flight = Arc::strong_count(&self.engine) - 1;
+        tracing::info!(in_flight, "semantic search stopped and unloaded");
+    }
+
+    /// The engine, weakly (tests check that turning off frees it).
+    #[cfg(test)]
+    pub fn engine_weak(&self) -> Weak<SemanticEngine> {
+        Arc::downgrade(&self.engine)
     }
 }
 
@@ -565,6 +591,87 @@ mod tests {
         assert!(err.contains("embeddinggemma-2-Q8_0.gguf"), "{err}");
         assert!(sem.reconfigure(&s, d.path()));
         sem.stop();
+    }
+
+    #[test]
+    fn stopping_frees_the_engine_while_copies_of_the_source_live_on() {
+        crate::i18n::init("en");
+        let d = tempfile::tempdir().unwrap();
+        let s = Settings { semantic_folders: vec![d.path().display().to_string()], ..Settings::default() };
+        let sem =
+            SemanticSearch::start(&s, d.path(), SharedIndex::new(IndexStore::default()), SemanticSearch::plain_text())
+                .unwrap();
+        // Copies as kept by background tabs, windows, the IPC host and search threads.
+        let copies: Vec<Shared<dyn SemanticSource>> = (0..4).map(|_| sem.source()).collect();
+        let engine = sem.engine_weak();
+        sem.stop();
+        assert!(engine.upgrade().is_none(), "nothing but SemanticSearch owns the engine");
+        let q = SemPred { text: "budget".into(), kinds: fnc_query::semantic::kinds::ALL, min_score: None, top: None };
+        let err = copies[0].search(&q, &IndexStore::default(), None, 10).unwrap_err();
+        assert!(err.contains("off"), "{err}");
+        assert_eq!(copies[1].generation(), 0);
+    }
+
+    /// REL-04 against the real model: private bytes before semantic search, with the
+    /// model loaded and a folder indexed, and after turning it off, for three on/off
+    /// cycles (a leak grows per cycle; retained heap does not). `FENNEC_TEST_MODEL`
+    /// (gguf), `FENNEC_SEM_SMALL` (a folder with a few hundred text files).
+    #[test]
+    #[ignore = "needs the model and a folder"]
+    fn rel04_off_returns_memory() {
+        use crate::indexer::{IndexEvent, IndexStatus, Indexer, IndexerConfig};
+        crate::i18n::init("en");
+        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} not set"));
+        let (model, docs) = (env("FENNEC_TEST_MODEL"), env("FENNEC_SEM_SMALL"));
+        let shared = SharedIndex::default();
+        let (itx, irx) = crossbeam_channel::unbounded();
+        let cfg = IndexerConfig { folders: vec![PathBuf::from(&docs)], ..IndexerConfig::default() };
+        let indexer = Indexer::spawn(cfg, shared.clone(), Arc::new(|| {}), itx, Arc::new(|| {}));
+        while !matches!(irx.recv_timeout(Duration::from_secs(120)), Ok(IndexEvent::Status(IndexStatus::Ready { .. }))) {
+        }
+        let mib = || fnc_platform::process::private_bytes().unwrap_or(0) as f64 / 1048576.0;
+        let base = mib();
+        eprintln!("REL-04 baseline (semantic off): private {base:.1} MiB");
+        let data = tempfile::tempdir().unwrap();
+        let s = Settings {
+            semantic_enabled: true,
+            semantic_folders: vec![docs.clone()],
+            semantic_model_path: model,
+            ..Settings::default()
+        };
+        let q = |text: &str| SemPred {
+            text: text.into(),
+            kinds: fnc_query::semantic::kinds::ALL,
+            min_score: None,
+            top: None,
+        };
+        let mut off = Vec::new();
+        for cycle in 1..=3 {
+            let sem = SemanticSearch::start(&s, data.path(), shared.clone(), SemanticSearch::plain_text()).unwrap();
+            let t = std::time::Instant::now();
+            while !matches!(sem.status(), Status::Ready { docs, .. } if docs > 0) {
+                assert!(t.elapsed() < Duration::from_secs(1800), "indexing too slow: {}", sem.status_text());
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            let source = sem.source();
+            let snap = shared.snapshot();
+            for text in ["quarterly budget", "meeting notes about hiring", &format!("travel plans {cycle}")] {
+                assert!(source.search(&q(text), &snap, None, 50).is_ok());
+            }
+            let on = mib();
+            let engine = sem.engine_weak();
+            sem.stop();
+            assert!(engine.upgrade().is_none());
+            std::thread::sleep(Duration::from_secs(5));
+            let after = mib();
+            eprintln!(
+                "REL-04 cycle {cycle}: indexed in {:.0} s; on {on:.1} MiB -> off {after:.1} MiB (baseline {base:.1})",
+                t.elapsed().as_secs_f64()
+            );
+            off.push(after);
+        }
+        assert!(off[2] - off[0] < 32.0, "grows per cycle: {off:?}");
+        drop(indexer);
     }
 
     /// SEM-01..05, SEM-08 against the real model and a corpus (Windows VM):

@@ -125,3 +125,4 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 
 ## 0.2.0 — release
 - [0.2.0] version 0.2.0 in every crate, the MSI, `-version`, the About dialog, the Everything IPC version (`1.4.1.200`) and the HTTP `Server` header (`Fennec/0.2.0`) (REL-01).
+- [fnc-semantic][fnc-app] turning semantic search off returns its memory: `SemanticEngine::unload` stops the indexer, saves and drops the vectors and chunk tables, the query cache and the model (lane threads joined, contexts and weights freed, the llama.cpp backend refcounted and freed with the last model) through the same release path as the idle unload; the `sem:` source held by views, tabs, windows, the IPC host and search threads references the engine weakly, so stale copies no longer keep it alive ("semantic search is off"); injectable clock for the idle-unload timer (REL-04).

@@ -55,6 +55,45 @@ fn sem06_off_means_no_semantic_source() {
 }
 
 #[test]
+fn turning_semantic_off_frees_the_engine_and_on_again_starts_a_new_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut deps = deps_for(Some(efu), SharedIndex::default());
+    deps.settings_path = dir.path().join("data").join("settings.toml");
+    deps.settings.semantic_enabled = true;
+    deps.settings.semantic_folders = vec!["C:\\Docs".into()];
+    let mut h = harness(deps);
+    let ctx = h.ctx.clone();
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }));
+    // A background tab and a second window keep their own copies of the search options.
+    h.state_mut().set_query("sem:budget".into());
+    h.state_mut().tab_new("semcontent:report".into());
+    h.state_mut().open_window("sem:plan".into());
+    for _ in 0..3 {
+        h.step();
+    }
+    let engine = h.state().semantic_engine().unwrap();
+    assert!(engine.upgrade().is_some());
+
+    let mut s = h.state().settings.clone();
+    s.semantic_enabled = false;
+    h.state_mut().apply_settings(&ctx, s);
+    // A search still running holds the (already emptied) engine until it returns.
+    wait_until(&mut h, "engine freed", |_| engine.upgrade().is_none());
+    assert!(h.state().v.search_opts.semantic.is_none());
+    assert!(h.state().semantic_status().is_none());
+
+    let mut s = h.state().settings.clone();
+    s.semantic_enabled = true;
+    h.state_mut().apply_settings(&ctx, s);
+    let again = h.state().semantic_engine().unwrap();
+    assert!(again.upgrade().is_some_and(|e| !e.is_unloaded()));
+    assert!(h.state().v.search_opts.semantic.is_some());
+    wait_until(&mut h, "no-model status", |a| a.semantic_status().is_some_and(|s| s.contains("model missing")));
+}
+
+#[test]
 fn semantic_searches_sort_by_relevance_and_restore_the_sort() {
     let dir = tempfile::tempdir().unwrap();
     let efu = dir.path().join("t.efu");

@@ -696,6 +696,7 @@ prop-link-target-extension = Linkzielerweiterung
 prop-date-visited = Besucht am
 sem-err-no-model = Die semantische Suche benötigt die Modelldatei { $path } (Optionen → Indizes → Semantische Suche → Modell herunterladen)
 sem-err-no-images = Die Bildsuche (semimage:) benötigt den multimodalen Projektor, der in dieser Version nicht enthalten ist
+sem-err-off = Die semantische Suche ist ausgeschaltet
 sem-err-no-url = Für dieses Modell gibt es keine Downloadadresse; laden Sie es selbst herunter und legen Sie die Datei in den Optionen fest
 sem-status-idle = Semantisch: keine Ordner
 sem-status-no-model = Semantisch: Modell fehlt

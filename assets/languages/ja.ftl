@@ -654,6 +654,7 @@ prop-link-target-extension = リンク先の拡張子
 prop-date-visited = 訪問日時
 sem-err-no-model = セマンティック検索にはモデル ファイル { $path } が必要です（［オプション］→［インデックス］→［セマンティック］→［モデルのダウンロード］）
 sem-err-no-images = 画像検索（semimage:）にはマルチモーダル プロジェクターが必要ですが、このビルドには含まれていません
+sem-err-off = セマンティック検索はオフです
 sem-err-no-url = このモデルにはダウンロード先がありません。ご自身でダウンロードし、オプションでそのファイルを指定してください
 sem-status-idle = セマンティック：フォルダーなし
 sem-status-no-model = セマンティック：モデルがありません

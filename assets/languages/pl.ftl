@@ -714,6 +714,7 @@ prop-link-target-extension = Rozszerzenie elementu docelowego łącza
 prop-date-visited = Data odwiedzenia
 sem-err-no-model = Wyszukiwanie semantyczne wymaga pliku modelu { $path } (Opcje → Indeksy → Wyszukiwanie semantyczne → Pobierz model)
 sem-err-no-images = Wyszukiwanie obrazów (semimage:) wymaga projektora multimodalnego, którego ta kompilacja nie zawiera
+sem-err-off = Wyszukiwanie semantyczne jest wyłączone
 sem-err-no-url = Ten model nie ma adresu pobierania; pobierz go samodzielnie i wskaż jego plik w opcjach
 sem-status-idle = Semantyczne: brak folderów
 sem-status-no-model = Semantyczne: brak modelu

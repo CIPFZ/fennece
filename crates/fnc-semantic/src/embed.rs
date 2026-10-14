@@ -129,6 +129,9 @@ impl Embedder for HashEmbedder {
 /// Creates the embedder (loads the model).
 pub type Loader = Box<dyn Fn() -> Result<Arc<dyn Embedder>> + Send + Sync>;
 
+/// Time source of a [`ModelHost`] (tests move it forward instead of sleeping).
+pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
 struct HostState {
     model: Option<Arc<dyn Embedder>>,
     last_used: Instant,
@@ -158,13 +161,18 @@ impl CachedError {
     }
 }
 
-/// Owns the loaded model: loads on demand, unloads after `idle`.
+/// Owns the loaded model: loads on demand, unloads after `idle` or on request.
+///
+/// The host keeps the only long-lived reference to the embedder; callers hold the
+/// `Arc` returned by [`ModelHost::get`] just for one embedding call, so an unload frees
+/// the model (weights, contexts, llama.cpp backend) as soon as the call in flight ends.
 pub struct ModelHost {
     loader: Loader,
     idle: Mutex<Duration>,
     state: Mutex<HostState>,
     /// Serialises loads (a query and the indexer may ask at once).
     loading: Mutex<()>,
+    clock: Clock,
 }
 
 /// How long a failed load is remembered before it is tried again.
@@ -173,24 +181,32 @@ const RETRY_AFTER: Duration = Duration::from_secs(5);
 impl ModelHost {
     /// A host that unloads the model after `idle` without use.
     pub fn new(loader: Loader, idle: Duration) -> Self {
+        Self::with_clock(loader, idle, Arc::new(Instant::now))
+    }
+
+    /// Like [`ModelHost::new`] with the time taken from `clock`.
+    pub fn with_clock(loader: Loader, idle: Duration, clock: Clock) -> Self {
+        let now = clock();
         Self {
             loader,
             idle: Mutex::new(idle),
-            state: Mutex::new(HostState { model: None, last_used: Instant::now(), error: None }),
+            state: Mutex::new(HostState { model: None, last_used: now, error: None }),
             loading: Mutex::new(()),
+            clock,
         }
     }
 
     /// The model, loading it if needed.
     pub fn get(&self) -> Result<Arc<dyn Embedder>> {
         {
+            let now = (self.clock)();
             let mut s = self.state.lock();
-            s.last_used = Instant::now();
+            s.last_used = now;
             if let Some(m) = &s.model {
                 return Ok(m.clone());
             }
             if let Some((at, e)) = &s.error
-                && at.elapsed() < RETRY_AFTER
+                && now.saturating_duration_since(*at) < RETRY_AFTER
             {
                 return Err(e.error());
             }
@@ -203,14 +219,16 @@ impl ModelHost {
         match (self.loader)() {
             Ok(m) => {
                 tracing::info!(model = m.model_id(), ms = t.elapsed().as_millis() as u64, "semantic model loaded");
+                let now = (self.clock)();
                 let mut s = self.state.lock();
                 s.model = Some(m.clone());
                 s.error = None;
-                s.last_used = Instant::now();
+                s.last_used = now;
                 Ok(m)
             }
             Err(e) => {
-                self.state.lock().error = Some((Instant::now(), CachedError::of(&e)));
+                let now = (self.clock)();
+                self.state.lock().error = Some((now, CachedError::of(&e)));
                 Err(e)
             }
         }
@@ -229,20 +247,118 @@ impl ModelHost {
     /// Unloads the model if unused for the idle period; returns `true` if it did.
     pub fn unload_if_idle(&self) -> bool {
         let idle = *self.idle.lock();
-        let mut s = self.state.lock();
-        if s.model.is_some() && s.last_used.elapsed() >= idle {
-            s.model = None;
-            tracing::info!("semantic model unloaded after {} s idle", idle.as_secs());
-            return true;
-        }
-        false
+        let now = (self.clock)();
+        let model = {
+            let mut s = self.state.lock();
+            if s.model.is_none() || now.saturating_duration_since(s.last_used) < idle {
+                return false;
+            }
+            s.model.take()
+        };
+        release(model, "idle");
+        true
     }
 
-    /// Drops the model now (settings changed).
+    /// Drops the model now (settings changed, semantic search turned off) and forgets a
+    /// cached load error. The next [`ModelHost::get`] loads it again.
     pub fn unload(&self) {
-        let mut s = self.state.lock();
-        s.model = None;
-        s.error = None;
+        let model = {
+            let mut s = self.state.lock();
+            s.error = None;
+            s.model.take()
+        };
+        release(model, "unload");
+    }
+}
+
+/// The one place a loaded model is let go (idle timer and explicit unload alike). The
+/// embedder is dropped outside the host's lock: dropping the last reference joins the
+/// llama.cpp lane threads and frees contexts, weights and the backend.
+fn release(model: Option<Arc<dyn Embedder>>, why: &'static str) {
+    let Some(m) = model else { return };
+    let in_use = Arc::strong_count(&m) - 1;
+    let id = m.model_id().to_string();
+    drop(m);
+    tracing::info!(model = %id, why, in_use, "semantic model unloaded");
+}
+
+/// Test doubles shared by the crate's tests: an embedder counting its live instances
+/// and a clock that moves only when told to.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    use parking_lot::Mutex;
+
+    use super::{Clock, Embedder, HashEmbedder, Lane, Loader};
+    use crate::Result;
+    use crate::prompt::Prompts;
+
+    /// A [`HashEmbedder`] that counts live instances in `live` (dropping one decrements).
+    pub(crate) struct Counted {
+        inner: HashEmbedder,
+        live: Arc<AtomicUsize>,
+    }
+
+    impl Counted {
+        /// A loader creating counted embedders; `loads` counts the loads.
+        pub(crate) fn loader(dim: usize, live: Arc<AtomicUsize>, loads: Arc<AtomicUsize>) -> Loader {
+            Box::new(move || {
+                loads.fetch_add(1, Ordering::SeqCst);
+                live.fetch_add(1, Ordering::SeqCst);
+                Ok(Arc::new(Counted { inner: HashEmbedder::new(dim), live: live.clone() }) as Arc<dyn Embedder>)
+            })
+        }
+    }
+
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.live.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    impl Embedder for Counted {
+        fn model_id(&self) -> &str {
+            self.inner.model_id()
+        }
+        fn dim(&self) -> usize {
+            self.inner.dim()
+        }
+        fn max_tokens(&self) -> usize {
+            self.inner.max_tokens()
+        }
+        fn count_tokens(&self, text: &str) -> usize {
+            self.inner.count_tokens(text)
+        }
+        fn embed(&self, lane: Lane, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            self.inner.embed(lane, texts)
+        }
+        fn prompts(&self) -> &Prompts {
+            self.inner.prompts()
+        }
+    }
+
+    /// A clock that only moves through [`ManualClock::advance`].
+    pub(crate) struct ManualClock {
+        base: Instant,
+        offset: Mutex<Duration>,
+    }
+
+    impl ManualClock {
+        pub(crate) fn new() -> Arc<Self> {
+            Arc::new(Self { base: Instant::now(), offset: Mutex::new(Duration::ZERO) })
+        }
+
+        pub(crate) fn clock(self: &Arc<Self>) -> Clock {
+            let me = self.clone();
+            Arc::new(move || me.base + *me.offset.lock())
+        }
+
+        pub(crate) fn advance(&self, d: Duration) {
+            *self.offset.lock() += d;
+        }
     }
 }
 
@@ -304,5 +420,54 @@ mod tests {
         assert!(host.get().is_err());
         assert!(matches!(host.get(), Err(SemError::ModelMissing(_))));
         assert_eq!(loads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn idle_unload_follows_the_clock_and_frees_the_model() {
+        use testing::{Counted, ManualClock};
+        let (live, loads) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let clock = ManualClock::new();
+        // The SPEC default: 10 minutes.
+        let host = ModelHost::with_clock(
+            Counted::loader(8, live.clone(), loads.clone()),
+            Duration::from_secs(600),
+            clock.clock(),
+        );
+        let m = host.get().unwrap();
+        m.embed_query(Task::Search, "budget").unwrap();
+        drop(m);
+        assert_eq!(live.load(Ordering::SeqCst), 1);
+        clock.advance(Duration::from_secs(599));
+        assert!(!host.unload_if_idle(), "not idle long enough");
+        // Use resets the timer.
+        host.get().unwrap();
+        clock.advance(Duration::from_secs(599));
+        assert!(!host.unload_if_idle());
+        clock.advance(Duration::from_secs(1));
+        assert!(host.unload_if_idle());
+        assert!(!host.is_loaded());
+        assert_eq!(live.load(Ordering::SeqCst), 0, "the embedder itself is gone, not just the host's handle");
+        assert!(!host.unload_if_idle(), "nothing left to unload");
+        // Lazy reload.
+        host.get().unwrap();
+        assert_eq!((loads.load(Ordering::SeqCst), live.load(Ordering::SeqCst)), (2, 1));
+    }
+
+    #[test]
+    fn unload_frees_the_model_once_the_call_in_flight_ends() {
+        use testing::Counted;
+        let (live, loads) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let host = ModelHost::new(Counted::loader(8, live.clone(), loads.clone()), Duration::from_secs(600));
+        let in_flight = host.get().unwrap();
+        host.unload();
+        assert!(!host.is_loaded());
+        assert_eq!(live.load(Ordering::SeqCst), 1, "still embedding");
+        drop(in_flight);
+        assert_eq!(live.load(Ordering::SeqCst), 0);
+        host.unload();
+        host.get().unwrap();
+        assert_eq!((loads.load(Ordering::SeqCst), live.load(Ordering::SeqCst)), (2, 1));
+        drop(host);
+        assert_eq!(live.load(Ordering::SeqCst), 0, "dropping the host drops the model");
     }
 }

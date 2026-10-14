@@ -75,6 +75,9 @@ pub enum SemError {
     /// The build has no embedder (feature `llama` off).
     #[error("this build has no semantic search")]
     Unsupported,
+    /// Semantic search was turned off ([`SemanticEngine::unload`]).
+    #[error("semantic search is off")]
+    Off,
     /// File I/O.
     #[error(transparent)]
     Io(#[from] std::io::Error),
