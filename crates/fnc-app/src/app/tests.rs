@@ -633,3 +633,24 @@ fn unindexed_property_and_file_columns_load_in_the_background() {
     }
     assert!(h.state().stores.props.snapshot().is_empty(), "nothing indexed");
 }
+
+/// REL-02: reports of a process that died show "did not exit normally" in the status
+/// bar; right-click dismisses it for good (acknowledged), caught reports never show.
+#[test]
+fn crash_prompt_in_status_bar() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("crash-20261014-101500.log"), "report").unwrap();
+    std::fs::write(dir.path().join("crash-20261014-101600-fes.caught.log"), "report").unwrap();
+    let mut h = harness(deps_for(None, SharedIndex::default()));
+    h.step();
+    assert!(h.query_by_label_contains("did not exit normally").is_none());
+    h.state_mut().crash = crate::crash::CrashPrompt::for_dir(dir.path());
+    h.run_steps(2);
+    h.get_by_label_contains("did not exit normally").click_secondary();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("did not exit normally").is_none(), "dismissed");
+    assert_eq!(std::fs::read_to_string(dir.path().join("crash.ack")).unwrap(), "crash-20261014-101500.log");
+    h.state_mut().crash = crate::crash::CrashPrompt::for_dir(dir.path());
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("did not exit normally").is_none(), "not again after acknowledging");
+}

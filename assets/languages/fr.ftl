@@ -855,6 +855,12 @@ options-desc-etp = Permet aux clients Everything et FTP de rechercher et de parc
 status-etp = ETP/FTP : { $url }
 status-etp-failed = Serveur ETP/FTP : { $error }
 status-etp-remote = ETP : { $host } ({ $total } résultats)
+status-crash-prompt = Fennec ne s'est pas fermé normalement la dernière fois — voir le journal
+status-crash-tooltip = { $count ->
+    [one] Un rapport de plantage
+   *[other] { $count } rapports de plantage
+} dans { $dir }. Cliquez pour ouvrir le dossier ; clic droit pour ignorer.
+msg-crash-open-failed = Impossible d'ouvrir le dossier des journaux : { $error }
 msg-etp-bad-bind = Adresse d’écoute ETP/FTP non valide : { $value }
 msg-etp-no-password = un mot de passe est requis (Options → Serveur ETP/FTP)
 msg-etp-bad-port = Numéro de port non valide

@@ -807,6 +807,12 @@ options-desc-etp = Lets Everything clients and FTP clients search and browse thi
 status-etp = ETP/FTP: { $url }
 status-etp-failed = ETP/FTP server: { $error }
 status-etp-remote = ETP: { $host } ({ $total } results)
+status-crash-prompt = Fennec did not exit normally last time — view log
+status-crash-tooltip = { $count ->
+    [one] One crash report
+   *[other] { $count } crash reports
+} in { $dir }. Click to open the folder; right-click to dismiss.
+msg-crash-open-failed = Cannot open the logs folder: { $error }
 msg-etp-bad-bind = Invalid ETP/FTP bind address: { $value }
 msg-etp-no-password = a password is required (Options → ETP/FTP Server)
 msg-etp-bad-port = Invalid port number

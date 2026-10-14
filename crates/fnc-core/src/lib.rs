@@ -6,6 +6,7 @@
 //! * [`natsort`] — natural ("logical") name comparison.
 //! * [`settings`] — the `Settings` structure and `settings.toml` persistence.
 //! * [`logging`] — `tracing` initialisation with rolling log files.
+//! * [`crash`] — the panic hook and crash reports (`logs/crash-*.log`).
 //! * [`paths`] — data directory resolution (installed / portable / instance).
 
 #![forbid(unsafe_code)]
@@ -14,6 +15,7 @@
 extern crate self as fnc_core;
 
 pub mod arena;
+pub mod crash;
 pub mod error;
 pub mod flags;
 pub mod fold;

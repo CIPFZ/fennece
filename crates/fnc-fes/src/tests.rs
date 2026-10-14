@@ -194,3 +194,12 @@ fn local_searches_read_files() {
     assert_eq!(run(strings(&["-filelist", &l, "-name", "fsi:png"]), &env(), &mut out, &mut err), 0);
     assert_eq!(String::from_utf8_lossy(&out).trim(), "pic.dat", "{}", String::from_utf8_lossy(&err));
 }
+
+/// `-debug-panic` (hidden) panics before any search is sent; `-version` prints 0.2.0.
+#[test]
+fn debug_panic_and_version() {
+    let r = std::panic::catch_unwind(|| fes(&["-debug-panic", "ext:iso"]));
+    assert!(r.is_err());
+    assert!(!args::HELP.contains("debug-panic"));
+    assert_eq!(fes(&["-version"]).1.trim_end(), format!("fes {}", env!("CARGO_PKG_VERSION")));
+}

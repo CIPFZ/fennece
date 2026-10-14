@@ -814,6 +814,9 @@ pub struct Settings {
     /// Number of worker threads for searching (0 = all cores).
     #[setting(key = "search_threads", default = 0, page = "advanced")]
     pub search_threads: u32,
+    /// Crash reports list only the length and a hash of the recent searches (REL-02).
+    #[setting(key = "crash_redact_queries", default = false, page = "advanced")]
+    pub crash_redact_queries: bool,
 }
 
 impl Settings {

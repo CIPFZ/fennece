@@ -840,6 +840,12 @@ options-desc-etp = Everything- und FTP-Clients können diesen Index durchsuchen 
 status-etp = ETP/FTP: { $url }
 status-etp-failed = ETP/FTP-Server: { $error }
 status-etp-remote = ETP: { $host } ({ $total } Ergebnisse)
+status-crash-prompt = Fennec wurde beim letzten Mal nicht normal beendet — Protokoll anzeigen
+status-crash-tooltip = { $count ->
+    [one] Ein Absturzbericht
+   *[other] { $count } Absturzberichte
+} in { $dir }. Klicken öffnet den Ordner, Rechtsklick blendet den Hinweis aus.
+msg-crash-open-failed = Der Protokollordner kann nicht geöffnet werden: { $error }
 msg-etp-bad-bind = Ungültige ETP/FTP-Bindungsadresse: { $value }
 msg-etp-no-password = Ein Kennwort ist erforderlich (Optionen → ETP/FTP-Server)
 msg-etp-bad-port = Ungültige Portnummer

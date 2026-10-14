@@ -23,9 +23,21 @@ pub fn is_host_invocation(args: &[String]) -> bool {
     args.first().is_some_and(|a| a.eq_ignore_ascii_case(HOST_ARG))
 }
 
-/// Runs the IFilter host on stdin/stdout and exits the process.
-pub fn run_host() -> ! {
-    std::process::exit(fnc_platform::ifilter::host_main(HostOptions::default()))
+/// Runs the IFilter host on stdin/stdout and exits the process. Panics are reported to
+/// the logs folder of the parent `fennec` ([`fnc_core::crash::ENV_CRASH_DIR`], else the
+/// default data folder's). No unhandled-exception filter here: a crashing third-party
+/// filter is contained by design (the parent restarts the host and logs it) and is not a
+/// Fennec crash. The hidden `-debug-panic` (after the host flag) panics for testing.
+pub fn run_host(args: &[String]) -> ! {
+    let dir = std::env::var_os(fnc_core::crash::ENV_CRASH_DIR)
+        .map_or_else(|| fnc_core::paths::DataPaths::resolve("").logs_dir(), std::path::PathBuf::from);
+    fnc_core::crash::install("ifilter-host", dir, fnc_platform::os::version());
+    if args.iter().skip(1).any(|a| a.eq_ignore_ascii_case("-debug-panic")) {
+        panic!("-debug-panic: deliberate panic in the IFilter host (crash report test)");
+    }
+    let code = fnc_platform::ifilter::host_main(HostOptions::default());
+    fnc_core::crash::mark_survived();
+    std::process::exit(code)
 }
 
 /// [`ContentProvider`] over the IFilter host processes.
@@ -56,7 +68,11 @@ pub fn provider() -> Option<Arc<dyn ContentProvider>> {
     }
     PROVIDER
         .get_or_init(|| match HostCommand::current_exe() {
-            Ok(cmd) => {
+            Ok(mut cmd) => {
+                // Host panics are reported next to ours (REL-02).
+                if let Some(dir) = fnc_core::crash::dir() {
+                    cmd.envs.push((fnc_core::crash::ENV_CRASH_DIR.into(), dir.into()));
+                }
                 let client = IFilterClient::new(cmd, ClientOptions { timeout: TIMEOUT, ..ClientOptions::default() });
                 Some(Arc::new(IFilterContent(client)) as Arc<dyn ContentProvider>)
             }

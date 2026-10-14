@@ -125,3 +125,4 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 
 ## 0.2.0 — release
 - [0.2.0] version 0.2.0 in every crate, the MSI, `-version`, the About dialog, the Everything IPC version (`1.4.1.200`) and the HTTP `Server` header (`Fennec/0.2.0`) (REL-01).
+- [0.2.0][fnc-core][fnc-app][fnc-fes][fnc-service][fnc-platform] global panic hook in `fennec`, `fes`, `fennec-service` and the IFilter host: `logs/crash-<YYYYMMDD-HHMMSS>[-<binary>].log` with version, OS build, thread, message/location, backtrace, the last 20 searches (`crash_redact_queries`: length + hash only) and an index summary; reports of processes that ended normally become `*.caught.log`; the next start shows "Fennec did not exit normally last time — view log" in the status bar (click: open the folder, right-click: dismiss; `crash.ack`); Windows unhandled-exception filter writes a minimal report; hidden `-debug-panic` (REL-02).
