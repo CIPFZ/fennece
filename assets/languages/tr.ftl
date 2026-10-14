@@ -792,6 +792,8 @@ options-page-etp = ETP/FTP Sunucusu
 options-desc-etp = Everything ve FTP istemcilerinin bu dizinde arama yapmasına ve göz atmasına izin verir (ETP = Everything uzantılı FTP); Araçlar → ETP Sunucusuna Bağlan ayarları da buradadır. Kullanıcı adı ve parola düz metin olarak gönderilir.
 status-etp = ETP/FTP: { $url }
 status-etp-failed = ETP/FTP sunucusu: { $error }
+status-portable-fallback = Taşınabilir klasör salt okunur: veriler kullanıcı profilinde tutuluyor
+status-portable-fallback-tip = { $refused } konumuna yazılamıyor; ayarlar, dizin ve günlükler { $path } konumunda tutuluyor. Verileri programın yanında tutmak için Fennec'i yazılabilir bir klasöre taşıyın.
 status-etp-remote = ETP: { $host } ({ $total } sonuç)
 status-crash-prompt = Fennec geçen sefer normal kapanmadı — günlüğü görüntüle
 status-crash-tooltip = { $dir } içinde { $count } çökme raporu var. Klasörü açmak için tıklayın; kapatmak için sağ tıklayın.

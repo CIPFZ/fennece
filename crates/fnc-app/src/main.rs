@@ -98,14 +98,25 @@ fn run() -> anyhow::Result<()> {
         None => (paths.logs_dir(), "fennec".to_string()),
     };
     crash::install(&logs, settings.crash_redact_queries);
-    let _log_guard = init_logging(&LogConfig {
+    let log_cfg = LogConfig {
         dir: Some(&logs),
         prefix: &prefix,
         level,
         max_files: settings.log_max_files as usize,
         console: cli.console || cli.verbose,
-    })?;
+    };
+    // An unwritable log folder must not stop the program (REL-07): log to the console only.
+    let (_log_guard, log_error) = match init_logging(&log_cfg) {
+        Ok(g) => (g, None),
+        Err(e) => (init_logging(&LogConfig { dir: None, ..log_cfg })?, Some(e)),
+    };
     tracing::info!(version = env!("CARGO_PKG_VERSION"), data = %paths.root.display(), portable = paths.portable, "starting");
+    if let Some(e) = log_error {
+        tracing::warn!(error = %e, "file logging disabled");
+    }
+    if let Some(refused) = &paths.unwritable_portable {
+        tracing::warn!(refused = %refused.display(), "portable data folder not writable; using the per-user fallback");
+    }
     if let Some(e) = &settings_load.error {
         tracing::warn!(error = %e, "settings unreadable; using defaults");
     }
@@ -117,6 +128,7 @@ fn run() -> anyhow::Result<()> {
     }
     i18n::init(&settings.language);
     let settings_notice = upgrade::settings_notice(&settings_load);
+    let data_warning = app::data_warning(&paths);
     i18n::apply_collation(settings.name_collation);
     i18n::apply_date_locale(settings.date_input_order, settings.week_start);
 
@@ -266,6 +278,7 @@ fn run() -> anyhow::Result<()> {
         initial_cli: Some(cli.clone()),
         start_hidden: cli.start_hidden,
         servers: Some(servers::ServersContext { instance: cli.instance.clone(), portable: paths.portable }),
+        data_warning,
     };
     eframe::run_native(
         "Fennec",

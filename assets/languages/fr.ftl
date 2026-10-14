@@ -861,6 +861,8 @@ options-page-etp = Serveur ETP/FTP
 options-desc-etp = Permet aux clients Everything et FTP de rechercher et de parcourir cet index (ETP = FTP avec l’extension Everything), et réglages de Outils → Se connecter à un serveur ETP. Le nom d’utilisateur et le mot de passe sont envoyés en clair.
 status-etp = ETP/FTP : { $url }
 status-etp-failed = Serveur ETP/FTP : { $error }
+status-portable-fallback = Dossier portable en lecture seule : données conservées dans le profil utilisateur
+status-portable-fallback-tip = Impossible d’écrire dans { $refused } : les paramètres, l’index et les journaux sont enregistrés dans { $path }. Déplacez Fennec dans un dossier accessible en écriture pour garder les données à côté.
 status-etp-remote = ETP : { $host } ({ $total } résultats)
 status-crash-prompt = Fennec ne s'est pas fermé normalement la dernière fois — voir le journal
 status-crash-tooltip = { $count ->

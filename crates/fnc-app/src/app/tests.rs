@@ -57,6 +57,7 @@ pub(super) fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedInde
         initial_cli: None,
         start_hidden: false,
         servers: None,
+        data_warning: None,
     }
 }
 
@@ -653,4 +654,24 @@ fn crash_prompt_in_status_bar() {
     h.state_mut().crash = crate::crash::CrashPrompt::for_dir(dir.path());
     h.run_steps(2);
     assert!(h.query_by_label_contains("did not exit normally").is_none(), "not again after acknowledging");
+}
+
+/// REL-07: a read-only portable folder shows a permanent status bar warning.
+#[test]
+fn read_only_portable_folder_warns_in_the_status_bar() {
+    let mut deps = deps_for(None, SharedIndex::default());
+    let mut paths = fnc_core::paths::DataPaths {
+        root: r"C:\Users\u\AppData\Local\Fennec\portable".into(),
+        portable: true,
+        unwritable_portable: None,
+    };
+    assert_eq!(super::data_warning(&paths), None);
+    paths.unwritable_portable = Some(r"C:\Program Files\Fennec\data".into());
+    let (warning, tip) = super::data_warning(&paths).unwrap();
+    assert_eq!(warning, t("status-portable-fallback"));
+    assert!(tip.contains(r"C:\Program Files\Fennec\data") && tip.contains(r"AppData\Local\Fennec\portable"), "{tip}");
+    deps.data_warning = Some((warning.clone(), tip));
+    let mut h = harness(deps);
+    h.run_steps(2);
+    h.get_by_label(&warning);
 }

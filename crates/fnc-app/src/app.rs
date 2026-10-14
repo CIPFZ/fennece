@@ -95,6 +95,8 @@ pub struct AppDeps {
     pub start_hidden: bool,
     /// Run the IPC/Everything/HTTP servers for this instance (`None`: no servers).
     pub servers: Option<crate::servers::ServersContext>,
+    /// Permanent status bar warning and its tooltip (read-only portable folder).
+    pub data_warning: Option<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -241,6 +243,17 @@ pub(super) struct View {
     file_sort: Option<filesort::FileSort>,
 }
 
+/// Status bar warning and tooltip when a read-only portable folder made the data move to
+/// the per-user fallback (REL-07); `None` otherwise.
+pub fn data_warning(paths: &fnc_core::paths::DataPaths) -> Option<(String, String)> {
+    let refused = paths.unwritable_portable.as_ref()?;
+    let tip = t_args(
+        "status-portable-fallback-tip",
+        &[("refused", refused.display().to_string().into()), ("path", paths.root.display().to_string().into())],
+    );
+    Some((t("status-portable-fallback"), tip))
+}
+
 /// Main application state.
 pub struct FennecApp {
     shared: SharedIndex,
@@ -266,6 +279,8 @@ pub struct FennecApp {
 
     status: IndexStatus,
     message: Option<(String, Instant)>,
+    /// Permanent warning and tooltip (read-only portable folder, REL-07).
+    data_warning: Option<(String, String)>,
     hidden: bool,
     dialog: Option<dialogs::Dialog>,
     options_window: Option<options::OptionsState>,
@@ -378,6 +393,7 @@ impl FennecApp {
             history,
             status: IndexStatus::Starting,
             message: None,
+            data_warning: deps.data_warning,
             // Start-hidden is applied by `main` via `ViewportBuilder::with_visible(false)`
             // (no flash of the window).
             hidden: deps.start_hidden,
@@ -1890,6 +1906,10 @@ impl FennecApp {
             if let Some(d) = self.v.diagnostics.first() {
                 ui.separator();
                 ui.colored_label(ui.visuals().warn_fg_color, d);
+            }
+            if let Some((warning, tip)) = &self.data_warning {
+                ui.separator();
+                ui.colored_label(ui.visuals().warn_fg_color, warning).on_hover_text(tip);
             }
             if let Some((m, at)) = &self.message {
                 if at.elapsed() < Duration::from_secs(8) {
