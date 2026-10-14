@@ -8,6 +8,7 @@
 //! * [`logging`] — `tracing` initialisation with rolling log files.
 //! * [`crash`] — the panic hook and crash reports (`logs/crash-*.log`).
 //! * [`paths`] — data directory resolution (installed / portable / instance).
+//! * [`upgrade`] — format versions of persisted files, backups of unreadable ones (ADR-038).
 
 #![forbid(unsafe_code)]
 
@@ -26,6 +27,7 @@ pub mod paths;
 pub mod secret;
 pub mod settings;
 pub mod time;
+pub mod upgrade;
 
 pub use arena::{FoldArena, NameArena};
 pub use error::{CoreError, Result};

@@ -2039,6 +2039,7 @@ name = "fnc-semantic"
 version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
+ "fnc-core",
  "llama-cpp-2",
  "parking_lot",
  "serde",

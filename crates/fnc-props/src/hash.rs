@@ -18,12 +18,14 @@ use md5::Digest;
 use parking_lot::Mutex;
 use xxhash_rust::xxh3::xxh3_64;
 
-use crate::fnx::{Dec, Enc, FnxError, FnxResult, FnxWriter, segments};
+use crate::fnx::{Dec, Enc, FnxError, FnxResult, FnxWriter, segments_versioned};
 
 /// `hashes.fnx` magic.
 pub const HASHES_MAGIC: [u8; 4] = *b"FNXH";
 /// `hashes.fnx` layout version.
 pub const HASHES_VERSION: u32 = 1;
+/// Oldest layout still read (ADR-038).
+pub const HASHES_OLDEST_READABLE: u32 = 1;
 
 /// Hash algorithm.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -396,7 +398,9 @@ impl HashCache {
 
     /// Decodes cache bytes.
     pub fn from_bytes(buf: &[u8]) -> FnxResult<Self> {
-        let segs = segments(buf, HASHES_MAGIC, HASHES_VERSION, "hash cache")?;
+        // One decoder per readable layout; layout 1 is the only one so far.
+        let (_layout, segs) =
+            segments_versioned(buf, HASHES_MAGIC, HASHES_OLDEST_READABLE, HASHES_VERSION, "hash cache")?;
         let seg =
             segs.iter().find(|(t, _)| t == b"HASH").map(|(_, s)| *s).ok_or(FnxError::Corrupt("missing segment"))?;
         let mut d = Dec::new(seg);

@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::history::write_atomic;
+use fnc_core::upgrade::Recovery;
+
 use crate::i18n::t;
 
 /// A named search restriction (filter bar / filter menu).
@@ -109,28 +110,29 @@ pub struct Filters {
     /// All filters (index 0 = first after "Everything").
     pub list: Vec<Filter>,
     path: Option<PathBuf>,
+    /// The file was not used as it is (other schema, damage): where the original went.
+    pub recovery: Option<Recovery>,
 }
 
 impl Filters {
-    /// Built-ins followed by `path`'s user filters.
+    /// Built-ins followed by `path`'s user filters (ADR-038: a damaged or newer file is
+    /// copied to a backup first).
     pub fn load(path: Option<PathBuf>) -> Self {
         let mut list = builtin_filters();
-        if let Some(p) = &path
-            && let Ok(text) = std::fs::read_to_string(p)
-        {
-            match toml::from_str::<FiltersFile>(&text) {
-                Ok(f) => list.extend(f.filter),
-                Err(e) => tracing::warn!(error = %e, file = %p.display(), "cannot read filters"),
-            }
+        let mut recovery = None;
+        if let Some(p) = &path {
+            let (f, r) = crate::upgrade::load_toml::<FiltersFile>(p);
+            list.extend(f.filter);
+            recovery = r;
         }
-        Self { list, path }
+        Self { list, path, recovery }
     }
 
     /// Saves the user filters.
     pub fn save(&self) -> std::io::Result<()> {
         let Some(p) = &self.path else { return Ok(()) };
         let file = FiltersFile { filter: self.list.iter().filter(|f| !f.builtin).cloned().collect() };
-        write_atomic(p, &toml::to_string(&file).map_err(std::io::Error::other)?)
+        crate::upgrade::save_toml(p, &file)
     }
 
     /// Index of the filter named `name`.
@@ -180,27 +182,24 @@ pub struct Bookmarks {
     /// All bookmarks in menu order.
     pub list: Vec<Bookmark>,
     path: Option<PathBuf>,
+    /// The file was not used as it is (other schema, damage): where the original went.
+    pub recovery: Option<Recovery>,
 }
 
 impl Bookmarks {
-    /// Loads `path`.
+    /// Loads `path` (ADR-038: a damaged or newer file is copied to a backup first).
     pub fn load(path: Option<PathBuf>) -> Self {
-        let list = path
-            .as_deref()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|t| toml::from_str::<BookmarksFile>(&t).ok())
-            .map(|f| f.bookmark)
-            .unwrap_or_default();
-        Self { list, path }
+        let (file, recovery) = match path.as_deref() {
+            Some(p) => crate::upgrade::load_toml::<BookmarksFile>(p),
+            None => (BookmarksFile::default(), None),
+        };
+        Self { list: file.bookmark, path, recovery }
     }
 
     /// Saves.
     pub fn save(&self) -> std::io::Result<()> {
         let Some(p) = &self.path else { return Ok(()) };
-        write_atomic(
-            p,
-            &toml::to_string(&BookmarksFile { bookmark: self.list.clone() }).map_err(std::io::Error::other)?,
-        )
+        crate::upgrade::save_toml(p, &BookmarksFile { bookmark: self.list.clone() })
     }
 
     /// Imports Everything's `Bookmarks.csv`; returns the number added.

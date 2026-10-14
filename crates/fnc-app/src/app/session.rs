@@ -59,13 +59,8 @@ impl FennecApp {
             std::mem::swap(&mut self.v, &mut w.view);
         }
         self.windows = wins;
-        match toml::to_string(&s) {
-            Ok(text) => {
-                if let Err(e) = crate::history::write_atomic(&self.session_file(), &text) {
-                    tracing::warn!(error = %e, "cannot save the session");
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "cannot save the session"),
+        if let Err(e) = crate::upgrade::save_toml(&self.session_file(), &s) {
+            tracing::warn!(error = %e, "cannot save the session");
         }
     }
 
@@ -90,14 +85,11 @@ impl FennecApp {
         if !self.settings.restore_session {
             return;
         }
-        let Ok(text) = std::fs::read_to_string(self.session_file()) else { return };
-        let s: Session = match toml::from_str(&text) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(error = %e, "ignoring a damaged session file");
-                return;
-            }
-        };
+        // A damaged or newer file is copied to a backup first (ADR-038).
+        let (s, recovery): (Session, _) = crate::upgrade::load_toml(&self.session_file());
+        if let Some(r) = recovery {
+            self.notice(crate::upgrade::notice(&r, false));
+        }
         let mut it = s.window.iter().filter(|w| !w.tabs.is_empty());
         if let Some(main) = it.next() {
             self.restore_tabs(main);

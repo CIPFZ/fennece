@@ -29,6 +29,8 @@ pub struct SearchHistory {
     path: Option<PathBuf>,
     max: usize,
     dirty: bool,
+    /// The file was not used as it is (other schema, damage): where the original went.
+    pub recovery: Option<fnc_core::upgrade::Recovery>,
 }
 
 fn now() -> i64 {
@@ -36,14 +38,11 @@ fn now() -> i64 {
 }
 
 impl SearchHistory {
-    /// Loads `path` (missing or unreadable files start empty).
+    /// Loads `path` (missing or unreadable files start empty; an unreadable or newer
+    /// file is copied to a backup first, ADR-038).
     pub fn load(path: PathBuf, max: usize) -> Self {
-        let entries = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| toml::from_str::<File>(&t).ok())
-            .map(|f| f.search)
-            .unwrap_or_default();
-        let mut h = Self { entries, path: Some(path), max, dirty: false };
+        let (file, recovery) = crate::upgrade::load_toml::<File>(&path);
+        let mut h = Self { entries: file.search, path: Some(path), max, dirty: false, recovery };
         h.trim();
         h
     }
@@ -129,15 +128,9 @@ impl SearchHistory {
         if !self.dirty {
             return;
         }
-        match toml::to_string(&File { search: self.entries.clone() }) {
-            Ok(text) => {
-                if let Err(e) = write_atomic(path, &text) {
-                    tracing::warn!(error = %e, "cannot save search history");
-                } else {
-                    self.dirty = false;
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "cannot serialise search history"),
+        match crate::upgrade::save_toml(path, &File { search: self.entries.clone() }) {
+            Ok(()) => self.dirty = false,
+            Err(e) => tracing::warn!(error = %e, "cannot save search history"),
         }
     }
 }

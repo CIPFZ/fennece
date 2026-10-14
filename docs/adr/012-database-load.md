@@ -1,6 +1,6 @@
 # ADR-012: Reading `.fnx` into memory instead of mmap
 
-- Status: accepted (M2), amends ADR-003
+- Status: accepted (M2), amends ADR-003; unreadable files: superseded by ADR-038 (`.v<N>.bak` / `.corrupt.bak` instead of `.bad`)
 - Related: SPEC ch.1 §5
 
 ## Background

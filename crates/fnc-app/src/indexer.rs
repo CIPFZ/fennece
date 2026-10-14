@@ -53,6 +53,9 @@ pub enum IndexEvent {
     Status(IndexStatus),
     /// Problem worth showing (already localised).
     Message(String),
+    /// A data file was set aside and is being rebuilt (localised; shown together with
+    /// the other start-up notices, ADR-038).
+    Notice(String),
     /// The index was compacted while running: entry ids changed (`remap[old] = new`,
     /// `u32::MAX` = removed). Views remap their selections and re-run their searches.
     Compacted {
@@ -257,6 +260,11 @@ impl Emitter {
         (self.notify)();
     }
 
+    fn notice(&self, m: String) {
+        let _ = self.tx.send(IndexEvent::Notice(m));
+        (self.notify)();
+    }
+
     fn message(&self, m: String) {
         tracing::warn!("{m}");
         let _ = self.tx.send(IndexEvent::Message(m));
@@ -374,23 +382,24 @@ fn collect_sources(cfg: &IndexerConfig, emit: &Emitter) -> Vec<Box<dyn VolumeSou
     sources
 }
 
-/// Loads the database, if configured and readable. A damaged file is kept as
-/// `index.fnx.bad` and the index is rebuilt.
+/// Loads the database, if configured and readable. A file of an unreadable layout
+/// version (older or newer) or a damaged one is kept as `index.fnx.v<N>.bak` /
+/// `index.fnx.corrupt.bak`, the user is told and the index is rebuilt (ADR-038).
 fn load_db(cfg: &IndexerConfig, emit: &Emitter) -> Option<IndexStore> {
     let path = cfg.db_path.as_ref().filter(|_| !cfg.reindex)?;
     if !path.exists() {
         return None;
     }
     let t = Instant::now();
-    match fnc_index::persist::load(path) {
-        Ok(s) => {
+    match fnc_index::persist::load_or_recover(path) {
+        fnc_index::persist::Loaded::Index(s) => {
             tracing::info!(entries = s.live_count(), elapsed = ?t.elapsed(), "database loaded");
-            Some(s)
+            Some(*s)
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "database unusable; rebuilding");
-            let _ = std::fs::rename(path, path.with_extension("fnx.bad"));
-            emit.message(crate::i18n::t_args("index-db-rebuild", &[("message", e.to_string().into())]));
+        fnc_index::persist::Loaded::Missing => None,
+        fnc_index::persist::Loaded::Rebuild(r, e) => {
+            tracing::warn!(error = %e, backup = ?r.backup, "database unusable; rebuilding");
+            emit.notice(crate::upgrade::notice(&r, true));
             None
         }
     }

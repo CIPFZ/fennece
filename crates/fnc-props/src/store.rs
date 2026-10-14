@@ -23,7 +23,7 @@ use fnc_index::IndexStore;
 use parking_lot::lock_api::ArcRwLockReadGuard;
 use parking_lot::{RawRwLock, RwLock, RwLockWriteGuard};
 
-use crate::fnx::{Dec, Enc, FnxError, FnxResult, FnxWriter, segments};
+use crate::fnx::{Dec, Enc, FnxError, FnxResult, FnxWriter, segments_versioned};
 use crate::rows::{NONE, RowMap};
 use crate::schema::{PropType, PropertyId};
 use crate::value::Value;
@@ -32,6 +32,8 @@ use crate::value::Value;
 pub const PROPS_MAGIC: [u8; 4] = *b"FNXP";
 /// `props.fnx` layout version.
 pub const PROPS_VERSION: u32 = 1;
+/// Oldest layout still read (ADR-038).
+pub const PROPS_OLDEST_READABLE: u32 = 1;
 const NO_INT: i64 = i64::MIN;
 
 /// Interned strings of one text column.
@@ -556,7 +558,9 @@ impl PropertyStore {
 
     /// Decodes `props.fnx` bytes against `s`.
     pub fn from_bytes(buf: &[u8], s: &IndexStore) -> FnxResult<Self> {
-        let segs = segments(buf, PROPS_MAGIC, PROPS_VERSION, "property store")?;
+        // One decoder per readable layout; layout 1 is the only one so far.
+        let (_layout, segs) =
+            segments_versioned(buf, PROPS_MAGIC, PROPS_OLDEST_READABLE, PROPS_VERSION, "property store")?;
         let mut store = PropertyStore::new(s.instance());
         let mut assign: Option<Vec<u32>> = None;
         for (tag, seg) in &segs {

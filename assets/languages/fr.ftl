@@ -21,7 +21,14 @@ index-ready = { $count ->
    *[other] { $count } entrées indexées en { $seconds } s
 }
 index-error = Erreur d'index : { $message }
-index-db-rebuild = La base de données de l'index est illisible et va être reconstruite ({ $message }).
+upgrade-rebuild-old = { $file } utilise un ancien format (version { $version }) que cette version ne sait pas lire ; il a été conservé sous { $backup } et est en cours de reconstruction.
+upgrade-rebuild-future = { $file } a été écrit par une version plus récente de Fennec (format { $version }) ; il a été conservé sous { $backup } et est en cours de reconstruction.
+upgrade-rebuild-corrupt = { $file } est endommagé ; il a été conservé sous { $backup } et est en cours de reconstruction.
+upgrade-data-old = { $file } utilise un ancien format (version { $version }) ; ce qui était lisible a été chargé et l'original conservé sous { $backup }.
+upgrade-data-future = { $file } a été écrit par une version plus récente de Fennec (format { $version }) ; ce que cette version comprend a été chargé et l'original conservé sous { $backup }.
+upgrade-data-corrupt = { $file } est illisible ; il a été conservé sous { $backup } et les valeurs par défaut sont utilisées.
+upgrade-backup-failed = { $file } est illisible et n'a pas pu être sauvegardé ({ $message }).
+upgrade-settings-reset = Certains paramètres étaient illisibles et ont été réinitialisés ({ $keys }) ; le fichier d'origine a été conservé sous { $backup }.
 index-volume-rebuild = Le journal des modifications de { $volume } a changé ; réindexation de ce volume.
 index-volume-added = { $volume } a été ajouté à l'index.
 index-watch-error = Surveillance de { $volume } arrêtée : { $message }

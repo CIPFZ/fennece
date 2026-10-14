@@ -451,6 +451,11 @@ impl FennecApp {
             servers: None,
             crash: crate::crash::CrashPrompt::detect(),
         };
+        // Data files that were set aside at load (ADR-038).
+        let recovered = [app.filters.recovery.take(), app.bookmarks.recovery.take(), app.history.recovery.take()];
+        for r in recovered.into_iter().flatten() {
+            app.notice(crate::upgrade::notice(&r, false));
+        }
         app.semantic_init();
         app.rebuild_search_options();
         app.start_servers(servers);
@@ -659,8 +664,12 @@ impl FennecApp {
                     self.status = s;
                 }
                 IndexEvent::Message(m) => self.message = Some((m, Instant::now())),
+                IndexEvent::Notice(m) => self.notice(m),
                 IndexEvent::Compacted { old_instance, remap } => self.on_compacted(old_instance, &remap),
             }
+        }
+        for n in self.stores.take_notices() {
+            self.notice(n);
         }
         while let Ok(m) = self.worker_rx.try_recv() {
             let text = match m {
@@ -853,6 +862,17 @@ impl FennecApp {
     }
 
     fn say(&mut self, text: String) {
+        self.message = Some((text, Instant::now()));
+    }
+
+    /// Start-up notices about data files that were set aside (ADR-038): several in a row
+    /// are shown together instead of replacing each other.
+    pub(crate) fn notice(&mut self, text: String) {
+        tracing::warn!("{text}");
+        let text = match self.message.take() {
+            Some((m, at)) if at.elapsed() < Duration::from_secs(8) => format!("{m}  ·  {text}"),
+            _ => text,
+        };
         self.message = Some((text, Instant::now()));
     }
 

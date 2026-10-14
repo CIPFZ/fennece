@@ -18,7 +18,14 @@ index-ready = { $count ->
    *[other] { $count } Einträge in { $seconds } s indiziert
 }
 index-error = Indexfehler: { $message }
-index-db-rebuild = Die Indexdatenbank konnte nicht gelesen werden und wird neu erstellt ({ $message }).
+upgrade-rebuild-old = { $file } hat ein älteres Format (Version { $version }), das diese Version nicht lesen kann; die Datei wurde als { $backup } aufbewahrt und wird neu erstellt.
+upgrade-rebuild-future = { $file } wurde von einer neueren Fennec-Version geschrieben (Format { $version }); die Datei wurde als { $backup } aufbewahrt und wird neu erstellt.
+upgrade-rebuild-corrupt = { $file } ist beschädigt; die Datei wurde als { $backup } aufbewahrt und wird neu erstellt.
+upgrade-data-old = { $file } hat ein älteres Format (Version { $version }); der lesbare Teil wurde geladen, das Original als { $backup } aufbewahrt.
+upgrade-data-future = { $file } wurde von einer neueren Fennec-Version geschrieben (Format { $version }); was diese Version versteht, wurde geladen, das Original als { $backup } aufbewahrt.
+upgrade-data-corrupt = { $file } konnte nicht gelesen werden; die Datei wurde als { $backup } aufbewahrt, es gelten die Standardwerte.
+upgrade-backup-failed = { $file } konnte weder gelesen noch gesichert werden ({ $message }).
+upgrade-settings-reset = Einige Einstellungen konnten nicht gelesen werden und wurden zurückgesetzt ({ $keys }); die Originaldatei wurde als { $backup } aufbewahrt.
 index-volume-rebuild = Das Änderungsjournal von { $volume } hat sich geändert; dieses Volume wird neu indiziert.
 index-volume-added = { $volume } wurde dem Index hinzugefügt.
 index-watch-error = Überwachung von { $volume } beendet: { $message }

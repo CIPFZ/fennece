@@ -24,13 +24,15 @@ use parking_lot::{RawRwLock, RwLock, RwLockWriteGuard};
 use rayon::prelude::*;
 use regex::{Regex, RegexBuilder};
 
-use crate::fnx::{Dec, Enc, FnxError, FnxResult, FnxWriter, segments};
+use crate::fnx::{Dec, Enc, FnxError, FnxResult, FnxWriter, segments_versioned};
 use crate::rows::{NONE, RowMap};
 
 /// `content.fnx` magic.
 pub const CONTENT_MAGIC: [u8; 4] = *b"FNXC";
 /// `content.fnx` layout version.
 pub const CONTENT_VERSION: u32 = 1;
+/// Oldest layout still read (ADR-038).
+pub const CONTENT_OLDEST_READABLE: u32 = 1;
 /// Longest indexed token (longer runs are cut; such pattern tokens do not prune).
 const MAX_TOKEN_CHARS: usize = 48;
 
@@ -778,7 +780,9 @@ impl ContentStore {
 
     /// Decodes `content.fnx` bytes against `s`.
     pub fn from_bytes(buf: &[u8], s: &IndexStore) -> FnxResult<Self> {
-        let segs = segments(buf, CONTENT_MAGIC, CONTENT_VERSION, "content store")?;
+        // One decoder per readable layout; layout 1 is the only one so far.
+        let (_layout, segs) =
+            segments_versioned(buf, CONTENT_MAGIC, CONTENT_OLDEST_READABLE, CONTENT_VERSION, "content store")?;
         let find = |t: &[u8; 4]| {
             segs.iter().find(|(tag, _)| tag == t).map(|(_, b)| *b).ok_or(FnxError::Corrupt("missing segment"))
         };

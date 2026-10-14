@@ -6,6 +6,13 @@
 //! filter, edit and reset every key generically (UI-08).
 //!
 //! Defaults follow Everything 1.5 (e.g. `search_delay = 0`, OR binds tighter than AND).
+//!
+//! `settings.toml` starts with `schema_version` ([`SCHEMA_VERSION`]; a file without it is
+//! schema 1). It is a property of the file, not a setting: it is not a `Settings` field,
+//! has no descriptor, cannot be set with `/key=value` and never shows on the Advanced page.
+//! Older schemas are upgraded by the table-driven [`migrate`] before the values are read;
+//! a newer schema is loaded as far as this version understands it and the original file
+//! is copied to `settings.toml.v<N>.bak` (its unknown keys are kept there) — ADR-038.
 
 use std::fmt;
 use std::path::Path;
@@ -819,6 +826,60 @@ pub struct Settings {
     pub crash_redact_queries: bool,
 }
 
+/// Current schema of `settings.toml` (top-level `schema_version`; missing = 1).
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// One upgrade step of `settings.toml`: rewrites a table of schema `from` (renamed or
+/// re-typed keys) into schema `from + 1`.
+#[derive(Clone, Copy)]
+pub struct Migration {
+    /// Schema the step reads.
+    pub from: u32,
+    /// The rewrite.
+    pub apply: fn(&mut toml::Table),
+}
+
+/// Upgrade steps of the real settings file. Schema 1 is the first one (0.1.0 and 0.2.0
+/// files), so there is none yet; a schema 2 adds `Migration { from: 1, apply: … }`.
+pub const MIGRATIONS: &[Migration] = &[];
+
+/// Applies `steps` to `table` from schema `from` up to `to`; an error names the first
+/// schema without a step (the table is then left partly migrated).
+pub fn migrate_with(
+    steps: &[Migration],
+    table: &mut toml::Table,
+    from: u32,
+    to: u32,
+) -> std::result::Result<(), String> {
+    let mut v = from;
+    while v < to {
+        let step =
+            steps.iter().find(|s| s.from == v).ok_or_else(|| format!("no settings migration from schema {v}"))?;
+        (step.apply)(table);
+        v += 1;
+    }
+    Ok(())
+}
+
+/// [`migrate_with`] the real [`MIGRATIONS`].
+pub fn migrate(table: &mut toml::Table, from: u32, to: u32) -> std::result::Result<(), String> {
+    migrate_with(MIGRATIONS, table, from, to)
+}
+
+/// What [`Settings::load_checked`] found besides the values.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingsLoad {
+    /// Schema of the file (1 when it has none or does not exist).
+    pub schema: u32,
+    /// Keys whose values could not be read; they have their defaults.
+    pub reset_keys: Vec<String>,
+    /// The file was not used as it is (newer or unknown schema, damaged values, syntax
+    /// error): the reason and the copy of the original.
+    pub recovery: Option<crate::upgrade::Recovery>,
+    /// Read or syntax error, if any.
+    pub error: Option<String>,
+}
+
 impl Settings {
     /// Loads `path`; a missing file yields defaults. Unknown keys are ignored with a
     /// warning so settings written by newer versions still load.
@@ -831,14 +892,85 @@ impl Settings {
         Self::from_toml(&text).map_err(|message| CoreError::SettingsParse { path: path.into(), message })
     }
 
-    /// Parses TOML text.
-    pub fn from_toml(text: &str) -> std::result::Result<Self, String> {
-        let table: toml::Table = text.parse().map_err(|e: toml::de::Error| e.to_string())?;
+    /// Start-up load that never loses the user's file: a newer schema, values of the
+    /// wrong type or a syntax error keep a copy (`settings.toml.v<N>.bak` /
+    /// `.corrupt.bak`) and load what can be read (bad keys get their defaults).
+    pub fn load_checked(path: &Path) -> (Self, SettingsLoad) {
+        use crate::upgrade::{Recovery, Unreadable};
+        let mut report = SettingsLoad { schema: 1, ..SettingsLoad::default() };
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Self::default(), report),
+            Err(e) => {
+                report.error = Some(CoreError::io(path, e).to_string());
+                report.recovery = Some(Recovery::copied(path, Unreadable::Corrupt));
+                return (Self::default(), report);
+            }
+        };
+        let mut table: toml::Table = match text.parse() {
+            Ok(t) => t,
+            Err(e) => {
+                let e: toml::de::Error = e;
+                report.error = Some(e.to_string());
+                report.recovery = Some(Recovery::copied(path, Unreadable::Corrupt));
+                return (Self::default(), report);
+            }
+        };
+        report.schema = crate::upgrade::toml_schema(&table);
+        table.remove(crate::upgrade::SCHEMA_KEY);
+        if report.schema > SCHEMA_VERSION {
+            tracing::warn!(schema = report.schema, current = SCHEMA_VERSION, "settings written by a newer version");
+            report.recovery = Some(Recovery::copied(path, Unreadable::Future(report.schema)));
+        } else if let Err(e) = migrate(&mut table, report.schema, SCHEMA_VERSION) {
+            tracing::warn!(error = %e, "settings schema cannot be migrated; reading the known keys");
+            report.recovery = Some(Recovery::copied(path, Unreadable::Old(report.schema)));
+        }
+        let (settings, reset) = Self::from_table_lenient(table);
+        if !reset.is_empty() && report.recovery.is_none() {
+            report.recovery = Some(Recovery::copied(path, Unreadable::Corrupt));
+        }
+        report.reset_keys = reset;
+        (settings, report)
+    }
+
+    /// Deserialises `table`; keys whose value does not fit are dropped (and returned).
+    fn from_table_lenient(table: toml::Table) -> (Self, Vec<String>) {
+        Self::warn_unknown(&table);
+        if let Ok(s) = Self::deserialize(table.clone()) {
+            return (s, Vec::new());
+        }
+        let mut good = toml::Table::new();
+        let mut bad = Vec::new();
+        for (k, v) in table {
+            let mut one = toml::Table::new();
+            one.insert(k.clone(), v.clone());
+            if Self::deserialize(one).is_ok() {
+                good.insert(k, v);
+            } else {
+                tracing::warn!(key = %k, "invalid setting value; using the default");
+                bad.push(k);
+            }
+        }
+        (Self::deserialize(good).unwrap_or_default(), bad)
+    }
+
+    fn warn_unknown(table: &toml::Table) {
         for key in table.keys() {
             if !Self::descriptors().iter().any(|d| d.key == key) {
                 tracing::warn!(key, "ignoring unknown setting");
             }
         }
+    }
+
+    /// Parses TOML text (a schema below [`SCHEMA_VERSION`] is migrated first).
+    pub fn from_toml(text: &str) -> std::result::Result<Self, String> {
+        let mut table: toml::Table = text.parse().map_err(|e: toml::de::Error| e.to_string())?;
+        let schema = crate::upgrade::toml_schema(&table);
+        table.remove(crate::upgrade::SCHEMA_KEY);
+        if schema < SCHEMA_VERSION {
+            migrate(&mut table, schema, SCHEMA_VERSION)?;
+        }
+        Self::warn_unknown(&table);
         Self::deserialize(table).map_err(|e| e.to_string())
     }
 
@@ -852,9 +984,10 @@ impl Settings {
         }
     }
 
-    /// Serialises to TOML text.
+    /// Serialises to TOML text (`schema_version` first).
     pub fn to_toml(&self) -> Result<String> {
-        toml::to_string(self).map_err(|e| CoreError::SettingsSerialize(e.to_string()))
+        let body = toml::to_string(self).map_err(|e| CoreError::SettingsSerialize(e.to_string()))?;
+        Ok(format!("{} = {SCHEMA_VERSION}\n{body}", crate::upgrade::SCHEMA_KEY))
     }
 
     /// Writes atomically (`settings.toml.tmp` + rename).
@@ -865,6 +998,15 @@ impl Settings {
         let text = s.to_toml()?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| CoreError::io(dir, e))?;
+        }
+        // A file of a newer schema is copied before it is replaced (ADR-038).
+        if let Ok(old) = std::fs::read_to_string(path)
+            && let Ok(table) = old.parse::<toml::Table>()
+            && crate::upgrade::toml_schema(&table) > SCHEMA_VERSION
+        {
+            let v = crate::upgrade::toml_schema(&table);
+            crate::upgrade::backup_copy(path, crate::upgrade::Unreadable::Future(v))
+                .map_err(|e| CoreError::io(path, e))?;
         }
         let tmp = path.with_extension("toml.tmp");
         std::fs::write(&tmp, text).map_err(|e| CoreError::io(&tmp, e))?;
@@ -980,5 +1122,98 @@ mod tests {
         // Saving again keeps the same hash (no re-hashing of hashes).
         back.save(&p).unwrap();
         assert_eq!(Settings::load(&p).unwrap().http_password, back.http_password);
+    }
+
+    #[test]
+    fn schema_version_is_a_file_property_not_a_setting() {
+        assert!(Settings::descriptors().iter().all(|d| d.key != crate::upgrade::SCHEMA_KEY));
+        let mut s = Settings::default();
+        assert!(matches!(s.set("schema_version", "2"), Err(SettingError::UnknownKey(_))));
+        assert!(s.get("schema_version").is_none());
+        let text = s.to_toml().unwrap();
+        assert!(text.starts_with("schema_version = 1\n"), "{text}");
+        assert_eq!(Settings::from_toml(&text).unwrap(), s);
+    }
+
+    #[test]
+    fn migrations_are_table_driven() {
+        // A fake schema 0 → 1 step: `delay` was renamed `search_delay` and counted seconds.
+        fn v0_to_v1(t: &mut toml::Table) {
+            if let Some(v) = t.remove("delay").and_then(|v| v.as_integer()) {
+                t.insert("search_delay".into(), toml::Value::Integer(v * 1000));
+            }
+        }
+        let steps = [Migration { from: 0, apply: v0_to_v1 }];
+        let mut t: toml::Table = "delay = 2\nmatch_case = true".parse().unwrap();
+        migrate_with(&steps, &mut t, 0, 1).unwrap();
+        let s = Settings::deserialize(t).unwrap();
+        assert_eq!((s.search_delay, s.match_case), (2000, true));
+        // Nothing to do for the current schema; a missing step is an error.
+        let mut t = toml::Table::new();
+        migrate_with(&steps, &mut t, 1, 1).unwrap();
+        assert!(migrate_with(&steps, &mut t, 1, 2).is_err());
+        assert!(migrate(&mut toml::Table::new(), SCHEMA_VERSION, SCHEMA_VERSION).is_ok());
+    }
+
+    #[test]
+    fn settings_written_by_0_1_0_load_unchanged() {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/0.1.0/settings.toml");
+        let (s, r) = Settings::load_checked(&p);
+        assert_eq!((s.search_delay, s.match_case), (150, true));
+        assert_eq!((r.schema, r.recovery, r.reset_keys.len()), (1, None, 0));
+        assert_eq!(Settings::load(&p).unwrap(), s);
+    }
+
+    #[test]
+    fn checked_load_of_old_current_future_and_corrupt_files() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("settings.toml");
+        // Missing file: defaults, schema 1, nothing to report.
+        let (s, r) = Settings::load_checked(&p);
+        assert_eq!((s, r.schema, r.recovery), (Settings::default(), 1, None));
+        // A 0.1.0 file has no schema_version: schema 1, loaded as it is.
+        std::fs::write(&p, "search_delay = 7\nmatch_case = true\n").unwrap();
+        let (s, r) = Settings::load_checked(&p);
+        assert_eq!((s.search_delay, s.match_case, r.schema), (7, true, 1));
+        assert!(r.recovery.is_none() && r.reset_keys.is_empty());
+        // Current round trip.
+        s.save(&p).unwrap();
+        let (back, r) = Settings::load_checked(&p);
+        assert_eq!((back, r.recovery), (s.clone(), None));
+        // An explicit schema without a migration path: known keys load, a copy is kept.
+        std::fs::write(&p, "schema_version = 0\nsearch_delay = 9\n").unwrap();
+        let (s, r) = Settings::load_checked(&p);
+        assert_eq!(s.search_delay, 9);
+        let rec = r.recovery.unwrap();
+        assert_eq!(rec.why, crate::upgrade::Unreadable::Old(0));
+        assert_eq!(rec.backup.unwrap(), d.path().join("settings.toml.v0.bak"));
+        // Future schema: known keys load, unknown ones are kept in the backup copy, and
+        // saving does not lose the original.
+        let future = "schema_version = 5\nsearch_delay = 3\nbrand_new_key = \"x\"\n";
+        std::fs::write(&p, future).unwrap();
+        let (s, r) = Settings::load_checked(&p);
+        assert_eq!((s.search_delay, r.schema), (3, 5));
+        let bak = r.recovery.unwrap().backup.unwrap();
+        assert_eq!(bak, d.path().join("settings.toml.v5.bak"));
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), future);
+        std::fs::remove_file(&bak).unwrap();
+        s.save(&p).unwrap();
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), future, "save copies a newer file first");
+        assert!(std::fs::read_to_string(&p).unwrap().starts_with("schema_version = 1"));
+        // One bad value: only that key is reset; the file is copied as .corrupt.bak.
+        std::fs::write(&p, "search_delay = \"fast\"\nmatch_case = true\n").unwrap();
+        let (s, r) = Settings::load_checked(&p);
+        assert_eq!((s.search_delay, s.match_case), (0, true));
+        assert_eq!(r.reset_keys, vec!["search_delay".to_string()]);
+        let rec = r.recovery.unwrap();
+        assert_eq!(rec.why, crate::upgrade::Unreadable::Corrupt);
+        assert_eq!(rec.backup.unwrap(), d.path().join("settings.toml.corrupt.bak"));
+        // Syntax error: defaults, the original is kept.
+        std::fs::write(&p, "search_delay = = [").unwrap();
+        let (s, r) = Settings::load_checked(&p);
+        assert_eq!(s, Settings::default());
+        assert!(r.error.is_some());
+        let bak = r.recovery.unwrap().backup.unwrap();
+        assert_eq!(std::fs::read_to_string(bak).unwrap(), "search_delay = = [");
     }
 }
