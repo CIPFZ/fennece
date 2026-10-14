@@ -10,12 +10,18 @@
 //!
 //! Every segment is checksummed; tags may repeat (one segment per property column).
 //! Writes are atomic (`.tmp` + fsync + rename, previous file kept as `.bak`).
+//!
+//! Versions (ADR-038): each store reads layouts `oldest..=current`
+//! ([`segments_versioned`]); [`load_or_recover`] moves an older, newer or damaged file to
+//! `<name>.v<N>.bak` / `<name>.corrupt.bak` before the store is rebuilt, and
+//! [`write_atomic`] never replaces a file of a newer layout without that backup.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use fnc_core::FileTime;
+use fnc_core::upgrade::{Recovery, Unreadable, check_version};
 use xxhash_rust::xxh3::xxh3_64;
 
 const HEADER_LEN: usize = 24;
@@ -53,6 +59,40 @@ pub enum FnxError {
 
 /// Result alias.
 pub type FnxResult<T> = Result<T, FnxError>;
+
+impl FnxError {
+    /// How a file that failed to load with this error is set aside, for a store reading
+    /// layouts `oldest..=current`; `None` when there is no file (or no file problem).
+    pub fn unreadable(&self, oldest: u32, current: u32) -> Option<Unreadable> {
+        match self {
+            FnxError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => None,
+            FnxError::Instance => None,
+            FnxError::Version(v) => Some(check_version(*v, oldest, current).err().unwrap_or(Unreadable::Corrupt)),
+            _ => Some(Unreadable::Corrupt),
+        }
+    }
+}
+
+/// Start-up load of a store file: `Ok`/missing as usual; a file that `load` rejects
+/// (older, newer or damaged; layouts `oldest..=current` are readable) is moved aside and
+/// described by the [`Recovery`] (the store starts empty and is rebuilt).
+pub fn load_or_recover<T>(
+    path: &Path,
+    oldest: u32,
+    current: u32,
+    load: impl FnOnce(&Path) -> FnxResult<T>,
+) -> (Option<T>, Option<Recovery>) {
+    match load(path) {
+        Ok(t) => (Some(t), None),
+        Err(e) => match e.unreadable(oldest, current) {
+            None => (None, None),
+            Some(why) => {
+                tracing::warn!(file = %path.display(), error = %e, "store file unusable");
+                (None, Some(Recovery::quarantined(path, why)))
+            }
+        },
+    }
+}
 
 /// In-memory builder of a container file.
 pub struct FnxWriter {
@@ -108,7 +148,9 @@ impl FnxWriter {
     }
 }
 
-/// Writes `bytes` to `path` atomically, keeping the previous file as `*.bak`.
+/// Writes `bytes` to `path` atomically, keeping the previous file as `*.bak`. When
+/// `bytes` is a container (magic + version header) and the previous file is the same
+/// kind with a newer version, it is moved to `*.v<N>.bak` instead (ADR-038).
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> FnxResult<()> {
     let io = |p: &Path| {
         let p = p.to_path_buf();
@@ -129,6 +171,11 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> FnxResult<()> {
         let file = w.into_inner().map_err(|e| FnxError::Io { path: tmp.clone(), source: e.into_error() })?;
         file.sync_all().map_err(io(&tmp))?;
     }
+    if let Some(head) = bytes.first_chunk::<8>() {
+        let magic = [head[0], head[1], head[2], head[3]];
+        let version = u32::from_le_bytes([head[4], head[5], head[6], head[7]]);
+        fnc_core::upgrade::protect_future(path, magic, version).map_err(io(path))?;
+    }
     if path.exists() {
         let mut bak = path.as_os_str().to_owned();
         bak.push(".bak");
@@ -144,20 +191,34 @@ pub fn read_file(path: &Path) -> FnxResult<Vec<u8>> {
     std::fs::read(path).map_err(|source| FnxError::Io { path: path.to_path_buf(), source })
 }
 
+/// `(tag, bytes)` of every segment, in file order.
+pub type Segments<'a> = Vec<([u8; 4], &'a [u8])>;
+
 /// Verifies header, footer and every checksum; returns the segments in file order.
+/// Only layout `version` is accepted.
 pub fn segments<'a>(
     buf: &'a [u8],
     magic: [u8; 4],
     version: u32,
     what: &'static str,
-) -> FnxResult<Vec<([u8; 4], &'a [u8])>> {
+) -> FnxResult<Segments<'a>> {
+    segments_versioned(buf, magic, version, version, what).map(|(_, segs)| segs)
+}
+
+/// [`segments`] accepting layouts `oldest..=current`; also returns the file's layout
+/// (the caller picks the decoder).
+pub fn segments_versioned<'a>(
+    buf: &'a [u8],
+    magic: [u8; 4],
+    oldest: u32,
+    current: u32,
+    what: &'static str,
+) -> FnxResult<(u32, Segments<'a>)> {
     if buf.len() < HEADER_LEN + FOOTER_TAIL_LEN || buf[..4] != magic {
         return Err(FnxError::BadMagic(what));
     }
     let v = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-    if v != version {
-        return Err(FnxError::Version(v));
-    }
+    check_version(v, oldest, current).map_err(|_| FnxError::Version(v))?;
     let tail = &buf[buf.len() - FOOTER_TAIL_LEN..];
     if tail[16..20] != magic || &tail[20..] != b"END\0" {
         return Err(FnxError::Corrupt("footer"));
@@ -194,7 +255,7 @@ pub fn segments<'a>(
         }
         out.push((tag, seg));
     }
-    Ok(out)
+    Ok((v, out))
 }
 
 /// Little-endian encoder.
@@ -356,6 +417,53 @@ mod tests {
         assert!(d.u8().is_err());
         let mut d = Dec::new(&[255, 255, 255, 255]);
         assert!(d.count(1).is_err());
+    }
+
+    #[test]
+    fn version_window_and_recovery() {
+        let file = |v: u32| {
+            let mut w = FnxWriter::new(*b"TEST", v);
+            w.segment(*b"AAAA", b"x");
+            w.finish()
+        };
+        // Layouts 2..=3 readable: 2 and 3 decode (with their version), 1 is old, 4 future.
+        assert_eq!(segments_versioned(&file(2), *b"TEST", 2, 3, "t").unwrap().0, 2);
+        assert_eq!(segments_versioned(&file(3), *b"TEST", 2, 3, "t").unwrap().0, 3);
+        let e = segments_versioned(&file(1), *b"TEST", 2, 3, "t").unwrap_err();
+        assert_eq!(e.unreadable(2, 3), Some(Unreadable::Old(1)));
+        let e = segments_versioned(&file(4), *b"TEST", 2, 3, "t").unwrap_err();
+        assert_eq!(e.unreadable(2, 3), Some(Unreadable::Future(4)));
+        let mut bad = file(3);
+        let n = bad.len();
+        bad[n - 30] ^= 1;
+        let e = segments_versioned(&bad, *b"TEST", 2, 3, "t").unwrap_err();
+        assert_eq!(e.unreadable(2, 3), Some(Unreadable::Corrupt));
+
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.fnx");
+        let load = |p: &Path| read_file(p).and_then(|b| segments(&b, *b"TEST", 3, "t").map(|s| s.len()));
+        assert_eq!(load_or_recover(&p, 3, 3, load), (None, None), "missing file: nothing to recover");
+        write_atomic(&p, &file(3)).unwrap();
+        assert_eq!(load_or_recover(&p, 3, 3, load), (Some(1), None));
+        for (bytes, why, bak) in [
+            (file(1), Unreadable::Old(1), "t.fnx.v1.bak"),
+            (file(9), Unreadable::Future(9), "t.fnx.v9.bak"),
+            (bad.clone(), Unreadable::Corrupt, "t.fnx.corrupt.bak"),
+        ] {
+            std::fs::write(&p, &bytes).unwrap();
+            let (got, rec) = load_or_recover(&p, 3, 3, load);
+            let rec = rec.unwrap();
+            assert_eq!((got, rec.why), (None, why));
+            assert_eq!(rec.backup.unwrap(), dir.path().join(bak));
+            assert_eq!(std::fs::read(dir.path().join(bak)).unwrap(), bytes);
+            assert!(!p.exists());
+        }
+        // Saving over a newer file keeps it as .v<N>.bak, not as the rolling .bak.
+        let (newer, ours) = (file(5), file(3));
+        std::fs::write(&p, &newer).unwrap();
+        write_atomic(&p, &ours).unwrap();
+        assert_eq!(std::fs::read(dir.path().join("t.fnx.v5.bak")).unwrap(), newer);
+        assert_eq!(read_file(&p).unwrap(), ours);
     }
 
     #[test]

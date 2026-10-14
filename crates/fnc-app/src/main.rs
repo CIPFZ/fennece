@@ -31,6 +31,7 @@ mod thumbs;
 #[cfg(windows)]
 mod tray;
 mod undo;
+mod upgrade;
 
 use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
@@ -72,10 +73,8 @@ fn run() -> anyhow::Result<()> {
 
     let paths = if cli.portable { DataPaths::portable(&cli.instance) } else { DataPaths::resolve(&cli.instance) };
     let settings_path = cli.config.as_ref().map_or_else(|| paths.settings_file(), std::path::PathBuf::from);
-    let (settings, settings_error) = match Settings::load(&settings_path) {
-        Ok(s) => (s, None),
-        Err(e) => (Settings::default(), Some(e)),
-    };
+    // Never loses the file: newer schemas, bad values and syntax errors keep a copy (ADR-038).
+    let (settings, settings_load) = Settings::load_checked(&settings_path);
     let level = if cli.verbose { "debug" } else { settings.log_level.as_str() };
     // `-log <file>`: that folder and file prefix instead of the data folder.
     let (logs, prefix) = match &cli.log {
@@ -98,13 +97,14 @@ fn run() -> anyhow::Result<()> {
         console: cli.console || cli.verbose,
     })?;
     tracing::info!(version = env!("CARGO_PKG_VERSION"), data = %paths.root.display(), portable = paths.portable, "starting");
-    if let Some(e) = settings_error {
+    if let Some(e) = &settings_load.error {
         tracing::warn!(error = %e, "settings unreadable; using defaults");
     }
     for u in &cli.unknown {
         tracing::warn!(switch = %u, "unknown command line switch ignored");
     }
     i18n::init(&settings.language);
+    let settings_notice = upgrade::settings_notice(&settings_load);
     i18n::apply_collation(settings.name_collation);
     i18n::apply_date_locale(settings.date_input_order, settings.week_start);
 
@@ -192,6 +192,9 @@ fn run() -> anyhow::Result<()> {
     };
     let cfg = index_cfg(&settings);
     let (index_tx, index_rx) = crossbeam_channel::unbounded();
+    if let Some(n) = settings_notice {
+        let _ = index_tx.send(indexer::IndexEvent::Notice(n));
+    }
     let handle = engine.handle();
     let indexer = indexer::Indexer::spawn(
         cfg,

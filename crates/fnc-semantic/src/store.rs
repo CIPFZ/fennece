@@ -5,6 +5,10 @@
 //!
 //! On disk: `store.bin` (chunk table, xxh3-checked) and `vectors.usearch`, both written
 //! to `.tmp` and renamed. A different model or dimension starts an empty store.
+//! Versions (ADR-038): `store.bin` starts with `"FSEM" | version u32`; a file of another
+//! version (older or newer than this build reads) or a damaged one is moved aside with its
+//! vectors (`store.bin.v<N>.bak` + `vectors.usearch.v<N>.bak`, or `.corrupt.bak`) before an
+//! empty store is started, so a newer store is never overwritten.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -74,6 +78,8 @@ pub struct DocHit {
 
 const MAGIC: &[u8; 4] = b"FSEM";
 const VERSION: u32 = 1;
+/// Oldest `store.bin` version still read (version 1 is the only one so far).
+const OLDEST_READABLE: u32 = 1;
 
 /// Paths compare case-insensitively (Windows file systems).
 fn fold(path: &str) -> String {
@@ -131,12 +137,36 @@ impl VectorStore {
     /// Loads the store in `dir`; a missing, damaged or incompatible (other model or
     /// dimension) store yields an empty one and `true` ("rebuild").
     pub fn open(dir: &Path, model_id: &str, dim: usize) -> Result<(Self, bool)> {
+        Self::open_checked(dir, model_id, dim).map(|(s, rebuilt, _)| (s, rebuilt))
+    }
+
+    /// [`VectorStore::open`], also returning where an unusable store was moved (an
+    /// older or newer version, or damage — never deleted; ADR-038).
+    pub fn open_checked(
+        dir: &Path,
+        model_id: &str,
+        dim: usize,
+    ) -> Result<(Self, bool, Option<fnc_core::upgrade::Recovery>)> {
         match Self::load(dir, model_id, dim) {
-            Ok(Some(s)) => Ok((s, false)),
-            Ok(None) => Ok((Self::new(model_id, dim)?, true)),
+            Ok(Some(s)) => Ok((s, false, None)),
+            Ok(None) => Ok((Self::new(model_id, dim)?, true, None)),
             Err(e) => {
                 tracing::warn!(error = %e, "semantic store unusable, starting over");
-                Ok((Self::new(model_id, dim)?, true))
+                let table = dir.join("store.bin");
+                let why = match fnc_core::upgrade::header_version(&table, *MAGIC) {
+                    Some(v) => fnc_core::upgrade::check_version(v, OLDEST_READABLE, VERSION)
+                        .err()
+                        .unwrap_or(fnc_core::upgrade::Unreadable::Corrupt),
+                    None => fnc_core::upgrade::Unreadable::Corrupt,
+                };
+                let vectors = dir.join("vectors.usearch");
+                if vectors.exists()
+                    && let Err(e) = fnc_core::upgrade::quarantine(&vectors, why)
+                {
+                    tracing::warn!(error = %e, "cannot set the old vectors aside");
+                }
+                let rec = table.exists().then(|| fnc_core::upgrade::Recovery::quarantined(&table, why));
+                Ok((Self::new(model_id, dim)?, true, rec))
             }
         }
     }
@@ -151,14 +181,16 @@ impl VectorStore {
         if bytes.len() < 16 || &bytes[..4] != MAGIC {
             return Err(corrupt("bad header"));
         }
+        // The version comes before the checksum: a newer layout may checksum differently.
+        let version = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        if fnc_core::upgrade::check_version(version, OLDEST_READABLE, VERSION).is_err() {
+            return Err(corrupt(&format!("unsupported version {version}")));
+        }
         let (body, sum) = bytes.split_at(bytes.len() - 8);
         if xxhash_rust::xxh3::xxh3_64(body) != u64::from_le_bytes(sum.try_into().unwrap_or_default()) {
             return Err(corrupt("checksum mismatch"));
         }
-        let mut r = Reader { b: body, at: 4 };
-        if r.u32()? != VERSION {
-            return Err(corrupt("unknown version"));
-        }
+        let mut r = Reader { b: body, at: 8 };
         let stored_model = r.str()?;
         let stored_dim = r.u32()? as usize;
         if stored_model != model_id || stored_dim != dim {
@@ -558,6 +590,57 @@ mod tests {
         std::fs::write(&p, b).unwrap();
         let (u, rebuilt) = VectorStore::open(d.path(), "hash", 64).unwrap();
         assert!(rebuilt && u.doc_count() == 0);
+    }
+
+    #[test]
+    fn store_written_by_0_1_0_loads() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/0.1.0/vectors");
+        let d = tempfile::tempdir().unwrap();
+        for f in ["store.bin", "vectors.usearch"] {
+            std::fs::copy(src.join(f), d.path().join(f)).unwrap();
+        }
+        let (s, rebuilt, rec) = VectorStore::open_checked(d.path(), "hash", 32).unwrap();
+        assert!(!rebuilt && rec.is_none());
+        assert_eq!((s.doc_count(), s.chunk_count()), (1, 1));
+        assert_eq!(s.doc(r"c:\a\budget.xlsx").unwrap().size, 10);
+    }
+
+    #[test]
+    fn header_cases_current_old_corrupt_future() {
+        use fnc_core::upgrade::Unreadable;
+        let e = HashEmbedder::new(32);
+        let d = tempfile::tempdir().unwrap();
+        let mut s = VectorStore::new("hash", 32).unwrap();
+        s.put_doc(r"C:\a.txt", 1, 1, vec![chunk(&e, Kind::Name, "a")]).unwrap();
+        s.save(d.path()).unwrap();
+        let good = std::fs::read(d.path().join("store.bin")).unwrap();
+        let vectors = std::fs::read(d.path().join("vectors.usearch")).unwrap();
+        let (t, rebuilt, rec) = VectorStore::open_checked(d.path(), "hash", 32).unwrap();
+        assert!(!rebuilt && rec.is_none() && t.doc_count() == 1, "current version loads");
+        let with_version = |v: u32| {
+            let mut b = good.clone();
+            b[4..8].copy_from_slice(&v.to_le_bytes());
+            b
+        };
+        let mut damaged = good.clone();
+        damaged[12] ^= 0x55;
+        for (bytes, why, tag) in [
+            (with_version(0), Unreadable::Old(0), "v0"),
+            (with_version(VERSION + 1), Unreadable::Future(VERSION + 1), "v2"),
+            (damaged, Unreadable::Corrupt, "corrupt"),
+        ] {
+            std::fs::write(d.path().join("store.bin"), &bytes).unwrap();
+            std::fs::write(d.path().join("vectors.usearch"), &vectors).unwrap();
+            let (t, rebuilt, rec) = VectorStore::open_checked(d.path(), "hash", 32).unwrap();
+            assert!(rebuilt && t.doc_count() == 0);
+            let rec = rec.unwrap();
+            assert_eq!(rec.why, why);
+            let bak = d.path().join(format!("store.bin.{tag}.bak"));
+            assert_eq!(rec.backup.unwrap(), bak);
+            assert_eq!(std::fs::read(&bak).unwrap(), bytes, "{tag}: kept byte for byte");
+            assert_eq!(std::fs::read(d.path().join(format!("vectors.usearch.{tag}.bak"))).unwrap(), vectors);
+            assert!(!d.path().join("store.bin").exists() && !d.path().join("vectors.usearch").exists());
+        }
     }
 
     #[test]
