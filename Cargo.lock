@@ -4842,6 +4842,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "soak"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "tempfile",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

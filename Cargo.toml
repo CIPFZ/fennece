@@ -21,6 +21,7 @@ members = [
     "tools/bench",
     "tools/sem-eval",
     "tools/gen-icons",
+    "tools/soak",
 ]
 
 [workspace.package]
