@@ -1236,6 +1236,10 @@ impl WatchSink {
             }
             drop(w);
             tracing::trace!(?stats, held = ?t.elapsed(), "applied USN batch");
+            // Rewriting the journal file can take a second; not under the index lock.
+            if let Some(j) = &self.journal {
+                j.lock().trim_if_due();
+            }
             changed |= stats.changed();
             batch = rest;
         }

@@ -121,21 +121,58 @@ impl Journal {
         FileTime(FileTime::now().0 - i64::from(self.days) * 86_400 * 10_000_000)
     }
 
-    /// Rewrites the file keeping only records within the limits.
+    /// Rewrites the file keeping only records within the limits. Streams the file twice
+    /// (count, then copy), so memory does not depend on its size: the file holds up to
+    /// `max` + 10 % records (a million by default), which used to be read into memory
+    /// whole on every trim (hundreds of MiB, REL-05).
     fn trim(&mut self) -> std::io::Result<()> {
         self.out = None;
-        let records = read(&self.path, usize::MAX);
         let cutoff = self.cutoff();
-        let mut keep: Vec<&Record> = records.iter().filter(|r| r.time >= cutoff).collect();
-        if keep.len() > self.max {
-            keep.drain(..keep.len() - self.max);
+        // Pass 1: valid records, and those within the age limit.
+        let (mut valid, mut recent) = (0usize, 0usize);
+        for_each_line(&self.path, |line| {
+            if let Some(t) = record_time(line) {
+                valid += 1;
+                recent += usize::from(t >= cutoff);
+            }
+            Ok(())
+        })?;
+        let keep = recent.min(self.max);
+        if keep != valid {
+            // Pass 2: copy the newest `keep` records within the age limit.
+            let mut skip = recent - keep;
+            let tmp = self.path.with_extension("tmp");
+            let mut out = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+            for_each_line(&self.path, |line| {
+                match record_time(line) {
+                    Some(t) if t >= cutoff && skip > 0 => skip -= 1,
+                    Some(t) if t >= cutoff => {
+                        out.write_all(line.as_bytes())?;
+                        out.write_all(b"\n")?;
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })?;
+            out.into_inner().map_err(std::io::IntoInnerError::into_error)?.sync_all()?;
+            std::fs::rename(tmp, &self.path)?;
         }
-        if keep.len() != records.len() {
-            let text: String = keep.iter().map(|r| r.line()).collect();
-            crate::history::write_atomic(&self.path, &text)?;
-        }
-        self.lines = keep.len();
+        self.lines = keep;
         Ok(())
+    }
+
+    /// Trims the file once it grew 10 % past the record limit. Kept apart from
+    /// [`Journal::commit`] so the caller can run it without holding the index lock.
+    pub fn trim_if_due(&mut self) {
+        if self.lines <= self.max + self.max / 10 {
+            return;
+        }
+        if let Err(e) = self.trim() {
+            tracing::warn!(error = %e, "cannot trim the index journal");
+        }
+        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&self.path) {
+            self.out = Some(std::io::BufWriter::new(f));
+        }
     }
 
     /// Records what `batch` is about to do (paths before), from the index before it is
@@ -245,26 +282,57 @@ impl Journal {
             self.lines += 1;
         }
         let _ = out.flush();
-        if self.lines > self.max + self.max / 10 {
-            if let Err(e) = self.trim() {
-                tracing::warn!(error = %e, "cannot trim the index journal");
-            }
-            if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&self.path) {
-                self.out = Some(std::io::BufWriter::new(f));
-            }
+    }
+}
+
+/// Calls `f` with every line of `path` (without the line end), reusing one buffer.
+/// A missing file has no lines.
+fn for_each_line(path: &Path, mut f: impl FnMut(&str) -> std::io::Result<()>) -> std::io::Result<()> {
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let mut r = std::io::BufReader::with_capacity(1 << 16, file);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match r.read_line(&mut line) {
+            Ok(0) => return Ok(()),
+            Ok(_) => f(line.trim_end_matches(['\r', '\n']))?,
+            // Not UTF-8 (damaged file): such a line is not a record.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {}
+            Err(e) => return Err(e),
         }
     }
 }
 
-/// The last `limit` records of `path`, oldest first.
+/// Time of a well-formed record line (the check of [`Record::parse`], without copying
+/// the paths).
+fn record_time(line: &str) -> Option<FileTime> {
+    let mut it = line.split('\t');
+    let time = FileTime(it.next()?.parse().ok()?);
+    Action::parse(it.next()?)?;
+    it.next()?;
+    it.next()?;
+    Some(time)
+}
+
+/// The last `limit` records of `path`, oldest first (only `limit` are held at a time).
 pub fn read(path: &Path, limit: usize) -> Vec<Record> {
-    let Ok(f) = std::fs::File::open(path) else { return Vec::new() };
-    let mut v: Vec<Record> =
-        std::io::BufReader::new(f).lines().map_while(Result::ok).filter_map(|l| Record::parse(&l)).collect();
-    if v.len() > limit {
-        v.drain(..v.len() - limit);
-    }
-    v
+    let mut v = std::collections::VecDeque::new();
+    let _ = for_each_line(path, |line| {
+        if let Some(r) = Record::parse(line) {
+            if v.len() == limit {
+                v.pop_front();
+            }
+            if limit > 0 {
+                v.push_back(r);
+            }
+        }
+        Ok(())
+    });
+    v.into()
 }
 
 #[cfg(test)]
@@ -359,5 +427,51 @@ mod tests {
         let r = read(&file, 100);
         assert_eq!(r.len(), 3);
         assert_eq!(r[2].action, Action::Delete);
+    }
+
+    #[test]
+    fn trims_while_running_keeping_the_newest_records() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("journal.tsv");
+        // A record past the age limit, a damaged line and a line that is not UTF-8.
+        let old = Record {
+            time: FileTime(FileTime::now().0 - 30 * 86_400 * 10_000_000),
+            action: Action::Create,
+            before: String::new(),
+            after: "old".into(),
+        };
+        let mut seed = old.line().into_bytes();
+        seed.extend_from_slice(b"garbage\n\xff\xfe\tcreate\t\tx\n");
+        std::fs::write(&file, seed).unwrap();
+        let mut j = Journal::open(file.clone(), 7, 10).unwrap();
+        assert!(read(&file, 100).is_empty(), "old and damaged lines dropped on open");
+        let mut s = IndexStore::default();
+        let vol = s.add_volume(VolumeInfo::new(VolumeKind::Ntfs, "C:\\"), Some(5)).unwrap();
+        for i in 0..12u64 {
+            let batch = vec![Change::Create {
+                volume: vol,
+                frn: 100 + i,
+                parent: EntryRef::Frn(vol, 5),
+                name: u16s(&format!("f{i:02}")),
+                meta: Meta::default(),
+            }];
+            let p = Journal::prepare(&s, &batch);
+            s.apply(batch);
+            j.commit(&s, p);
+            j.trim_if_due();
+        }
+        // 11 records fit (10 + 10 %); the 12th trimmed back to the newest 10.
+        let r = read(&file, 100);
+        let names: Vec<&str> = r.iter().map(|r| r.after.as_str()).collect();
+        let want: Vec<String> = (2..12).map(|i| format!("C:\\f{i:02}")).collect();
+        assert_eq!(names, want);
+        // Appending continues after the trim.
+        let batch = vec![Change::Delete(EntryRef::Frn(vol, 111))];
+        let p = Journal::prepare(&s, &batch);
+        s.apply(batch);
+        j.commit(&s, p);
+        let r = read(&file, 2);
+        assert_eq!((r.len(), r[1].action, r[1].before.as_str()), (2, Action::Delete, "C:\\f11"));
+        assert!(read(&file, 0).is_empty());
     }
 }
