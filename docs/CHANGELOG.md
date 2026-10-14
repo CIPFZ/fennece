@@ -125,4 +125,4 @@ All notable changes, one line per accepted unit (AGENT.md §4.1).
 
 ## 0.2.0 — release
 - [0.2.0] version 0.2.0 in every crate, the MSI, `-version`, the About dialog, the Everything IPC version (`1.4.1.200`) and the HTTP `Server` header (`Fennec/0.2.0`) (REL-01).
-- [soak][fnc-app] `tools/soak/`: `soak-churn` (token-bucket create/rename/delete churn with a 10,000-child folder and a periodically recreated subtree; `report` turns the samples into the markdown/SVG soak report), `soak.ps1` (starts fennec on the interactive desktop, samples memory/CPU/handles/threads/index size/crash files/compactions into CSV), `cpu-probe.ps1`; fennec logs discarded live-compaction attempts (REL-05).
+- [soak] `tools/soak/`: `soak-churn` (token-bucket create/rename/delete churn with a 10,000-child folder and a periodically recreated subtree; `report` turns the samples into the markdown/SVG soak report), `soak.ps1` (starts fennec on the interactive desktop, samples memory/CPU/handles/threads/index size/crash files/compactions into CSV), `cpu-probe.ps1` (REL-05).

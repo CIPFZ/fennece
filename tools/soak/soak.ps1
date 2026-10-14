@@ -214,23 +214,21 @@ function Get-ServicePid {
     return $null
 }
 
-$logSeen = @{}   # "<log file>|<kind>" -> highest count seen (survives rotation)
+$logSeen = @{}   # log file -> highest compaction count seen (survives rotation)
 $lastRows = $null
-function Get-LogStats {
-    # @{ compactions; discards } since the logs began (subtract the start values), and
-    # the newest "rows=" (index rows incl. tombstones, logged at each database save).
+function Get-Compactions {
+    # "index compacted while running" lines since the logs began (subtract the start
+    # value); also remembers the newest "rows=" (index rows incl. tombstones, logged at
+    # each database save).
     foreach ($f in Get-ChildItem -Path (Join-Path $DataDir 'logs') -Filter 'fennec*.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime) {
-        $hits = @(Select-String -Path $f.FullName -Pattern 'index compacted while running|live compaction discarded|database saved rows=' -ErrorAction SilentlyContinue)
+        $hits = @(Select-String -Path $f.FullName -Pattern 'index compacted while running|database saved rows=' -ErrorAction SilentlyContinue)
         $c = @($hits | Where-Object { $_.Line -match 'compacted while running' }).Count
-        $d = @($hits | Where-Object { $_.Line -match 'compaction discarded' }).Count
-        foreach ($kv in @(@("$($f.Name)|c", $c), @("$($f.Name)|d", $d))) {
-            if (-not $logSeen.ContainsKey($kv[0]) -or $logSeen[$kv[0]] -lt $kv[1]) { $logSeen[$kv[0]] = $kv[1] }
-        }
+        if (-not $logSeen.ContainsKey($f.Name) -or $logSeen[$f.Name] -lt $c) { $logSeen[$f.Name] = $c }
         $r = $hits | Where-Object { $_.Line -match 'rows=(\d+)' } | Select-Object -Last 1
         if ($r -and $r.Line -match 'rows=(\d+)') { $script:lastRows = [int64]$Matches[1] }
     }
-    $t = @{ compactions = 0; discards = 0 }
-    foreach ($k in $logSeen.Keys) { if ($k.EndsWith('|c')) { $t.compactions += $logSeen[$k] } else { $t.discards += $logSeen[$k] } }
+    $t = 0
+    foreach ($v in $logSeen.Values) { $t += $v }
     return $t
 }
 
@@ -265,11 +263,11 @@ function Get-ProcSample([string]$key, $id) {
     return @((Fmt ($p.WorkingSet64 / 1MB)), (Fmt ($p.PrivateMemorySize64 / 1MB)), (Fmt $cpu '0.00'), $pct, $p.HandleCount, $p.Threads.Count)
 }
 
-$header = 'time,elapsed_s,app_pid,app_ws_mb,app_private_mb,app_cpu_s,app_cpu_pct,app_handles,app_threads,svc_pid,svc_ws_mb,svc_private_mb,svc_cpu_s,svc_cpu_pct,svc_handles,svc_threads,entries,soak_entries,index_rows,crash_files,compactions,compaction_discards,note'
+$header = 'time,elapsed_s,app_pid,app_ws_mb,app_private_mb,app_cpu_s,app_cpu_pct,app_handles,app_threads,svc_pid,svc_ws_mb,svc_private_mb,svc_cpu_s,svc_cpu_pct,svc_handles,svc_threads,entries,soak_entries,index_rows,crash_files,compactions,note'
 Set-Content -Path $csv -Value $header -Encoding ASCII
-$logBase = @{ compactions = 0; discards = 0 }
+$compactBase = 0
 function Write-Sample($appId, [string]$note) {
-    $ls = Get-LogStats
+    $compactions = (Get-Compactions) - $script:compactBase
     $svcId = Get-ServicePid
     $a = Get-ProcSample 'app' $appId
     $s = Get-ProcSample 'svc' $svcId
@@ -281,13 +279,13 @@ function Write-Sample($appId, [string]$note) {
         $(if ($a[0] -ne '') { $appId } else { '' })
     ) + $a + @($(if ($s[0] -ne '') { $svcId } else { '' })) + $s + @(
         (Fmt $entries '0'), (Fmt $soak '0'), (Fmt $script:lastRows '0'), (Get-CrashFiles),
-        ($ls.compactions - $script:logBase.compactions), ($ls.discards - $script:logBase.discards),
+        $compactions,
         ('"' + ($note -replace '"', "'") + '"')
     )
     Add-Content -Path $csv -Value ($row -join ',') -Encoding ASCII
-    Log ("sample app={0} ws={1}MB priv={2}MB cpu={3}% h={4} thr={5} svc={6} ws={7}MB h={8} entries={9} soak={10} rows={11} compactions={12} discarded={13} {14}" -f `
+    Log ("sample app={0} ws={1}MB priv={2}MB cpu={3}% h={4} thr={5} svc={6} ws={7}MB h={8} entries={9} soak={10} rows={11} compactions={12} {13}" -f `
             $appId, $a[0], $a[1], $a[3], $a[4], $a[5], $svcId, $s[0], $s[4], $entries, $soak, $script:lastRows,
-        ($ls.compactions - $script:logBase.compactions), ($ls.discards - $script:logBase.discards), $note)
+        $compactions, $note)
 }
 
 # ---- run ---------------------------------------------------------------------------
@@ -318,7 +316,7 @@ try {
         Start-Sleep -Seconds 5
     }
     Log "index ready: $n entries"
-    $script:logBase = Get-LogStats
+    $script:compactBase = Get-Compactions
     $runStart = Get-Date
     Write-Sample $appId 'start'
 

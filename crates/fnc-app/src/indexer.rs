@@ -1010,7 +1010,6 @@ fn compact_live(shared: &EpochIndex) -> Option<(u64, Vec<u32>, u64)> {
     let mut w = shared.write()?;
     if w.generation() != generation || w.instance() != old {
         // Changes arrived while compacting: the copy is outdated.
-        tracing::info!(rows = w.len(), live = w.live_count(), "live compaction discarded: index changed meanwhile");
         return None;
     }
     let new = copy.instance();

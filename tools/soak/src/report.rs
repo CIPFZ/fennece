@@ -53,8 +53,6 @@ pub struct Sample {
     pub crash_files: f64,
     /// "index compacted while running" lines in the fennec logs so far.
     pub compactions: f64,
-    /// "live compaction discarded" lines (attempts lost to concurrent changes).
-    pub discards: f64,
     /// Free-form events (`restarted fennec`, ...).
     pub note: String,
 }
@@ -116,7 +114,6 @@ pub fn parse_csv(text: &str) -> anyhow::Result<Vec<Sample>> {
             index_rows: num("index_rows"),
             crash_files: num("crash_files").unwrap_or(0.0),
             compactions: num("compactions").unwrap_or(0.0),
-            discards: num("compaction_discards").unwrap_or(0.0),
             note: get("note").to_string(),
         });
     }
@@ -275,7 +272,6 @@ pub fn render(samples: &[Sample], c: &Criteria, title: &str, charts: &[(String, 
     let svc_cpu = cpu_avg(&svc, |s| s.svc_cpu_s);
     let crash_new = last.crash_files - first.crash_files;
     let compactions = last.compactions - first.compactions;
-    let discards = last.discards - first.discards;
     let (app_restarts, app_missing) = restarts(&samples.iter().map(|s| s.app_pid).collect::<Vec<_>>());
     let (svc_restarts, svc_missing) = restarts(&samples.iter().map(|s| s.svc_pid).collect::<Vec<_>>());
     let ws_g = window_growth(&tu, &ws, c.warmup_s);
@@ -346,11 +342,7 @@ pub fn render(samples: &[Sample], c: &Criteria, title: &str, charts: &[(String, 
         "| fennec never exited | {app_restarts} restarts, missing in {app_missing} samples | {} |",
         verdict(up_ok)
     );
-    let _ = writeln!(
-        m,
-        "| Live compaction ran | {compactions} times ({discards} attempts discarded: index changed meanwhile) | {} |",
-        verdict(compact_ok)
-    );
+    let _ = writeln!(m, "| Live compaction ran | {compactions} times | {} |", verdict(compact_ok));
     let _ = writeln!(
         m,
         "| Duration ≥ {} h | {hours:.2} h | {} |\n",
@@ -414,9 +406,9 @@ pub fn render(samples: &[Sample], c: &Criteria, title: &str, charts: &[(String, 
         writeln!(m, "## Samples{}\n", if rows.len() < samples.len() { " (hourly; full data in the CSV)" } else { "" });
     let _ = writeln!(
         m,
-        "| Time | Elapsed | WS MiB | Private MiB | CPU % | Handles | Threads | Svc WS MiB | Svc handles | Entries | Soak entries | Rows | Compactions | Discarded | Crash | Note |"
+        "| Time | Elapsed | WS MiB | Private MiB | CPU % | Handles | Threads | Svc WS MiB | Svc handles | Entries | Soak entries | Rows | Compactions | Crash | Note |"
     );
-    let _ = writeln!(m, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    let _ = writeln!(m, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     let mut prev: Option<&Sample> = None;
     for &i in &rows {
         let s = &samples[i];
@@ -432,7 +424,7 @@ pub fn render(samples: &[Sample], c: &Criteria, title: &str, charts: &[(String, 
         let sv = |v: f64, d: usize| if s.svc_pid.is_some() { format!("{v:.d$}") } else { "—".into() };
         let _ = writeln!(
             m,
-            "| {} | {} | {} | {} | {cpu} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {cpu} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             s.time,
             crate::plan::hms(std::time::Duration::from_secs_f64((s.elapsed_s - first.elapsed_s).max(0.0))),
             a(s.app_ws, 1),
@@ -445,7 +437,6 @@ pub fn render(samples: &[Sample], c: &Criteria, title: &str, charts: &[(String, 
             o(s.soak_entries),
             o(s.index_rows),
             s.compactions,
-            s.discards,
             s.crash_files,
             s.note.replace('|', "/"),
         );
@@ -631,7 +622,7 @@ pub fn main(args: &[String]) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
-    const HEADER: &str = "time,elapsed_s,app_pid,app_ws_mb,app_private_mb,app_cpu_s,app_cpu_pct,app_handles,app_threads,svc_pid,svc_ws_mb,svc_private_mb,svc_cpu_s,svc_cpu_pct,svc_handles,svc_threads,entries,soak_entries,index_rows,crash_files,compactions,compaction_discards,note";
+    const HEADER: &str = "time,elapsed_s,app_pid,app_ws_mb,app_private_mb,app_cpu_s,app_cpu_pct,app_handles,app_threads,svc_pid,svc_ws_mb,svc_private_mb,svc_cpu_s,svc_cpu_pct,svc_handles,svc_threads,entries,soak_entries,index_rows,crash_files,compactions,note";
 
     /// A synthetic run: `hours` long, 5-min samples, RSS growing by `growth` overall.
     fn csv(hours: f64, growth: f64, f: impl Fn(usize, &mut Vec<String>)) -> String {
@@ -662,7 +653,6 @@ mod tests {
                 "1600000".into(),
                 "0".into(),
                 (i / 3).to_string(),
-                (i / 2).to_string(),
                 String::new(),
             ];
             f(i, &mut row);
@@ -683,7 +673,7 @@ mod tests {
         assert!(parse_csv("time,elapsed_s\n1,2\n").is_err(), "missing columns");
         assert!(parse_csv(HEADER).is_err(), "no samples");
         let quoted = format!("{}\n", HEADER.split(',').map(|h| format!("\"{h}\"")).collect::<Vec<_>>().join(","))
-            + "\"t\",\"0\",\"\",\"0\",\"0\",\"0\",\"0\",\"0\",\"0\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"0\",\"0\",\"0\",\"start\"\n";
+            + "\"t\",\"0\",\"\",\"0\",\"0\",\"0\",\"0\",\"0\",\"0\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"0\",\"0\",\"start\"\n";
         let q = parse_csv(&quoted).unwrap();
         assert_eq!((q[0].app_pid, q[0].svc_pid, q[0].entries, q[0].note.as_str()), (None, None, None, "start"));
     }
@@ -721,10 +711,7 @@ mod tests {
         let md = render(&parse_csv(&csv(24.0, 0.05, |_, _| {})).unwrap(), &c, "Soak", &[]);
         assert!(md.contains("Overall: **PASS**"), "{md}");
         assert!(md.contains("## Samples (hourly"));
-        assert!(
-            md.contains("| Live compaction ran | 96 times (144 attempts discarded: index changed meanwhile) | PASS |"),
-            "{md}"
-        );
+        assert!(md.contains("| Live compaction ran | 96 times | PASS |"), "{md}");
 
         let leak = render(&parse_csv(&csv(24.0, 0.3, |_, _| {})).unwrap(), &c, "Soak", &[]);
         assert!(leak.contains("Overall: **FAIL**"));
@@ -734,7 +721,7 @@ mod tests {
             if i > 100 {
                 r[19] = "1".into();
                 r[2] = "4321".into();
-                r[22] = "restarted fennec".into();
+                r[21] = "restarted fennec".into();
             }
         });
         let md = render(&parse_csv(&crash).unwrap(), &c, "Soak", &[]);
