@@ -210,10 +210,23 @@ impl EngineHandle {
         self.submit(|tok| Cmd::Search(req, tok));
     }
 
-    /// Re-runs the last search against the current index (after index changes).
+    /// Re-runs the last search against the current index (after index changes). Does
+    /// not cancel a search in flight (under continuous changes every refresh would
+    /// restart it and none would finish); the re-run follows it, rate-limited (see
+    /// [`refresh_gap`]).
     pub fn refresh(&self) {
-        self.submit(Cmd::Refresh);
+        let cur = self.current.lock();
+        // Sent under the lock: a later submit cancels this token only after it is queued.
+        let _ = self.tx.send(Cmd::Refresh(cur.clone()));
     }
+}
+
+/// Minimum time from the end of one refresh to the start of the next: four times what
+/// the last one took, between 250 ms and 1 s. Bounds the CPU spent re-running a search
+/// under continuous index changes to about a fifth of the search pool while keeping
+/// changes visible within a second (SPEC ch.0 §6.1). New searches are never delayed.
+pub fn refresh_gap(last_run: Duration) -> Duration {
+    (last_run * 4).clamp(Duration::from_millis(250), Duration::from_secs(1))
 }
 
 type Notify = Box<dyn Fn() + Send + Sync>;
@@ -306,16 +319,20 @@ fn worker(index: SharedIndex, rx: Receiver<Cmd>, events: Sender<EngineEvent>, no
     // Last completed search (input for reuse) and the newest request seen.
     let mut last: Option<Last> = None;
     let mut latest: Option<SearchRequest> = None;
+    // End and duration of the last refresh-only run (rate limit, [`refresh_gap`]).
+    let mut last_refresh: Option<(Instant, Duration)> = None;
     while let Ok(first) = rx.recv() {
         // Coalesce: only the newest search matters; a refresh applies to it.
         let mut pending = Some(first);
         let mut job: Option<(CancelToken, bool)> = None;
+        let mut searched = false;
         loop {
             match pending.take() {
                 Some(Cmd::Shutdown) => return,
                 Some(Cmd::Search(r, t)) => {
                     latest = Some(r);
                     job = Some((t, true));
+                    searched = true;
                 }
                 Some(Cmd::Refresh(t)) => {
                     let reuse = job.as_ref().is_some_and(|j| j.1);
@@ -325,16 +342,34 @@ fn worker(index: SharedIndex, rx: Receiver<Cmd>, events: Sender<EngineEvent>, no
             }
             match rx.try_recv() {
                 Ok(c) => pending = Some(c),
-                Err(_) => break,
+                Err(_) => {
+                    // A refresh alone waits for its gap; a search arriving meanwhile runs at once.
+                    let wait = match last_refresh {
+                        Some((end, took)) if !searched => refresh_gap(took).saturating_sub(end.elapsed()),
+                        _ => Duration::ZERO,
+                    };
+                    if wait.is_zero() {
+                        break;
+                    }
+                    match rx.recv_timeout(wait) {
+                        Ok(c) => pending = Some(c),
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => break,
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
+                    }
+                }
             }
         }
         let (Some((tok, allow_reuse)), Some(req)) = (job, latest.clone()) else { continue };
+        let started = Instant::now();
         // A bug in one query must not kill the search thread (every later search would
         // be silently dropped), so panics are contained and reported as errors.
         let prev = if allow_reuse { last.as_ref() } else { None };
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&index, &caches, &req, &tok, prev)));
         match outcome {
             Ok(Ok((outcome, plan))) => {
+                if !searched {
+                    last_refresh = Some((Instant::now(), started.elapsed()));
+                }
                 last = Some(Last { req, plan, results: outcome.results.clone() });
                 if events.send(EngineEvent::Done(outcome)).is_err() {
                     return;

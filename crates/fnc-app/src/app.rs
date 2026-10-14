@@ -97,6 +97,10 @@ pub struct AppDeps {
     pub servers: Option<crate::servers::ServersContext>,
     /// Permanent status bar warning and its tooltip (read-only portable folder).
     pub data_warning: Option<(String, String)>,
+    /// Set while the main window is hidden (tray) or minimised: the refresh callbacks of
+    /// the indexer and stores skip re-running the search (shown again → caught up by
+    /// `refresh_if_stale`), so a busy USN journal costs no search CPU in the background.
+    pub background: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -281,6 +285,7 @@ pub struct FennecApp {
     message: Option<(String, Instant)>,
     /// Permanent warning and tooltip (read-only portable folder, REL-07).
     data_warning: Option<(String, String)>,
+    background: Arc<std::sync::atomic::AtomicBool>,
     hidden: bool,
     dialog: Option<dialogs::Dialog>,
     options_window: Option<options::OptionsState>,
@@ -394,6 +399,7 @@ impl FennecApp {
             status: IndexStatus::Starting,
             message: None,
             data_warning: deps.data_warning,
+            background: deps.background,
             // Start-hidden is applied by `main` via `ViewportBuilder::with_visible(false)`
             // (no flash of the window).
             hidden: deps.start_hidden,
@@ -595,7 +601,7 @@ impl FennecApp {
     /// Re-runs the view's search when the index changed since its results were computed
     /// and no search is in flight (at most every 250 ms).
     pub(super) fn refresh_if_stale(&mut self) {
-        if self.is_remote() {
+        if self.is_remote() || self.background.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
         let in_flight = self.v.latest_shown + 1 < self.v.next_id;
@@ -2340,6 +2346,8 @@ const HISTORY_IDLE: Duration = Duration::from_secs(3);
 impl eframe::App for FennecApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_channels(ctx);
+        let minimized = ctx.input(|i| i.viewport().minimized == Some(true));
+        self.background.store(self.hidden || minimized, std::sync::atomic::Ordering::Relaxed);
         self.refresh_if_stale();
         self.semantic_tick(ctx);
         if ctx.input(|i| i.viewport().close_requested())

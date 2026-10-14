@@ -204,12 +204,22 @@ fn run() -> anyhow::Result<()> {
         })
     };
 
+    // Hidden or minimised main window: index changes do not re-run the search (AppDeps).
+    let background = Arc::new(std::sync::atomic::AtomicBool::new(cli.start_hidden));
+    let refresher = |handle: fnc_exec::EngineHandle| -> Arc<dyn Fn() + Send + Sync> {
+        let bg = background.clone();
+        Arc::new(move || {
+            if !bg.load(std::sync::atomic::Ordering::Relaxed) {
+                handle.refresh();
+            }
+        })
+    };
     let db_path = if cli.no_db { None } else { Some(cli.db.as_ref().map_or_else(|| paths.index_file(), Into::into)) };
     // Property, content and hash stores: created once, shared by every search (M3).
     let stores = {
         let handle = engine.handle();
         let dir = db_path.as_ref().and_then(|p| p.parent()).map(std::path::Path::to_path_buf);
-        stores::Stores::start(shared.clone(), &settings, dir, Arc::new(move || handle.refresh()))
+        stores::Stores::start(shared.clone(), &settings, dir, refresher(handle))
     };
     let index_cfg = {
         let (cli, paths, db_path, stores) = (cli.clone(), paths.clone(), db_path.clone(), stores.clone());
@@ -221,27 +231,16 @@ fn run() -> anyhow::Result<()> {
         let _ = index_tx.send(indexer::IndexEvent::Notice(n));
     }
     let handle = engine.handle();
-    let indexer = indexer::Indexer::spawn(
-        cfg,
-        shared.clone(),
-        Arc::new(move || handle.refresh()),
-        index_tx.clone(),
-        Arc::new(wake.clone()),
-    );
+    let indexer =
+        indexer::Indexer::spawn(cfg, shared.clone(), refresher(handle), index_tx.clone(), Arc::new(wake.clone()));
     let reindex: app::Reindex = {
-        let (shared, handle, wake) = (shared.clone(), engine.handle(), wake.clone());
+        let (shared, wake) = (shared.clone(), wake.clone());
+        let refresh = refresher(engine.handle());
         Arc::new(move |indexer: &mut indexer::Indexer, settings: &Settings| {
             let mut cfg = index_cfg(settings);
             // `-reindex` aside, a rebuild never reads the database it replaces.
             cfg.reindex = true;
-            let handle = handle.clone();
-            indexer.restart(
-                cfg,
-                shared.clone(),
-                Arc::new(move || handle.refresh()),
-                index_tx.clone(),
-                Arc::new(wake.clone()),
-            );
+            indexer.restart(cfg, shared.clone(), refresh.clone(), index_tx.clone(), Arc::new(wake.clone()));
         })
     };
 
@@ -279,6 +278,7 @@ fn run() -> anyhow::Result<()> {
         start_hidden: cli.start_hidden,
         servers: Some(servers::ServersContext { instance: cli.instance.clone(), portable: paths.portable }),
         data_warning,
+        background,
     };
     eframe::run_native(
         "Fennec",

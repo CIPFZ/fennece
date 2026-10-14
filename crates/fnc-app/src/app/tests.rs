@@ -29,11 +29,17 @@ pub(super) fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedInde
             (SearchEngine::spawn(sh.clone(), tx, Box::new(|| {})), rx)
         });
     let (index_tx, index_rx) = crossbeam_channel::unbounded();
-    let handle = engine.handle();
+    let (handle, background) = (engine.handle(), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let bg = background.clone();
+    let refresh = Arc::new(move || {
+        if !bg.load(std::sync::atomic::Ordering::Relaxed) {
+            handle.refresh();
+        }
+    });
     let indexer = match file_list {
         Some(f) => {
             let cfg = crate::indexer::IndexerConfig { file_lists: vec![f], ..Default::default() };
-            Indexer::spawn(cfg, shared.clone(), Arc::new(move || handle.refresh()), index_tx, Arc::new(|| {}))
+            Indexer::spawn(cfg, shared.clone(), refresh, index_tx, Arc::new(|| {}))
         }
         // The caller supplies a ready index.
         None => Indexer::idle(),
@@ -58,6 +64,7 @@ pub(super) fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedInde
         start_hidden: false,
         servers: None,
         data_warning: None,
+        background,
     }
 }
 
@@ -674,4 +681,29 @@ fn read_only_portable_folder_warns_in_the_status_bar() {
     let mut h = harness(deps);
     h.run_steps(2);
     h.get_by_label(&warning);
+}
+
+/// Hidden to the tray, index changes do not re-run the search; showing the window
+/// catches up (SPEC ch.0 §6.1: idle CPU ≈ 0 under a busy USN journal).
+#[test]
+fn hidden_window_does_not_refresh_until_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && !a.v.results.is_empty());
+    h.state_mut().set_query("ext:jpg".into());
+    wait_until(&mut h, "two pictures", |a| a.v.sent_query.as_deref() == Some("ext:jpg") && a.v.results.len() == 2);
+    h.state_mut().hidden = true;
+    h.step();
+    let victim = h.state().v.results.ids[0];
+    h.state().shared.write().apply(vec![fnc_index::Change::Delete(fnc_index::EntryRef::Id(victim))]);
+    let until = Instant::now() + Duration::from_millis(800);
+    while Instant::now() < until {
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(h.state().v.results.len(), 2, "no search while hidden");
+    h.state_mut().hidden = false;
+    wait_until(&mut h, "refreshed when shown", |a| a.v.results.len() == 1);
 }
