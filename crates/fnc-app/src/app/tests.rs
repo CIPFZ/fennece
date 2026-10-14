@@ -57,6 +57,7 @@ pub(super) fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedInde
         initial_cli: None,
         start_hidden: false,
         servers: None,
+        data_warning: None,
     }
 }
 
@@ -632,4 +633,19 @@ fn unindexed_property_and_file_columns_load_in_the_background() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(h.state().stores.props.snapshot().is_empty(), "nothing indexed");
+}
+
+/// REL-07: a read-only portable folder shows a permanent status bar warning.
+#[test]
+fn read_only_portable_folder_warns_in_the_status_bar() {
+    let mut deps = deps_for(None, SharedIndex::default());
+    let warning = crate::i18n::t_args(
+        "status-portable-fallback",
+        &[("path", r"C:\Users\u\AppData\Local\Fennec\portable".into())],
+    );
+    deps.data_warning = Some((warning.clone(), "tip".into()));
+    let mut h = harness(deps);
+    h.run_steps(2);
+    assert!(warning.contains(r"C:\Users\u\AppData\Local\Fennec\portable"), "{warning}");
+    h.get_by_label(&warning);
 }

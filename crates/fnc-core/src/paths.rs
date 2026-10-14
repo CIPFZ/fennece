@@ -5,6 +5,9 @@
 //! * Portable: if a file named `portable` exists next to the executable, everything
 //!   is stored in `<exe dir>/data`.
 //! * Instances: `-instance <name>` uses `<base>/instances/<name>`.
+//! * Read-only portable folder (e.g. unpacked below `C:\Program Files`): the data goes to
+//!   `%LOCALAPPDATA%\Fennec\portable` (`<installed base>/portable` elsewhere) and
+//!   [`DataPaths::unwritable_portable`] names the refused folder so the UI can warn.
 
 use std::path::{Path, PathBuf};
 
@@ -15,21 +18,25 @@ pub struct DataPaths {
     pub root: PathBuf,
     /// Whether portable mode is active.
     pub portable: bool,
+    /// Portable mode only: the `<exe dir>/data` folder that could not be written, when
+    /// [`DataPaths::root`] is the per-user fallback instead (`None`: no fallback).
+    pub unwritable_portable: Option<PathBuf>,
 }
 
 impl DataPaths {
     /// Resolves the data directory for `instance` (empty = default instance).
     pub fn resolve(instance: &str) -> Self {
         let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
-        Self::resolve_with(instance, exe_dir.as_deref(), &|k| std::env::var_os(k).map(PathBuf::from))
+        let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+        Self::resolve_with(instance, exe_dir.as_deref(), &env).with_writable_fallback(instance, &env, &is_writable)
     }
 
     /// Portable data folder next to the executable (`-portable`, `-no-app-data`).
     pub fn portable(instance: &str) -> Self {
         let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default();
-        let base = exe_dir.join("data");
-        let root = if instance.is_empty() { base } else { base.join("instances").join(sanitize_instance(instance)) };
-        Self { root, portable: true }
+        let root = instance_root(exe_dir.join("data"), instance);
+        let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+        Self { root, portable: true, unwritable_portable: None }.with_writable_fallback(instance, &env, &is_writable)
     }
 
     /// Testable core of [`DataPaths::resolve`].
@@ -38,8 +45,26 @@ impl DataPaths {
             Some(dir) if dir.join("portable").is_file() => (dir.join("data"), true),
             _ => (Self::installed_base(env), false),
         };
-        let root = if instance.is_empty() { base } else { base.join("instances").join(sanitize_instance(instance)) };
-        Self { root, portable }
+        Self { root: instance_root(base, instance), portable, unwritable_portable: None }
+    }
+
+    /// Portable mode: if `writable(root)` fails, moves the data to the per-user fallback
+    /// (`%LOCALAPPDATA%\Fennec\portable`) and records the refused folder. Installed mode
+    /// and writable portable folders are returned unchanged.
+    pub fn with_writable_fallback(
+        self,
+        instance: &str,
+        env: &dyn Fn(&str) -> Option<PathBuf>,
+        writable: &dyn Fn(&Path) -> bool,
+    ) -> Self {
+        if !self.portable || writable(&self.root) {
+            return self;
+        }
+        let base = match env("LOCALAPPDATA").filter(|_| cfg!(windows)) {
+            Some(local) => local.join("Fennec").join("portable"),
+            None => Self::installed_base(env).join("portable"),
+        };
+        Self { root: instance_root(base, instance), portable: true, unwritable_portable: Some(self.root) }
     }
 
     fn installed_base(env: &dyn Fn(&str) -> Option<PathBuf>) -> PathBuf {
@@ -83,6 +108,28 @@ impl DataPaths {
     }
 }
 
+/// Whether files can be created in `dir` (created if missing): a probe file is written
+/// and removed again.
+pub fn is_writable(dir: &Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(format!(".fennec-write-test-{}", std::process::id()));
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(&probe) {
+        Ok(f) => {
+            drop(f);
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// `base` or `base/instances/<name>`.
+fn instance_root(base: PathBuf, instance: &str) -> PathBuf {
+    if instance.is_empty() { base } else { base.join("instances").join(sanitize_instance(instance)) }
+}
+
 /// Keeps instance names safe as a single path component.
 fn sanitize_instance(name: &str) -> String {
     name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
@@ -121,5 +168,50 @@ mod tests {
         assert_eq!(p.root, base);
         let q = DataPaths::resolve_with("work/../x", Some(dir.path()), &env);
         assert_eq!(q.root, base.join("instances").join("work____x"));
+    }
+
+    #[test]
+    fn unwritable_portable_folder_falls_back_per_user() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("portable"), b"").unwrap();
+        let env = |k: &str| match k {
+            "HOME" => Some(PathBuf::from("/home/u")),
+            "APPDATA" => Some(PathBuf::from("C:\\Users\\u\\AppData\\Roaming")),
+            "LOCALAPPDATA" => Some(PathBuf::from("C:\\Users\\u\\AppData\\Local")),
+            _ => None,
+        };
+        let fallback = if cfg!(windows) {
+            PathBuf::from("C:\\Users\\u\\AppData\\Local").join("Fennec").join("portable")
+        } else {
+            PathBuf::from("/home/u/.local/share/fennec/portable")
+        };
+        // Writable: unchanged.
+        let p = DataPaths::resolve_with("", Some(dir.path()), &env).with_writable_fallback("", &env, &|_| true);
+        assert_eq!((p.root.clone(), p.unwritable_portable.clone()), (dir.path().join("data"), None));
+        // Read-only: per-user fallback, the refused folder is reported; instances stay apart.
+        let p = DataPaths::resolve_with("", Some(dir.path()), &env).with_writable_fallback("", &env, &|_| false);
+        assert!(p.portable);
+        assert_eq!(p.root, fallback);
+        assert_eq!(p.unwritable_portable, Some(dir.path().join("data")));
+        let q = DataPaths::resolve_with("w", Some(dir.path()), &env).with_writable_fallback("w", &env, &|_| false);
+        assert_eq!(q.root, fallback.join("instances").join("w"));
+        assert_eq!(q.unwritable_portable, Some(dir.path().join("data").join("instances").join("w")));
+        // Installed mode never falls back.
+        let other = tempfile::tempdir().unwrap();
+        let i = DataPaths::resolve_with("", Some(other.path()), &env).with_writable_fallback("", &env, &|_| false);
+        assert!(!i.portable && i.unwritable_portable.is_none());
+    }
+
+    #[test]
+    fn writable_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        assert!(is_writable(&data));
+        assert!(data.is_dir());
+        assert_eq!(std::fs::read_dir(&data).unwrap().count(), 0, "probe file left behind");
+        // A path below a regular file can never be created (holds for root too).
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        assert!(!is_writable(&file.join("data")));
     }
 }

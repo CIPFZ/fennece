@@ -839,6 +839,8 @@ options-page-etp = ETP/FTP-Server
 options-desc-etp = Everything- und FTP-Clients können diesen Index durchsuchen und durchblättern (ETP = FTP mit der Everything-Erweiterung); dazu die Einstellungen für Extras → Mit ETP-Server verbinden. Benutzername und Kennwort werden im Klartext übertragen.
 status-etp = ETP/FTP: { $url }
 status-etp-failed = ETP/FTP-Server: { $error }
+status-portable-fallback = Portabler Ordner ist schreibgeschützt: Daten werden in { $path } gespeichert
+status-portable-fallback-tip = { $refused } ist nicht beschreibbar, daher werden Einstellungen, Index und Protokolle in { $path } gespeichert. Verschieben Sie Fennec in einen beschreibbaren Ordner, um die Daten daneben zu behalten.
 status-etp-remote = ETP: { $host } ({ $total } Ergebnisse)
 msg-etp-bad-bind = Ungültige ETP/FTP-Bindungsadresse: { $value }
 msg-etp-no-password = Ein Kennwort ist erforderlich (Optionen → ETP/FTP-Server)
