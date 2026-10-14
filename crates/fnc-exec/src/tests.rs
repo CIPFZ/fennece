@@ -164,6 +164,7 @@ fn sorting() {
         then: [None; 2],
         props: [None; 3],
         custom: [None; 3],
+        files: [None; 3],
     };
     let r = run_on(&s, "file", Some(name));
     assert_eq!(r.iter().map(|p| leaf_name(p)).collect::<Vec<_>>(), vec!["file2.txt", "file10.txt"]);
@@ -177,6 +178,7 @@ fn sorting() {
         then: [None; 2],
         props: [None; 3],
         custom: [None; 3],
+        files: [None; 3],
     };
     let r = run_on(&s, "ext:jpg;png;flac", Some(size));
     assert_eq!(
@@ -190,6 +192,7 @@ fn sorting() {
         then: [None; 2],
         props: [None; 3],
         custom: [None; 3],
+        files: [None; 3],
     };
     let r = run_on(&s, "bob\\", Some(ff));
     let first_file = r.iter().position(|p| p.contains('.') || p.ends_with("README")).unwrap();
@@ -201,6 +204,7 @@ fn sorting() {
         then: [None; 2],
         props: [None; 3],
         custom: [None; 3],
+        files: [None; 3],
     };
     let r = run_on(&s, "file:", Some(path));
     assert_eq!(r.first().map(String::as_str), Some("C:\\Users\\bob\\file2.txt"));
@@ -334,6 +338,7 @@ fn engine_refresh_after_index_change() {
         then: [None; 2],
         props: [None; 3],
         custom: [None; 3],
+        files: [None; 3],
     };
     engine.search(r);
     let EngineEvent::Done(o) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -364,6 +369,47 @@ fn engine_concurrent_search_and_refresh_never_drop_the_last_search() {
         }
         assert!(std::time::Instant::now() < deadline);
     }
+}
+
+#[test]
+fn engine_refreshes_are_rate_limited_but_searches_are_not() {
+    let (engine, rx, _) = engine_with(store());
+    engine.search(req(1, "*.jpg"));
+    rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    // A refresh after a quiet period runs at once.
+    let t = std::time::Instant::now();
+    engine.refresh();
+    rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(t.elapsed() < Duration::from_millis(200), "first refresh not delayed: {:?}", t.elapsed());
+    // A change every 5 ms for 1.2 s (busy USN journal): at most one run per 250 ms gap.
+    let t = std::time::Instant::now();
+    let mut runs = 0;
+    while t.elapsed() < Duration::from_millis(1200) {
+        engine.refresh();
+        std::thread::sleep(Duration::from_millis(5));
+        while rx.try_recv().is_ok() {
+            runs += 1;
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    while rx.try_recv().is_ok() {
+        runs += 1;
+    }
+    assert!((2..=7).contains(&runs), "{runs} refresh runs in 1.2 s");
+    // A new search during a refresh gap is answered at once.
+    engine.refresh();
+    let t = std::time::Instant::now();
+    engine.search(req(2, "txt"));
+    loop {
+        let EngineEvent::Done(o) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        if o.id == 2 {
+            break;
+        }
+    }
+    assert!(t.elapsed() < Duration::from_millis(200), "search delayed: {:?}", t.elapsed());
+    assert_eq!(crate::engine::refresh_gap(Duration::from_millis(10)), Duration::from_millis(250));
+    assert_eq!(crate::engine::refresh_gap(Duration::from_millis(100)), Duration::from_millis(400));
+    assert_eq!(crate::engine::refresh_gap(Duration::from_secs(2)), Duration::from_secs(1));
 }
 
 #[test]

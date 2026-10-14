@@ -12,3 +12,4 @@
 /tools/agrt_token.py
 /.claude/
 /dist/
+!/tests/fixtures/**/*.fnx

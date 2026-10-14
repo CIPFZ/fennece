@@ -9,6 +9,9 @@
 //! * It implements [`IndexHooks`]: `props.fnx` / `content.fnx` are attached to the final
 //!   index right before it is published (same id space, so they are searchable at once),
 //!   follow compaction, and are saved with the index; `hashes.fnx` is loaded at start.
+//!   A file of another layout version or a damaged one is moved to `<name>.v<N>.bak` /
+//!   `<name>.corrupt.bak`, the store starts empty (re-extraction) and a localised notice
+//!   is queued for the status bar ([`Stores::take_notices`], ADR-038).
 //! * A low-priority worker thread (background mode on Windows) extracts what is missing:
 //!   a full scan once sizes and dates are complete and after configuration changes, and
 //!   live changes debounced by 2 s (modified files are re-extracted, renamed ones only
@@ -32,6 +35,7 @@ use fnc_exec::{SearchOptions, Shared, SlowPolicy, SystemIndexSource};
 use fnc_index::{Change, ChangeBatch, EntryRef, IndexStore, PathChange, SharedIndex};
 use fnc_props::content::{ContentExtractor, ContentIndex, ContentStore};
 use fnc_props::extract::{PropertyExtractor, PropertyProvider};
+use fnc_props::filecache::FileValueCache;
 use fnc_props::hash::HashCache;
 use fnc_props::ondemand::{DefaultOnDemand, OnDemand};
 use fnc_props::{ContentIndexConfig, ContentLimits, PropertyIndex, PropertyIndexConfig, PropertyStore, Scope};
@@ -155,6 +159,8 @@ pub struct Stores {
     generation: AtomicU64,
     /// Generations written last (props, content, hashes).
     saved: Mutex<(u64, u64, u64)>,
+    /// Recovery notices for the status bar (files set aside at load).
+    notices: Mutex<Vec<String>>,
     tx: Sender<Msg>,
 }
 
@@ -179,18 +185,33 @@ impl Stores {
         }
         let provider = fnc_platform::props::provider();
         let ansi_code_page = fnc_platform::locale::ansi_code_page();
-        let hashes = dir
-            .as_ref()
-            .map(|d| d.join("hashes.fnx"))
-            .filter(|p| p.exists())
-            .and_then(|p| match HashCache::load(&p) {
-                Ok(h) => Some(h),
-                Err(e) => {
-                    tracing::warn!(error = %e, "hashes.fnx unusable; starting empty");
-                    None
-                }
-            })
-            .unwrap_or_default();
+        let mut notices = Vec::new();
+        let hashes = match dir.as_ref().map(|d| d.join("hashes.fnx")) {
+            Some(p) => {
+                let (h, rec) = fnc_props::fnx::load_or_recover(
+                    &p,
+                    fnc_props::hash::HASHES_OLDEST_READABLE,
+                    fnc_props::hash::HASHES_VERSION,
+                    HashCache::load,
+                );
+                notices.extend(rec.map(|r| crate::upgrade::notice(&r, true)));
+                h.unwrap_or_default()
+            }
+            None => HashCache::default(),
+        };
+        let files = match dir.as_ref().map(|d| d.join("files.fnx")) {
+            Some(p) => {
+                let (c, rec) = fnc_props::fnx::load_or_recover(
+                    &p,
+                    fnc_props::filecache::FILES_OLDEST_READABLE,
+                    fnc_props::filecache::FILES_VERSION,
+                    FileValueCache::load,
+                );
+                notices.extend(rec.map(|r| crate::upgrade::notice(&r, true)));
+                c.unwrap_or_else(FileValueCache::new)
+            }
+            None => FileValueCache::new(),
+        };
         let (tx, rx) = crossbeam_channel::unbounded();
         let on_demand = Arc::new(Mutex::new(on_demand(provider.clone(), &cfg, ansi_code_page)));
         let source = on_demand.clone();
@@ -200,7 +221,11 @@ impl Stores {
             hashes: Arc::new(hashes),
             on_demand,
             system_index: Arc::new(fnc_platform::sysindex::WinSearch::default()),
-            cells: crate::cells::LazyCells::new(move || source.lock().clone()),
+            cells: crate::cells::LazyCells::new(
+                move || source.lock().clone(),
+                // Values of the file-reading columns (REL-06), keyed by file identity.
+                Arc::new(files),
+            ),
             provider,
             ansi_code_page,
             dir,
@@ -212,6 +237,7 @@ impl Stores {
             total: AtomicUsize::new(0),
             generation: AtomicU64::new(0),
             saved: Mutex::new((0, 0, 0)),
+            notices: Mutex::new(notices),
             tx,
         });
         me.saved.lock().2 = me.hashes.generation();
@@ -238,6 +264,7 @@ impl Stores {
         o.hashes = Some(Shared::new(self.hashes.clone()));
         o.on_demand = Some(Shared::new(self.on_demand.lock().clone()));
         o.system_index = Some(Shared::new(self.system_index.clone()));
+        o.file_values = Some(Shared::new(self.cells.file_values()));
         o.slow = cfg.slow;
     }
 
@@ -289,18 +316,32 @@ impl Stores {
         self.dir.as_ref().map(|d| d.join(name))
     }
 
+    /// Localised notices about store files that were set aside (shown once).
+    pub fn take_notices(&self) -> Vec<String> {
+        let mut n = self.notices.lock();
+        if n.is_empty() { Vec::new() } else { std::mem::take(&mut *n) }
+    }
+
+    fn recovered(&self, r: Option<fnc_core::upgrade::Recovery>) {
+        if let Some(r) = r {
+            self.notices.lock().push(crate::upgrade::notice(&r, true));
+        }
+    }
+
     /// Loads the stores for the final index `s` (or creates empty ones).
     fn load(&self, s: &IndexStore) -> (PropertyStore, ContentStore) {
         let cfg = self.config();
+        use fnc_props::content::store::{CONTENT_OLDEST_READABLE, CONTENT_VERSION};
+        use fnc_props::store::{PROPS_OLDEST_READABLE, PROPS_VERSION};
         let load_props = || {
             let path = self.path("props.fnx").filter(|p| p.exists() && !cfg.props.is_empty());
             let mut st = path
-                .and_then(|p| match PropertyStore::load(&p, s) {
-                    Ok(st) => Some(st),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "props.fnx unusable; re-extracting");
-                        None
-                    }
+                .and_then(|p| {
+                    let (st, rec) = fnc_props::fnx::load_or_recover(&p, PROPS_OLDEST_READABLE, PROPS_VERSION, |p| {
+                        PropertyStore::load(p, s)
+                    });
+                    self.recovered(rec);
+                    st
                 })
                 .unwrap_or_else(|| PropertyStore::new(s.instance()));
             if st.set_indexed(&cfg.props.stored()) {
@@ -310,12 +351,12 @@ impl Stores {
         };
         let load_content = || {
             let path = self.path("content.fnx").filter(|p| p.exists() && cfg.content.is_some());
-            path.and_then(|p| match ContentStore::load(&p, s) {
-                Ok(st) => Some(st),
-                Err(e) => {
-                    tracing::warn!(error = %e, "content.fnx unusable; re-extracting");
-                    None
-                }
+            path.and_then(|p| {
+                let (st, rec) = fnc_props::fnx::load_or_recover(&p, CONTENT_OLDEST_READABLE, CONTENT_VERSION, |p| {
+                    ContentStore::load(p, s)
+                });
+                self.recovered(rec);
+                st
             })
             .unwrap_or_else(|| ContentStore::new(s.instance()))
         };
@@ -456,6 +497,11 @@ impl IndexHooks for Stores {
                 Ok(()) => saved.2 = hg,
                 Err(e) => tracing::warn!(error = %e, "cannot save hashes.fnx"),
             }
+        }
+        if let Some(path) = self.path("files.fnx")
+            && let Err(e) = self.cells.file_values().save_if_changed(&path)
+        {
+            tracing::warn!(error = %e, "cannot save files.fnx");
         }
         tracing::debug!(elapsed = ?t.elapsed(), "stores saved");
     }

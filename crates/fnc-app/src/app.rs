@@ -10,6 +10,7 @@
 mod complete;
 mod dialogs;
 mod edit_ui;
+mod filesort;
 mod findbar;
 mod grid;
 mod integration;
@@ -94,6 +95,12 @@ pub struct AppDeps {
     pub start_hidden: bool,
     /// Run the IPC/Everything/HTTP servers for this instance (`None`: no servers).
     pub servers: Option<crate::servers::ServersContext>,
+    /// Permanent status bar warning and its tooltip (read-only portable folder).
+    pub data_warning: Option<(String, String)>,
+    /// Set while the main window is hidden (tray) or minimised: the refresh callbacks of
+    /// the indexer and stores skip re-running the search (shown again → caught up by
+    /// `refresh_if_stale`), so a busy USN journal costs no search CPU in the background.
+    pub background: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -236,6 +243,19 @@ pub(super) struct View {
     nav: toolbar::Nav,
     /// Connected to an ETP server: searches run there (Tools → Connect to ETP Server).
     remote: Option<remote_ui::RemoteView>,
+    /// A sort by a file-reading column waiting for its values (REL-06).
+    file_sort: Option<filesort::FileSort>,
+}
+
+/// Status bar warning and tooltip when a read-only portable folder made the data move to
+/// the per-user fallback (REL-07); `None` otherwise.
+pub fn data_warning(paths: &fnc_core::paths::DataPaths) -> Option<(String, String)> {
+    let refused = paths.unwritable_portable.as_ref()?;
+    let tip = t_args(
+        "status-portable-fallback-tip",
+        &[("refused", refused.display().to_string().into()), ("path", paths.root.display().to_string().into())],
+    );
+    Some((t("status-portable-fallback"), tip))
 }
 
 /// Main application state.
@@ -263,6 +283,9 @@ pub struct FennecApp {
 
     status: IndexStatus,
     message: Option<(String, Instant)>,
+    /// Permanent warning and tooltip (read-only portable folder, REL-07).
+    data_warning: Option<(String, String)>,
+    background: Arc<std::sync::atomic::AtomicBool>,
     hidden: bool,
     dialog: Option<dialogs::Dialog>,
     options_window: Option<options::OptionsState>,
@@ -310,6 +333,8 @@ pub struct FennecApp {
     sidebar_cache: sidebar::SidebarCache,
     /// IPC, Everything-compatible and HTTP servers.
     servers: Option<integration::AppServers>,
+    /// "Did not exit normally last time" status-bar item (REL-02).
+    crash: crate::crash::CrashPrompt,
 }
 
 impl FennecApp {
@@ -373,6 +398,8 @@ impl FennecApp {
             history,
             status: IndexStatus::Starting,
             message: None,
+            data_warning: deps.data_warning,
+            background: deps.background,
             // Start-hidden is applied by `main` via `ViewportBuilder::with_visible(false)`
             // (no flash of the window).
             hidden: deps.start_hidden,
@@ -429,6 +456,7 @@ impl FennecApp {
                 preview: preview::PreviewState::default(),
                 stale_refresh: None,
                 sort_before_semantic: None,
+                file_sort: None,
                 find: Default::default(),
                 nav: Default::default(),
                 remote: None,
@@ -443,7 +471,13 @@ impl FennecApp {
             tabs: Default::default(),
             sidebar_cache: Default::default(),
             servers: None,
+            crash: crate::crash::CrashPrompt::detect(),
         };
+        // Data files that were set aside at load (ADR-038).
+        let recovered = [app.filters.recovery.take(), app.bookmarks.recovery.take(), app.history.recovery.take()];
+        for r in recovered.into_iter().flatten() {
+            app.notice(crate::upgrade::notice(&r, false));
+        }
         app.semantic_init();
         app.rebuild_search_options();
         app.start_servers(servers);
@@ -492,6 +526,8 @@ impl FennecApp {
     }
 
     fn send_search(&mut self) {
+        // A new search (or sort) supersedes a file column sort waiting for its values.
+        self.cancel_file_sort();
         let id = self.v.next_id;
         self.v.next_id += 1;
         // Searches by meaning list the most similar first (SPEC ch.5 §3.1); the previous
@@ -515,6 +551,7 @@ impl FennecApp {
             self.v.history_idle_since = Some(Instant::now());
         }
         self.v.sent_query = Some(self.v.query.clone());
+        fnc_core::crash::record_query(&self.v.query);
         self.v.edited_at = None;
         if self.send_remote_search(id) {
             return;
@@ -564,7 +601,7 @@ impl FennecApp {
     /// Re-runs the view's search when the index changed since its results were computed
     /// and no search is in flight (at most every 250 ms).
     pub(super) fn refresh_if_stale(&mut self) {
-        if self.is_remote() {
+        if self.is_remote() || self.background.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
         let in_flight = self.v.latest_shown + 1 < self.v.next_id;
@@ -641,12 +678,20 @@ impl FennecApp {
             self.on_outcome(o);
         }
         self.drain_remote();
+        self.poll_file_sort();
         while let Ok(ev) = self.index_rx.try_recv() {
             match ev {
-                IndexEvent::Status(s) => self.status = s,
+                IndexEvent::Status(s) => {
+                    crate::crash::set_phase(&s);
+                    self.status = s;
+                }
                 IndexEvent::Message(m) => self.message = Some((m, Instant::now())),
+                IndexEvent::Notice(m) => self.notice(m),
                 IndexEvent::Compacted { old_instance, remap } => self.on_compacted(old_instance, &remap),
             }
+        }
+        for n in self.stores.take_notices() {
+            self.notice(n);
         }
         while let Ok(m) = self.worker_rx.try_recv() {
             let text = match m {
@@ -839,6 +884,17 @@ impl FennecApp {
     }
 
     fn say(&mut self, text: String) {
+        self.message = Some((text, Instant::now()));
+    }
+
+    /// Start-up notices about data files that were set aside (ADR-038): several in a row
+    /// are shown together instead of replacing each other.
+    pub(crate) fn notice(&mut self, text: String) {
+        tracing::warn!("{text}");
+        let text = match self.message.take() {
+            Some((m, at)) if at.elapsed() < Duration::from_secs(8) => format!("{m}  ·  {text}"),
+            _ => text,
+        };
         self.message = Some((text, Instant::now()));
     }
 
@@ -1603,6 +1659,9 @@ impl FennecApp {
     }
 
     fn on_escape(&mut self, ctx: &egui::Context) {
+        if self.escape_file_read() {
+            return;
+        }
         if self.options_window.is_some() {
             self.options_window = None;
             return;
@@ -1846,9 +1905,17 @@ impl FennecApp {
                 ui.separator();
                 ui.label(self.active_filter_name());
             }
+            if let Some(m) = self.crash.ui(ui) {
+                self.say(m);
+            }
+            self.file_sort_status(ui);
             if let Some(d) = self.v.diagnostics.first() {
                 ui.separator();
                 ui.colored_label(ui.visuals().warn_fg_color, d);
+            }
+            if let Some((warning, tip)) = &self.data_warning {
+                ui.separator();
+                ui.colored_label(ui.visuals().warn_fg_color, warning).on_hover_text(tip);
             }
             if let Some((m, at)) = &self.message {
                 if at.elapsed() < Duration::from_secs(8) {
@@ -1897,6 +1964,7 @@ impl FennecApp {
         if old.theme != s.theme {
             apply_theme(ctx, s.theme);
         }
+        fnc_core::crash::set_redact_queries(s.crash_redact_queries);
         if (old.ui_scale - s.ui_scale).abs() > f32::EPSILON {
             ctx.set_zoom_factor(s.ui_scale.clamp(0.5, 3.0));
         }
@@ -2278,6 +2346,8 @@ const HISTORY_IDLE: Duration = Duration::from_secs(3);
 impl eframe::App for FennecApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_channels(ctx);
+        let minimized = ctx.input(|i| i.viewport().minimized == Some(true));
+        self.background.store(self.hidden || minimized, std::sync::atomic::Ordering::Relaxed);
         self.refresh_if_stale();
         self.semantic_tick(ctx);
         if ctx.input(|i| i.viewport().close_requested())
@@ -2323,6 +2393,7 @@ impl eframe::App for FennecApp {
         self.hwnd = hwnd;
         self.handle_keys(&ctx);
         self.draw_main(ui, true);
+        crate::crash::debug_panic_tick(&ctx, matches!(self.status, IndexStatus::Ready { .. }));
         self.dialogs(&ctx);
         self.options_viewport(&ctx);
         self.semantic_setup_window(&ctx);
@@ -2388,6 +2459,8 @@ mod tests;
 mod tests_edit;
 #[cfg(test)]
 mod tests_etp;
+#[cfg(test)]
+mod tests_filesort;
 #[cfg(all(test, feature = "semantic"))]
 mod tests_semantic;
 #[cfg(test)]

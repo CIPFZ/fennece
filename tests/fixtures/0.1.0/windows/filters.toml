@@ -1,0 +1,10 @@
+[[filter]]
+name = "REL03 Filter"
+search = "rel03 ext:txt"
+macro = "rel03f"
+case = false
+whole_word = false
+path = true
+diacritics = false
+regex = false
+key = ""

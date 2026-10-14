@@ -29,11 +29,17 @@ pub(super) fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedInde
             (SearchEngine::spawn(sh.clone(), tx, Box::new(|| {})), rx)
         });
     let (index_tx, index_rx) = crossbeam_channel::unbounded();
-    let handle = engine.handle();
+    let (handle, background) = (engine.handle(), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let bg = background.clone();
+    let refresh = Arc::new(move || {
+        if !bg.load(std::sync::atomic::Ordering::Relaxed) {
+            handle.refresh();
+        }
+    });
     let indexer = match file_list {
         Some(f) => {
             let cfg = crate::indexer::IndexerConfig { file_lists: vec![f], ..Default::default() };
-            Indexer::spawn(cfg, shared.clone(), Arc::new(move || handle.refresh()), index_tx, Arc::new(|| {}))
+            Indexer::spawn(cfg, shared.clone(), refresh, index_tx, Arc::new(|| {}))
         }
         // The caller supplies a ready index.
         None => Indexer::idle(),
@@ -57,6 +63,8 @@ pub(super) fn deps_for(file_list: Option<std::path::PathBuf>, shared: SharedInde
         initial_cli: None,
         start_hidden: false,
         servers: None,
+        data_warning: None,
+        background,
     }
 }
 
@@ -417,7 +425,7 @@ fn forwarded_command_lines() {
 }
 
 /// Indexes the files of `dir` into `shared` (folder source).
-fn index_folder(shared: &SharedIndex, dir: &std::path::Path) {
+pub(super) fn index_folder(shared: &SharedIndex, dir: &std::path::Path) {
     let mut store = fnc_index::IndexStore::default();
     let mut src = fnc_platform::walk::FolderSource::new(dir);
     let vol = store.add_volume(fnc_platform::VolumeSource::info(&src), Some(1)).unwrap();
@@ -444,7 +452,7 @@ fn png(w: u32, h: u32) -> Vec<u8> {
     out
 }
 
-fn wait_query(h: &mut Harness<'_, FennecApp>, q: &str, n: usize) {
+pub(super) fn wait_query(h: &mut Harness<'_, FennecApp>, q: &str, n: usize) {
     h.state_mut().set_query(q.into());
     wait_until(h, q, |a| {
         a.v.sent_query.as_deref() == Some(q) && a.v.latest_shown + 1 == a.v.next_id && a.v.results.len() == n
@@ -632,4 +640,70 @@ fn unindexed_property_and_file_columns_load_in_the_background() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(h.state().stores.props.snapshot().is_empty(), "nothing indexed");
+}
+
+/// REL-02: reports of a process that died show "did not exit normally" in the status
+/// bar; right-click dismisses it for good (acknowledged), caught reports never show.
+#[test]
+fn crash_prompt_in_status_bar() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("crash-20261014-101500.log"), "report").unwrap();
+    std::fs::write(dir.path().join("crash-20261014-101600-fes.caught.log"), "report").unwrap();
+    let mut h = harness(deps_for(None, SharedIndex::default()));
+    h.step();
+    assert!(h.query_by_label_contains("did not exit normally").is_none());
+    h.state_mut().crash = crate::crash::CrashPrompt::for_dir(dir.path());
+    h.run_steps(2);
+    h.get_by_label_contains("did not exit normally").click_secondary();
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("did not exit normally").is_none(), "dismissed");
+    assert_eq!(std::fs::read_to_string(dir.path().join("crash.ack")).unwrap(), "crash-20261014-101500.log");
+    h.state_mut().crash = crate::crash::CrashPrompt::for_dir(dir.path());
+    h.run_steps(2);
+    assert!(h.query_by_label_contains("did not exit normally").is_none(), "not again after acknowledging");
+}
+
+/// REL-07: a read-only portable folder shows a permanent status bar warning.
+#[test]
+fn read_only_portable_folder_warns_in_the_status_bar() {
+    let mut deps = deps_for(None, SharedIndex::default());
+    let mut paths = fnc_core::paths::DataPaths {
+        root: r"C:\Users\u\AppData\Local\Fennec\portable".into(),
+        portable: true,
+        unwritable_portable: None,
+    };
+    assert_eq!(super::data_warning(&paths), None);
+    paths.unwritable_portable = Some(r"C:\Program Files\Fennec\data".into());
+    let (warning, tip) = super::data_warning(&paths).unwrap();
+    assert_eq!(warning, t("status-portable-fallback"));
+    assert!(tip.contains(r"C:\Program Files\Fennec\data") && tip.contains(r"AppData\Local\Fennec\portable"), "{tip}");
+    deps.data_warning = Some((warning.clone(), tip));
+    let mut h = harness(deps);
+    h.run_steps(2);
+    h.get_by_label(&warning);
+}
+
+/// Hidden to the tray, index changes do not re-run the search; showing the window
+/// catches up (SPEC ch.0 §6.1: idle CPU ≈ 0 under a busy USN journal).
+#[test]
+fn hidden_window_does_not_refresh_until_shown() {
+    let dir = tempfile::tempdir().unwrap();
+    let efu = dir.path().join("t.efu");
+    std::fs::write(&efu, EFU).unwrap();
+    let mut h = harness(deps_for(Some(efu), SharedIndex::default()));
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && !a.v.results.is_empty());
+    h.state_mut().set_query("ext:jpg".into());
+    wait_until(&mut h, "two pictures", |a| a.v.sent_query.as_deref() == Some("ext:jpg") && a.v.results.len() == 2);
+    h.state_mut().hidden = true;
+    h.step();
+    let victim = h.state().v.results.ids[0];
+    h.state().shared.write().apply(vec![fnc_index::Change::Delete(fnc_index::EntryRef::Id(victim))]);
+    let until = Instant::now() + Duration::from_millis(800);
+    while Instant::now() < until {
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(h.state().v.results.len(), 2, "no search while hidden");
+    h.state_mut().hidden = false;
+    wait_until(&mut h, "refreshed when shown", |a| a.v.results.len() == 1);
 }

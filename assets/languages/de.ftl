@@ -18,7 +18,14 @@ index-ready = { $count ->
    *[other] { $count } Einträge in { $seconds } s indiziert
 }
 index-error = Indexfehler: { $message }
-index-db-rebuild = Die Indexdatenbank konnte nicht gelesen werden und wird neu erstellt ({ $message }).
+upgrade-rebuild-old = { $file } hat ein älteres Format (Version { $version }), das diese Version nicht lesen kann; die Datei wurde als { $backup } aufbewahrt und wird neu erstellt.
+upgrade-rebuild-future = { $file } wurde von einer neueren Fennec-Version geschrieben (Format { $version }); die Datei wurde als { $backup } aufbewahrt und wird neu erstellt.
+upgrade-rebuild-corrupt = { $file } ist beschädigt; die Datei wurde als { $backup } aufbewahrt und wird neu erstellt.
+upgrade-data-old = { $file } hat ein älteres Format (Version { $version }); der lesbare Teil wurde geladen, das Original als { $backup } aufbewahrt.
+upgrade-data-future = { $file } wurde von einer neueren Fennec-Version geschrieben (Format { $version }); was diese Version versteht, wurde geladen, das Original als { $backup } aufbewahrt.
+upgrade-data-corrupt = { $file } konnte nicht gelesen werden; die Datei wurde als { $backup } aufbewahrt, es gelten die Standardwerte.
+upgrade-backup-failed = { $file } konnte weder gelesen noch gesichert werden ({ $message }).
+upgrade-settings-reset = Einige Einstellungen konnten nicht gelesen werden und wurden zurückgesetzt ({ $keys }); die Originaldatei wurde als { $backup } aufbewahrt.
 index-volume-rebuild = Das Änderungsjournal von { $volume } hat sich geändert; dieses Volume wird neu indiziert.
 index-volume-added = { $volume } wurde dem Index hinzugefügt.
 index-watch-error = Überwachung von { $volume } beendet: { $message }
@@ -839,7 +846,15 @@ options-page-etp = ETP/FTP-Server
 options-desc-etp = Everything- und FTP-Clients können diesen Index durchsuchen und durchblättern (ETP = FTP mit der Everything-Erweiterung); dazu die Einstellungen für Extras → Mit ETP-Server verbinden. Benutzername und Kennwort werden im Klartext übertragen.
 status-etp = ETP/FTP: { $url }
 status-etp-failed = ETP/FTP-Server: { $error }
+status-portable-fallback = Portabler Ordner ist schreibgeschützt: Daten liegen im Benutzerprofil
+status-portable-fallback-tip = { $refused } ist nicht beschreibbar, daher werden Einstellungen, Index und Protokolle in { $path } gespeichert. Verschieben Sie Fennec in einen beschreibbaren Ordner, um die Daten daneben zu behalten.
 status-etp-remote = ETP: { $host } ({ $total } Ergebnisse)
+status-crash-prompt = Fennec wurde beim letzten Mal nicht normal beendet — Protokoll anzeigen
+status-crash-tooltip = { $count ->
+    [one] Ein Absturzbericht
+   *[other] { $count } Absturzberichte
+} in { $dir }. Klicken öffnet den Ordner, Rechtsklick blendet den Hinweis aus.
+msg-crash-open-failed = Der Protokollordner kann nicht geöffnet werden: { $error }
 msg-etp-bad-bind = Ungültige ETP/FTP-Bindungsadresse: { $value }
 msg-etp-no-password = Ein Kennwort ist erforderlich (Optionen → ETP/FTP-Server)
 msg-etp-bad-port = Ungültige Portnummer
@@ -865,3 +880,12 @@ etp-link-share = \\Server\C (Windows-Freigaben)
 etp-link-admin-share = \\Server\C$ (administrative Freigaben)
 etp-plain-text-warning = Benutzername und Kennwort werden im Klartext übertragen.
 etp-connect = Verbinden
+
+# Sorting by the file-reading columns (REL-06)
+dialog-read-files-title = Nach Dateiinhalt sortieren
+dialog-read-files = { $count ->
+    [one] 1 Datei muss gelesen werden (etwa { $secs } s). Fortfahren?
+   *[other] { $count } Dateien müssen gelesen werden (etwa { $secs } s). Fortfahren?
+}
+dialog-continue = Fortfahren
+status-reading-files = Lese { $done } / { $total }

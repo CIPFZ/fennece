@@ -53,6 +53,9 @@ pub enum IndexEvent {
     Status(IndexStatus),
     /// Problem worth showing (already localised).
     Message(String),
+    /// A data file was set aside and is being rebuilt (localised; shown together with
+    /// the other start-up notices, ADR-038).
+    Notice(String),
     /// The index was compacted while running: entry ids changed (`remap[old] = new`,
     /// `u32::MAX` = removed). Views remap their selections and re-run their searches.
     Compacted {
@@ -257,6 +260,11 @@ impl Emitter {
         (self.notify)();
     }
 
+    fn notice(&self, m: String) {
+        let _ = self.tx.send(IndexEvent::Notice(m));
+        (self.notify)();
+    }
+
     fn message(&self, m: String) {
         tracing::warn!("{m}");
         let _ = self.tx.send(IndexEvent::Message(m));
@@ -374,23 +382,24 @@ fn collect_sources(cfg: &IndexerConfig, emit: &Emitter) -> Vec<Box<dyn VolumeSou
     sources
 }
 
-/// Loads the database, if configured and readable. A damaged file is kept as
-/// `index.fnx.bad` and the index is rebuilt.
+/// Loads the database, if configured and readable. A file of an unreadable layout
+/// version (older or newer) or a damaged one is kept as `index.fnx.v<N>.bak` /
+/// `index.fnx.corrupt.bak`, the user is told and the index is rebuilt (ADR-038).
 fn load_db(cfg: &IndexerConfig, emit: &Emitter) -> Option<IndexStore> {
     let path = cfg.db_path.as_ref().filter(|_| !cfg.reindex)?;
     if !path.exists() {
         return None;
     }
     let t = Instant::now();
-    match fnc_index::persist::load(path) {
-        Ok(s) => {
+    match fnc_index::persist::load_or_recover(path) {
+        fnc_index::persist::Loaded::Index(s) => {
             tracing::info!(entries = s.live_count(), elapsed = ?t.elapsed(), "database loaded");
-            Some(s)
+            Some(*s)
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "database unusable; rebuilding");
-            let _ = std::fs::rename(path, path.with_extension("fnx.bad"));
-            emit.message(crate::i18n::t_args("index-db-rebuild", &[("message", e.to_string().into())]));
+        fnc_index::persist::Loaded::Missing => None,
+        fnc_index::persist::Loaded::Rebuild(r, e) => {
+            tracing::warn!(error = %e, backup = ?r.backup, "database unusable; rebuilding");
+            emit.notice(crate::upgrade::notice(&r, true));
             None
         }
     }
@@ -994,24 +1003,21 @@ fn wants_compaction(s: &IndexStore) -> bool {
     dead >= 10_000 && dead as f64 >= s.len() as f64 * COMPACT_DELETED_SHARE
 }
 
-/// Compacts `shared` without holding the write lock for the work: compact a copy, then
-/// swap it in if nothing changed meanwhile (else retry later). Returns the remap.
+/// Compacts `shared` without blocking readers: under an upgradable read guard (searches
+/// and the UI keep reading, other writers wait) compact a copy, then upgrade and swap it
+/// in. Holding off writers is what lets compaction finish under continuous changes (a
+/// copy compacted while changes kept arriving would always be stale). Returns the remap.
 fn compact_live(shared: &EpochIndex) -> Option<(u64, Vec<u32>, u64)> {
-    let (mut copy, generation, old) = {
-        let snap = shared.snapshot();
-        if !wants_compaction(&snap) {
-            return None;
-        }
-        (snap.clone(), snap.generation(), snap.instance())
-    };
+    let guard = shared.upgradable()?;
+    if !wants_compaction(&guard) {
+        return None;
+    }
+    let old = guard.instance();
+    let mut copy = (*guard).clone();
     let remap = copy.compact();
     copy.rebuild_name_order();
     copy.shrink_to_fit();
-    let mut w = shared.write()?;
-    if w.generation() != generation || w.instance() != old {
-        // Changes arrived while compacting: the copy is outdated.
-        return None;
-    }
+    let mut w = parking_lot::RwLockUpgradableReadGuard::upgrade(guard);
     let new = copy.instance();
     *w = copy;
     Some((old, remap, new))
@@ -1971,6 +1977,53 @@ mod compact_tests {
         assert_eq!(snap.name_string(moved), "f29999.txt");
         assert!(snap.find_path("C:\\d\\f29999.txt") == Some(moved));
         assert_eq!(snap.live_count(), before);
+    }
+
+    #[test]
+    fn live_compaction_completes_under_continuous_changes() {
+        let mut s = IndexStore::default();
+        let csv: String = std::iter::once("Filename,Size,Date Modified,Date Created,Attributes\n".to_string())
+            .chain((0..30_000).map(|i| format!("\"C:\\d\\f{i}.txt\",1,,,32\n")))
+            .collect();
+        fnc_index::efu::load_efu(&mut s, csv.as_bytes(), "t.efu").unwrap();
+        let shared = SharedIndex::new(s);
+        let doomed: Vec<Change> = {
+            let snap = shared.snapshot();
+            (0..snap.len() as u32)
+                .map(EntryId)
+                .filter(|&id| snap.name_string(id).starts_with("f1"))
+                .map(|id| Change::Delete(EntryRef::Id(id)))
+                .collect()
+        };
+        shared.write().apply(doomed);
+        // A writer deleting one more entry every millisecond (like a busy USN journal).
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let churn = {
+            let (shared, stop) = (shared.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut n = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let id = {
+                        let snap = shared.snapshot();
+                        snap.find_path(&format!("C:\\d\\f2{n:04}.txt"))
+                    };
+                    if let Some(id) = id {
+                        shared.write().apply(vec![Change::Delete(EntryRef::Id(id))]);
+                    }
+                    n += 1;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                n
+            })
+        };
+        std::thread::sleep(Duration::from_millis(20));
+        let done = compact_live(&EpochIndex::new(&shared));
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let deleted = churn.join().unwrap();
+        assert!(done.is_some(), "compaction is not starved by concurrent writes");
+        assert!(deleted > 0);
+        let snap = shared.snapshot();
+        assert!(snap.len() - snap.live_count() < 10_000, "tombstones reclaimed");
     }
 }
 

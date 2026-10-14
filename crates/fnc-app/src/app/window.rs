@@ -64,6 +64,7 @@ impl FennecApp {
             preview: Default::default(),
             stale_refresh: None,
             sort_before_semantic: None,
+            file_sort: None,
             find: Default::default(),
             nav: Default::default(),
             remote: None,

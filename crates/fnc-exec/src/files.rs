@@ -11,9 +11,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use fnc_core::flags::attr;
 use fnc_core::{EntryFlags, EntryId};
 use fnc_index::IndexStore;
 use fnc_index::ext::{OVERFLOW_EXT, ext_of};
+use fnc_props::filecache::FileField;
 use fnc_props::link::LinkKind;
 use fnc_props::ondemand::OnDemand;
 use fnc_props::{recycle, signature};
@@ -105,6 +107,22 @@ pub fn recycle_origin(src: &dyn OnDemand, item: &Path) -> Option<String> {
 /// File signature of `path` (`fsi:` names; `Some("")` = unknown, `None` = unreadable).
 pub fn file_signature(src: &dyn OnDemand, path: &Path) -> Option<String> {
     read_signature(src, path)
+}
+
+/// Whether the result column `f` can have a value for `id`, decided from the index alone
+/// (`false`: the cell is empty for good and the file is never read — a signature of a
+/// folder, the link target of a plain file, anything of a cloud placeholder except its
+/// recycle bin original location, whose `$I` record is a separate file).
+pub fn reads_file(s: &IndexStore, id: EntryId, f: FileField) -> bool {
+    let a = s.attributes(id);
+    if a & (attr::OFFLINE | attr::RECALL_ON_OPEN | attr::RECALL_ON_DATA_ACCESS) != 0 && f != FileField::RecycleOrigin {
+        return false;
+    }
+    match f {
+        FileField::Signature => !s.is_dir(id),
+        FileField::LinkTarget => link_kind(s, id).is_some(),
+        FileField::RecycleOrigin => recycle_item(s, id).is_some(),
+    }
 }
 
 impl TargetLeaf {

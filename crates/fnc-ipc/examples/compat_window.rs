@@ -41,6 +41,8 @@ mod win {
         \"C:\\Fennec Test\\sub\",,133000000000000005,,16\n\
         \"C:\\Fennec Test\\sub\\测试 abc.txt\",5,133000000000000006,,32\n";
 
+    /// # Safety
+    /// Window procedure: only called by Windows for this window class.
     unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         let Some(backend) = BACKEND.get() else {
             // SAFETY: plain forwarding of the window message.

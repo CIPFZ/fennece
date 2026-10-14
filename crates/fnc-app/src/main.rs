@@ -8,6 +8,7 @@ mod cells;
 mod cli;
 mod columns;
 mod commands;
+mod crash;
 mod exclude;
 mod export;
 mod filters;
@@ -31,6 +32,7 @@ mod thumbs;
 #[cfg(windows)]
 mod tray;
 mod undo;
+mod upgrade;
 
 use std::process::ExitCode;
 use std::sync::{Arc, OnceLock};
@@ -44,23 +46,30 @@ use fnc_index::SharedIndex;
 use fnc_platform::instance::{Instance, acquire};
 
 fn main() -> ExitCode {
-    match run() {
+    let code = match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("{e:#}");
             eprintln!("fennec: {e:#}");
             ExitCode::FAILURE
         }
-    }
+    };
+    // Ended normally: panics contained so far were not fatal (REL-02).
+    fnc_core::crash::mark_survived();
+    code
 }
 
 fn run() -> anyhow::Result<()> {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
     // Hidden mode: IFilter host process of the content extraction (ADR-035).
     if ifilter::is_host_invocation(&raw_args) {
-        ifilter::run_host();
+        ifilter::run_host(&raw_args);
     }
     let cli = cli::parse(raw_args.clone());
+    // GUI subsystem in release builds: print into the console we were started from.
+    if cli.help || cli.version || cli.tool.is_some() {
+        fnc_platform::os::attach_parent_console();
+    }
     if cli.help {
         eprintln!("{}", cli::USAGE);
         return Ok(());
@@ -72,10 +81,8 @@ fn run() -> anyhow::Result<()> {
 
     let paths = if cli.portable { DataPaths::portable(&cli.instance) } else { DataPaths::resolve(&cli.instance) };
     let settings_path = cli.config.as_ref().map_or_else(|| paths.settings_file(), std::path::PathBuf::from);
-    let (settings, settings_error) = match Settings::load(&settings_path) {
-        Ok(s) => (s, None),
-        Err(e) => (Settings::default(), Some(e)),
-    };
+    // Never loses the file: newer schemas, bad values and syntax errors keep a copy (ADR-038).
+    let (settings, settings_load) = Settings::load_checked(&settings_path);
     let level = if cli.verbose { "debug" } else { settings.log_level.as_str() };
     // `-log <file>`: that folder and file prefix instead of the data folder.
     let (logs, prefix) = match &cli.log {
@@ -90,21 +97,38 @@ fn run() -> anyhow::Result<()> {
         }
         None => (paths.logs_dir(), "fennec".to_string()),
     };
-    let _log_guard = init_logging(&LogConfig {
+    crash::install(&logs, settings.crash_redact_queries);
+    let log_cfg = LogConfig {
         dir: Some(&logs),
         prefix: &prefix,
         level,
         max_files: settings.log_max_files as usize,
         console: cli.console || cli.verbose,
-    })?;
+    };
+    // An unwritable log folder must not stop the program (REL-07): log to the console only.
+    let (_log_guard, log_error) = match init_logging(&log_cfg) {
+        Ok(g) => (g, None),
+        Err(e) => (init_logging(&LogConfig { dir: None, ..log_cfg })?, Some(e)),
+    };
     tracing::info!(version = env!("CARGO_PKG_VERSION"), data = %paths.root.display(), portable = paths.portable, "starting");
-    if let Some(e) = settings_error {
+    if let Some(e) = log_error {
+        tracing::warn!(error = %e, "file logging disabled");
+    }
+    if let Some(refused) = &paths.unwritable_portable {
+        tracing::warn!(refused = %refused.display(), "portable data folder not writable; using the per-user fallback");
+    }
+    if let Some(e) = &settings_load.error {
         tracing::warn!(error = %e, "settings unreadable; using defaults");
     }
     for u in &cli.unknown {
         tracing::warn!(switch = %u, "unknown command line switch ignored");
     }
+    if cli.debug_panic {
+        crash::arm_debug_panic();
+    }
     i18n::init(&settings.language);
+    let settings_notice = upgrade::settings_notice(&settings_load);
+    let data_warning = app::data_warning(&paths);
     i18n::apply_collation(settings.name_collation);
     i18n::apply_date_locale(settings.date_input_order, settings.week_start);
 
@@ -169,6 +193,7 @@ fn run() -> anyhow::Result<()> {
         tracing::warn!(error = %e, "cannot size the search thread pool");
     }
     let shared = SharedIndex::default();
+    crash::register_state(shared.clone());
     let (engine_tx, engine_rx) = crossbeam_channel::unbounded();
     let engine = SearchEngine::spawn(shared.clone(), engine_tx, Box::new(wake.clone()));
     let new_engine: Arc<dyn Fn() -> (SearchEngine, crossbeam_channel::Receiver<fnc_exec::EngineEvent>) + Send + Sync> = {
@@ -179,12 +204,22 @@ fn run() -> anyhow::Result<()> {
         })
     };
 
+    // Hidden or minimised main window: index changes do not re-run the search (AppDeps).
+    let background = Arc::new(std::sync::atomic::AtomicBool::new(cli.start_hidden));
+    let refresher = |handle: fnc_exec::EngineHandle| -> Arc<dyn Fn() + Send + Sync> {
+        let bg = background.clone();
+        Arc::new(move || {
+            if !bg.load(std::sync::atomic::Ordering::Relaxed) {
+                handle.refresh();
+            }
+        })
+    };
     let db_path = if cli.no_db { None } else { Some(cli.db.as_ref().map_or_else(|| paths.index_file(), Into::into)) };
     // Property, content and hash stores: created once, shared by every search (M3).
     let stores = {
         let handle = engine.handle();
         let dir = db_path.as_ref().and_then(|p| p.parent()).map(std::path::Path::to_path_buf);
-        stores::Stores::start(shared.clone(), &settings, dir, Arc::new(move || handle.refresh()))
+        stores::Stores::start(shared.clone(), &settings, dir, refresher(handle))
     };
     let index_cfg = {
         let (cli, paths, db_path, stores) = (cli.clone(), paths.clone(), db_path.clone(), stores.clone());
@@ -192,28 +227,20 @@ fn run() -> anyhow::Result<()> {
     };
     let cfg = index_cfg(&settings);
     let (index_tx, index_rx) = crossbeam_channel::unbounded();
+    if let Some(n) = settings_notice {
+        let _ = index_tx.send(indexer::IndexEvent::Notice(n));
+    }
     let handle = engine.handle();
-    let indexer = indexer::Indexer::spawn(
-        cfg,
-        shared.clone(),
-        Arc::new(move || handle.refresh()),
-        index_tx.clone(),
-        Arc::new(wake.clone()),
-    );
+    let indexer =
+        indexer::Indexer::spawn(cfg, shared.clone(), refresher(handle), index_tx.clone(), Arc::new(wake.clone()));
     let reindex: app::Reindex = {
-        let (shared, handle, wake) = (shared.clone(), engine.handle(), wake.clone());
+        let (shared, wake) = (shared.clone(), wake.clone());
+        let refresh = refresher(engine.handle());
         Arc::new(move |indexer: &mut indexer::Indexer, settings: &Settings| {
             let mut cfg = index_cfg(settings);
             // `-reindex` aside, a rebuild never reads the database it replaces.
             cfg.reindex = true;
-            let handle = handle.clone();
-            indexer.restart(
-                cfg,
-                shared.clone(),
-                Arc::new(move || handle.refresh()),
-                index_tx.clone(),
-                Arc::new(wake.clone()),
-            );
+            indexer.restart(cfg, shared.clone(), refresh.clone(), index_tx.clone(), Arc::new(wake.clone()));
         })
     };
 
@@ -250,6 +277,8 @@ fn run() -> anyhow::Result<()> {
         initial_cli: Some(cli.clone()),
         start_hidden: cli.start_hidden,
         servers: Some(servers::ServersContext { instance: cli.instance.clone(), portable: paths.portable }),
+        data_warning,
+        background,
     };
     eframe::run_native(
         "Fennec",

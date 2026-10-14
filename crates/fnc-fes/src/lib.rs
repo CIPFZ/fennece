@@ -273,6 +273,10 @@ pub fn run_args(a: &Args, env: &Env, out: &mut dyn Write, conn: Option<&mut Conn
         }
         _ => {}
     }
+    fnc_core::crash::record_query(&a.full_search());
+    if a.debug_panic {
+        panic!("-debug-panic: deliberate panic in fes (crash report test)");
+    }
     let mut owned;
     let conn = match conn {
         Some(c) => c,
@@ -441,6 +445,19 @@ pub fn run(raw: Vec<String>, env: &Env, out: &mut dyn Write, err: &mut dyn Write
             return EXIT_ARGS;
         }
     };
+    // Crash reports go to the logs folder of the instance searched (REL-02).
+    if fnc_core::crash::dir().is_some() {
+        if !a.instance.is_empty() {
+            fnc_core::crash::set_dir(fnc_core::paths::DataPaths::resolve(&a.instance).logs_dir());
+        }
+        let local = a.offline || !a.file_lists.is_empty();
+        let state = format!(
+            "fes {} instance '{}'",
+            if local { "in-process index (-offline / -filelist) of" } else { "client of the running" },
+            a.instance
+        );
+        fnc_core::crash::set_state_provider(Arc::new(move || state.clone()));
+    }
     if a.clear_settings
         && let Some(f) = &env.settings_file
     {

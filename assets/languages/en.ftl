@@ -15,7 +15,14 @@ index-building = Indexing { $volume }: { $done } entries
 index-meta = Reading sizes and dates { $percent }%
 index-ready = { $count } entries indexed in { $seconds } s
 index-error = Index error: { $message }
-index-db-rebuild = The index database could not be read and is being rebuilt ({ $message }).
+upgrade-rebuild-old = { $file } uses an older format (version { $version }) that this version cannot read; it was kept as { $backup } and is being rebuilt.
+upgrade-rebuild-future = { $file } was written by a newer version of Fennec (format { $version }); it was kept as { $backup } and is being rebuilt.
+upgrade-rebuild-corrupt = { $file } is damaged; it was kept as { $backup } and is being rebuilt.
+upgrade-data-old = { $file } uses an older format (version { $version }); what could be read was loaded and the original was kept as { $backup }.
+upgrade-data-future = { $file } was written by a newer version of Fennec (format { $version }); what this version understands was loaded and the original was kept as { $backup }.
+upgrade-data-corrupt = { $file } could not be read; it was kept as { $backup } and defaults are used.
+upgrade-backup-failed = { $file } could not be read and could not be backed up ({ $message }).
+upgrade-settings-reset = Some settings could not be read and were reset to their defaults ({ $keys }); the original file was kept as { $backup }.
 index-volume-rebuild = The change journal of { $volume } changed; rebuilding that volume.
 index-volume-added = { $volume } was added to the index.
 index-watch-error = Monitoring { $volume } stopped: { $message }
@@ -806,7 +813,15 @@ options-page-etp = ETP/FTP Server
 options-desc-etp = Lets Everything clients and FTP clients search and browse this index (ETP = FTP with the Everything extension), and settings for Tools → Connect to ETP Server. User names and passwords are sent as plain text.
 status-etp = ETP/FTP: { $url }
 status-etp-failed = ETP/FTP server: { $error }
+status-portable-fallback = Portable folder is read-only: data is kept in your user profile
+status-portable-fallback-tip = { $refused } cannot be written, so settings, the index and logs are kept in { $path }. Move Fennec to a writable folder to keep the data next to it.
 status-etp-remote = ETP: { $host } ({ $total } results)
+status-crash-prompt = Fennec did not exit normally last time — view log
+status-crash-tooltip = { $count ->
+    [one] One crash report
+   *[other] { $count } crash reports
+} in { $dir }. Click to open the folder; right-click to dismiss.
+msg-crash-open-failed = Cannot open the logs folder: { $error }
 msg-etp-bad-bind = Invalid ETP/FTP bind address: { $value }
 msg-etp-no-password = a password is required (Options → ETP/FTP Server)
 msg-etp-bad-port = Invalid port number
@@ -832,3 +847,12 @@ etp-link-share = \\Server\C (Windows shares)
 etp-link-admin-share = \\Server\C$ (administrative shares)
 etp-plain-text-warning = The user name and password are sent as plain text.
 etp-connect = Connect
+
+# Sorting by the file-reading columns (REL-06)
+dialog-read-files-title = Sort by file contents
+dialog-read-files = { $count ->
+    [one] 1 file needs to be read (about { $secs } s). Continue?
+   *[other] { $count } files need to be read (about { $secs } s). Continue?
+}
+dialog-continue = Continue
+status-reading-files = Reading { $done } / { $total }

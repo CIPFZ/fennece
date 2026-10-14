@@ -14,9 +14,9 @@ use fnc_index::Meta;
 use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_ID_INFO, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileBasicInfo, FileIdBothDirectoryInfo,
-    FileIdBothDirectoryRestartInfo, FileIdInfo, FileIdType, FileStandardInfo, GetDriveTypeW,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_ID_INFO, FILE_LIST_DIRECTORY,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileBasicInfo,
+    FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, FileIdInfo, FileIdType, FileStandardInfo, GetDriveTypeW,
     GetFileInformationByHandle, GetFileInformationByHandleEx, GetLogicalDrives, GetVolumeInformationW,
     GetVolumeNameForVolumeMountPointW, OPEN_EXISTING, OpenFileById,
 };
@@ -537,13 +537,16 @@ const _: () = {
 
 /// Lists the children of folder `dir` (full path) with their file ids, calling
 /// `f(name, meta, file_id)` for each (`GetFileInformationByHandleEx`,
-/// `FileIdBothDirectoryInfo`, 64 KiB per call).
+/// `FileIdBothDirectoryInfo`, 64 KiB per call). A junction, directory symlink or mount
+/// point is opened itself, not followed: its target's children are not its own (they
+/// are indexed where they live, or on their own volume).
 pub fn list_dir_ids(dir: &str, mut f: impl FnMut(&[u16], Meta, u64)) -> io::Result<()> {
     // `\\?\` lifts the MAX_PATH limit for drive paths.
     let path = if dir.starts_with("\\\\") { dir.to_string() } else { format!("\\\\?\\{dir}") };
     let path = wide(&path);
     // SAFETY: `path` is NUL-terminated and outlives the call; BACKUP_SEMANTICS opens a
-    // directory handle; no security attributes or template.
+    // directory handle, OPEN_REPARSE_POINT the reparse point itself; no security
+    // attributes or template.
     let h = unsafe {
         CreateFileW(
             PCWSTR(path.as_ptr()),
@@ -551,7 +554,7 @@ pub fn list_dir_ids(dir: &str, mut f: impl FnMut(&[u16], Meta, u64)) -> io::Resu
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             None,
             OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
             None,
         )
     }

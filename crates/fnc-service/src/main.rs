@@ -34,6 +34,8 @@ struct Args {
     console: bool,
     instance: String,
     help: bool,
+    /// `-debug-panic` (hidden): panic after start-up to test the crash report (REL-02).
+    debug_panic: bool,
 }
 
 fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
@@ -48,6 +50,7 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
             "console" => a.console = true,
             "instance" => a.instance = it.next().ok_or("-instance needs a name")?,
             "help" | "h" | "?" => a.help = true,
+            "debug-panic" => a.debug_panic = true,
             _ => return Err(format!("unknown argument {s}")),
         }
     }
@@ -60,6 +63,9 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<Args, String> {
 const USAGE: &str = "fennec-service -install | -uninstall | -start | -stop | -console  [-instance <name>]";
 
 fn main() -> ExitCode {
+    // Crash reports next to the service log (REL-02).
+    fnc_core::crash::install("fennec-service", logs_dir(), fnc_platform::os::version());
+    fnc_platform::os::install_exception_filter();
     let args = match parse(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
@@ -71,7 +77,22 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    run(args)
+    let code = run(args);
+    fnc_core::crash::mark_survived();
+    code
+}
+
+/// `%ProgramData%\Fennec\logs` (the service runs as LocalSystem); off Windows the
+/// default data folder's (the binary only prints that it is Windows-only there).
+fn logs_dir() -> std::path::PathBuf {
+    if cfg!(windows) {
+        std::env::var_os("ProgramData")
+            .map_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"), std::path::PathBuf::from)
+            .join("Fennec")
+            .join("logs")
+    } else {
+        fnc_core::paths::DataPaths::resolve("").logs_dir()
+    }
 }
 
 #[cfg(windows)]
@@ -84,6 +105,10 @@ fn run(args: Args) -> ExitCode {
         service::start_stop(&args.instance, args.start)
     } else if args.console {
         let _log = init_logging(true);
+        if args.debug_panic {
+            tracing::info!("-debug-panic: panicking for the crash report test");
+            panic!("-debug-panic: deliberate panic in fennec-service (crash report test)");
+        }
         server::serve(&args.instance, &fnc_platform::StopFlag::new()).map_err(|e| e.to_string())
     } else {
         let _log = init_logging(false);
@@ -100,11 +125,7 @@ fn run(args: Args) -> ExitCode {
 
 #[cfg(windows)]
 fn init_logging(console: bool) -> Option<fnc_core::logging::LogGuard> {
-    // `%ProgramData%\Fennec\logs` (the service runs as LocalSystem).
-    let dir = std::env::var_os("ProgramData")
-        .map_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"), std::path::PathBuf::from)
-        .join("Fennec")
-        .join("logs");
+    let dir = logs_dir();
     fnc_core::logging::init(&fnc_core::logging::LogConfig {
         dir: Some(&dir),
         prefix: "fennec-service",
@@ -138,5 +159,6 @@ mod tests {
         assert!(p(&["-instance"]).is_err());
         assert!(p(&["-instance", "a b"]).is_err());
         assert!(p(&["-bogus"]).is_err());
+        assert!(p(&["-console", "-debug-panic"]).unwrap().debug_panic);
     }
 }

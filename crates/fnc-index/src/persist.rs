@@ -14,12 +14,20 @@
 //!
 //! Deviation from ADR-003: the file is read into memory instead of `mmap`ed — every
 //! column is copied into a mutable `Vec` anyway and `fnc-index` forbids `unsafe`.
+//!
+//! Versions (ADR-038): files of layout `OLDEST_READABLE..=VERSION` are decoded (one
+//! decoder per layout); [`load_or_recover`] moves an older, newer or damaged file to
+//! `index.fnx.v<N>.bak` / `index.fnx.corrupt.bak` so the caller rebuilds, and [`save`]
+//! never replaces a newer file without that backup. Header flags are additive: a reader
+//! ignores flags it does not know (`FLAG_PINYIN_RANKS` appeared after 0.1.0 in layout 1;
+//! a 0.1.0 file has it clear, i.e. code-point ranks, which are rebuilt under pinyin).
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use fnc_core::upgrade::{Recovery, Unreadable, check_version};
 use fnc_core::{EntryFlags, EntryId, FileTime, FoldArena, NameArena, VolumeId};
 use xxhash_rust::xxh3::{Xxh3, xxh3_64};
 
@@ -31,8 +39,11 @@ use crate::volume::{Volume, VolumeInfo, VolumeKind};
 /// File magic.
 pub const MAGIC: [u8; 4] = *b"FNX1";
 const END_MAGIC: [u8; 8] = *b"FNX1END\0";
-/// Layout version; bump on any change.
+/// Layout version; bump on any change (and add a decoder for the old one, or raise
+/// [`OLDEST_READABLE`]).
 pub const VERSION: u32 = 1;
+/// Oldest layout [`decode`] still reads. Layout 1 is the only one so far (0.1.0, 0.2.0).
+pub const OLDEST_READABLE: u32 = 1;
 const HEADER_LEN: usize = 24;
 const DIR_ENTRY_LEN: usize = 32;
 const FOOTER_TAIL_LEN: usize = 24;
@@ -64,6 +75,20 @@ pub enum PersistError {
     /// Structurally invalid content.
     #[error("index database is corrupt: {0}")]
     Corrupt(&'static str),
+}
+
+impl PersistError {
+    /// How the file is set aside: an unsupported version (older or newer than this
+    /// build reads) or damage. `None` for a missing file.
+    pub fn unreadable(&self) -> Option<Unreadable> {
+        match self {
+            PersistError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => None,
+            PersistError::Version(v) => {
+                Some(check_version(*v, OLDEST_READABLE, VERSION).err().unwrap_or(Unreadable::Corrupt))
+            }
+            _ => Some(Unreadable::Corrupt),
+        }
+    }
 }
 
 type PResult<T> = std::result::Result<T, PersistError>;
@@ -253,7 +278,8 @@ fn encode_extras(store: &IndexStore) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
 }
 
 /// Saves `store` to `path` atomically: writes `path.tmp`, flushes it to disk, keeps
-/// the previous file as `path.bak` and renames the new file into place.
+/// the previous file as `path.bak` and renames the new file into place. A previous file
+/// of a newer layout is moved to `path.v<N>.bak` instead (never replaced, ADR-038).
 pub fn save(store: &IndexStore, path: &Path) -> PResult<SaveStats> {
     let tmp = path.with_extension("fnx.tmp");
     let io = |p: &Path| {
@@ -276,6 +302,7 @@ pub fn save(store: &IndexStore, path: &Path) -> PResult<SaveStats> {
     let file = w.out.into_inner().map_err(|e| PersistError::Io { path: tmp.clone(), source: e.into_error() })?;
     file.sync_all().map_err(io(&tmp))?;
     drop(file);
+    fnc_core::upgrade::protect_future(path, MAGIC, VERSION).map_err(io(path))?;
     if path.exists() {
         let bak = path.with_extension("fnx.bak");
         std::fs::rename(path, &bak).map_err(io(&bak))?;
@@ -406,15 +433,17 @@ fn col<T, const N: usize>(seg: &[u8], dec: impl Fn([u8; N]) -> T) -> PResult<Vec
     Ok(chunks.iter().map(|c| dec(*c)).collect())
 }
 
-/// Reads the directory and verifies every checksum.
-fn segments(buf: &[u8]) -> PResult<HashMap<[u8; 4], &[u8]>> {
+/// Segments by tag.
+type Segments<'a> = HashMap<[u8; 4], &'a [u8]>;
+
+/// Checks the header and returns the layout version; reads the directory and verifies
+/// every checksum.
+fn segments(buf: &[u8]) -> PResult<(u32, Segments<'_>)> {
     if buf.len() < HEADER_LEN + FOOTER_TAIL_LEN || buf[..4] != MAGIC {
         return Err(PersistError::BadMagic);
     }
     let version = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-    if version != VERSION {
-        return Err(PersistError::Version(version));
-    }
+    check_version(version, OLDEST_READABLE, VERSION).map_err(|_| PersistError::Version(version))?;
     let tail = &buf[buf.len() - FOOTER_TAIL_LEN..];
     if tail[16..] != END_MAGIC {
         return Err(PersistError::Corrupt("footer"));
@@ -446,7 +475,7 @@ fn segments(buf: &[u8]) -> PResult<HashMap<[u8; 4], &[u8]>> {
         }
         out.insert(tag, seg);
     }
-    Ok(out)
+    Ok((version, out))
 }
 
 /// Loads a database written by [`save`]. Any inconsistency is an error (the caller
@@ -456,9 +485,40 @@ pub fn load(path: &Path) -> PResult<IndexStore> {
     decode(&buf)
 }
 
+/// What [`load_or_recover`] found.
+pub enum Loaded {
+    /// No database yet.
+    Missing,
+    /// The database.
+    Index(Box<IndexStore>),
+    /// The file was not usable and was set aside (or could not be): rebuild.
+    Rebuild(Recovery, PersistError),
+}
+
+/// [`load`] for start-up: a file that cannot be used — older layout than
+/// [`OLDEST_READABLE`], newer than [`VERSION`], damaged — is moved to
+/// `index.fnx.v<N>.bak` / `index.fnx.corrupt.bak` (never deleted) and the caller rebuilds
+/// (and tells the user what [`Recovery`] says).
+pub fn load_or_recover(path: &Path) -> Loaded {
+    match load(path) {
+        Ok(s) => Loaded::Index(Box::new(s)),
+        Err(e) => match e.unreadable() {
+            None => Loaded::Missing,
+            Some(why) => Loaded::Rebuild(Recovery::quarantined(path, why), e),
+        },
+    }
+}
+
 /// [`load`] from a buffer.
 pub fn decode(buf: &[u8]) -> PResult<IndexStore> {
-    let segs = segments(buf)?;
+    let (version, segs) = segments(buf)?;
+    // One decoder per readable layout; layout 1 is the only one so far.
+    debug_assert_eq!(version, VERSION);
+    decode_v1(buf, &segs)
+}
+
+/// Layout 1.
+fn decode_v1(buf: &[u8], segs: &Segments<'_>) -> PResult<IndexStore> {
     let flags = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
     let seg = |t: &[u8; 4]| segs.get(t).copied().ok_or(PersistError::Corrupt("missing segment"));
 
@@ -740,6 +800,78 @@ mod tests {
         let mut v2 = good.clone();
         v2[4] = 9;
         assert!(matches!(decode(&v2), Err(PersistError::Version(9))));
+    }
+
+    /// Sets the header version of a saved file (the checksums do not cover the header).
+    fn with_version(good: &[u8], v: u32) -> Vec<u8> {
+        let mut b = good.to_vec();
+        b[4..8].copy_from_slice(&v.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn header_cases_current_old_corrupt_future() {
+        let s = sample();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.fnx");
+        assert!(matches!(load_or_recover(&path), Loaded::Missing));
+        save(&s, &path).unwrap();
+        let good = std::fs::read(&path).unwrap();
+        // Current layout: loaded, nothing set aside.
+        match load_or_recover(&path) {
+            Loaded::Index(l) => assert_eq!(dump(&l), dump(&s)),
+            _ => panic!("current layout not loaded"),
+        }
+        assert!(path.exists());
+        let cases: [(Vec<u8>, Unreadable, &str); 3] = [
+            (with_version(&good, OLDEST_READABLE - 1), Unreadable::Old(OLDEST_READABLE - 1), "index.fnx.v0.bak"),
+            (with_version(&good, VERSION + 1), Unreadable::Future(VERSION + 1), "index.fnx.v2.bak"),
+            (
+                {
+                    let mut b = good.clone();
+                    let mid = b.len() / 2;
+                    b[mid] ^= 0xFF;
+                    b
+                },
+                Unreadable::Corrupt,
+                "index.fnx.corrupt.bak",
+            ),
+        ];
+        for (bytes, why, bak) in cases {
+            std::fs::write(&path, &bytes).unwrap();
+            match load_or_recover(&path) {
+                Loaded::Rebuild(r, _) => {
+                    assert_eq!(r.why, why);
+                    assert_eq!(r.backup.unwrap(), dir.path().join(bak));
+                }
+                _ => panic!("{why:?}: not set aside"),
+            }
+            assert!(!path.exists(), "{why:?}: set aside, not left for the next save to overwrite");
+            assert_eq!(std::fs::read(dir.path().join(bak)).unwrap(), bytes, "{why:?}: original kept byte for byte");
+        }
+        // A rebuild saved later never replaces a newer file it did not load (`-reindex`).
+        let future = with_version(&good, 7);
+        std::fs::write(&path, &future).unwrap();
+        save(&s, &path).unwrap();
+        assert_eq!(std::fs::read(dir.path().join("index.fnx.v7.bak")).unwrap(), future);
+        assert!(load(&path).is_ok());
+        assert!(!dir.path().join("index.fnx.bak").exists(), "the newer file went to .v7.bak, not the rolling .bak");
+    }
+
+    #[test]
+    fn loads_a_database_written_by_0_1_0() {
+        // `tests/fixtures/0.1.0/index.fnx`: written by the 0.1.0 sources (layout 1, no
+        // pinyin-ranks flag): loads as it is, ids, journal position and run counts kept.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/0.1.0/index.fnx");
+        let l = load(&path).unwrap();
+        let vol = &l.volumes()[0];
+        assert_eq!((vol.info.root_path.as_str(), vol.usn_journal_id, vol.next_usn), ("C:\\", 77, 123_456));
+        let photo = l.resolve(EntryRef::Frn(VolumeId(0), 12)).unwrap();
+        assert_eq!(l.run_info(photo).count, 2);
+        let mut p = String::new();
+        l.full_path(l.resolve(EntryRef::Frn(VolumeId(0), 11)).unwrap(), &mut p);
+        assert_eq!(p, "C:\\Users\\季度报告.docx");
+        assert_eq!(l.live_count(), 7);
     }
 
     #[test]

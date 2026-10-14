@@ -7,15 +7,19 @@
 //!
 //! Keys computed per result run before the comparison sort, in parallel: property
 //! columns (store values), custom formula columns ([`SortKey::Custom`], the `eval:`
-//! language) and the type description ([`SortColumn::Type`], one lookup per extension).
+//! language), the type description ([`SortColumn::Type`], one lookup per extension) and
+//! the file-reading columns ([`SortKey::File`]: ranks of the values cached in the
+//! [`FileValueCache`]; the app reads missing values before it asks for such a sort).
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use fnc_core::EntryId;
 use fnc_core::settings::FoldersFirst;
 use fnc_index::IndexStore;
 use fnc_index::ext::{OVERFLOW_EXT, ext_of};
+use fnc_props::filecache::{FileField, FileValueCache, file_key};
 use fnc_props::{PropertyId, PropertyStore};
 use fnc_query::formula::{Formula, Val};
 use rayon::prelude::*;
@@ -117,6 +121,10 @@ pub struct SortSpec {
     /// text naturally; errors and empty values last in both directions) and its
     /// `SortColumn` is ignored.
     pub custom: [Option<u8>; 3],
+    /// File-reading columns: when `files[k]` is set, key `k` sorts by the cached value of
+    /// that field ([`SortExt::files`]; natural, case-insensitive; entries without a value
+    /// first, like unknown property values) and its `SortColumn` is ignored.
+    pub files: [Option<FileField>; 3],
 }
 
 impl Default for SortSpec {
@@ -128,6 +136,7 @@ impl Default for SortSpec {
             then: [None; 2],
             props: [None; 3],
             custom: [None; 3],
+            files: [None; 3],
         }
     }
 }
@@ -141,12 +150,23 @@ pub enum SortKey {
     Property(PropertyId),
     /// Custom formula column `i` (0-based index into `SearchOptions::formulas`).
     Custom(u8),
+    /// A column whose values are read from the files (link target, signature, recycle
+    /// bin original location), sorted by the cached values.
+    File(FileField),
 }
 
 impl SortSpec {
     /// Single-key sort.
     pub fn by(column: SortColumn, ascending: bool, folders_first: FoldersFirst) -> Self {
-        Self { column, ascending, folders_first, then: [None; 2], props: [None; 3], custom: [None; 3] }
+        Self {
+            column,
+            ascending,
+            folders_first,
+            then: [None; 2],
+            props: [None; 3],
+            custom: [None; 3],
+            files: [None; 3],
+        }
     }
 
     /// Single-key sort by a property column.
@@ -163,21 +183,30 @@ impl SortSpec {
         s
     }
 
+    /// Single-key sort by a file-reading column.
+    pub fn by_file(f: FileField, ascending: bool, folders_first: FoldersFirst) -> Self {
+        let mut s = Self::by(SortColumn::Name, ascending, folders_first);
+        s.files[0] = Some(f);
+        s
+    }
+
     /// Single-key sort by any key.
     pub fn by_key(key: SortKey, ascending: bool, folders_first: FoldersFirst) -> Self {
         match key {
             SortKey::Column(c) => Self::by(c, ascending, folders_first),
             SortKey::Property(p) => Self::by_property(p, ascending, folders_first),
             SortKey::Custom(i) => Self::by_custom(i, ascending, folders_first),
+            SortKey::File(f) => Self::by_file(f, ascending, folders_first),
         }
     }
 
     /// Key `k` (0 = primary) as set in the spec.
     fn key_at(&self, k: usize, col: SortColumn) -> SortKey {
-        match (self.props[k], self.custom[k]) {
-            (Some(p), _) => SortKey::Property(p),
-            (None, Some(i)) => SortKey::Custom(i),
-            (None, None) => SortKey::Column(col),
+        match (self.props[k], self.custom[k], self.files[k]) {
+            (Some(p), _, _) => SortKey::Property(p),
+            (None, Some(i), _) => SortKey::Custom(i),
+            (None, None, Some(f)) => SortKey::File(f),
+            (None, None, None) => SortKey::Column(col),
         }
     }
 
@@ -207,14 +236,16 @@ impl SortSpec {
             }
         }
         let k = self.then.iter().position(Option::is_none).unwrap_or(1);
-        let (col, prop, custom) = match key {
-            SortKey::Column(c) => (c, None, None),
-            SortKey::Property(p) => (SortColumn::Name, Some(p), None),
-            SortKey::Custom(i) => (SortColumn::Name, None, Some(i)),
+        let (col, prop, custom, file) = match key {
+            SortKey::Column(c) => (c, None, None, None),
+            SortKey::Property(p) => (SortColumn::Name, Some(p), None, None),
+            SortKey::Custom(i) => (SortColumn::Name, None, Some(i), None),
+            SortKey::File(f) => (SortColumn::Name, None, None, Some(f)),
         };
         self.then[k] = Some((col, ascending));
         self.props[k + 1] = prop;
         self.custom[k + 1] = custom;
+        self.files[k + 1] = file;
     }
 
     /// Adds (or flips, if present) a secondary property key; keeps at most three keys.
@@ -239,7 +270,15 @@ impl SortSpec {
 
     /// `true` if key `k` is a plain column (`col`) rather than a property/custom key.
     fn is_column(&self, k: usize) -> bool {
-        self.props[k].is_none() && self.custom[k].is_none()
+        self.props[k].is_none() && self.custom[k].is_none() && self.files[k].is_none()
+    }
+
+    /// File-reading fields among the keys.
+    pub fn file_fields(&self) -> impl Iterator<Item = FileField> + '_ {
+        self.sort_keys().filter_map(|(k, _)| match k {
+            SortKey::File(f) => Some(f),
+            _ => None,
+        })
     }
 }
 
@@ -286,7 +325,7 @@ pub fn sort_ids_ext(
     cancel: &CancelToken,
     props: Option<&PropertyStore>,
 ) -> Result<(), Cancelled> {
-    sort_ids_with(ids, spec, s, caches, cancel, SortExt { props, formulas: &[] })
+    sort_ids_with(ids, spec, s, caches, cancel, SortExt { props, formulas: &[], files: None })
 }
 
 /// Data for the computed sort keys.
@@ -296,6 +335,8 @@ pub struct SortExt<'a> {
     pub props: Option<&'a PropertyStore>,
     /// Custom column formulas by index (`None` / missing = empty values).
     pub formulas: &'a [Option<Shared<Formula>>],
+    /// Values read from files ([`SortKey::File`]; `None` = all without a value).
+    pub files: Option<&'a FileValueCache>,
 }
 
 /// Value of a custom column as a sort key: numbers < dates < text, then errors and empty.
@@ -378,6 +419,70 @@ fn formula_ranks(
         }
     }
     rank
+}
+
+/// Entries looked up in the file value cache per lock.
+const FILE_KEY_CHUNK: usize = 4096;
+
+/// Sort keys (by entry index) of the cached values of `f` for `ids`: dense ranks of the
+/// values in natural, case-insensitive order; entries without a value (not read, nothing
+/// to show, or not applicable) get `i64::MIN` (first ascending, like unknown property
+/// values).
+fn file_keys(
+    ids: &[EntryId],
+    s: &IndexStore,
+    cache: Option<&FileValueCache>,
+    f: FileField,
+    cancel: &CancelToken,
+) -> Vec<i64> {
+    let mut out = vec![i64::MIN; s.len()];
+    let Some(cache) = cache else { return out };
+    let mut found: Vec<(u32, Arc<str>)> = Vec::new();
+    let mut keys = Vec::with_capacity(FILE_KEY_CHUNK);
+    let mut buf = Vec::new();
+    for chunk in ids.chunks(FILE_KEY_CHUNK) {
+        if cancel.is_cancelled() {
+            return out;
+        }
+        keys.clear();
+        for &id in chunk {
+            if crate::files::reads_file(s, id, f)
+                && let Some(k) = file_key(s, id, &mut buf)
+            {
+                keys.push((id.0, k));
+            }
+        }
+        // One short lock per chunk: the UI thread reads the same cache.
+        cache.lookup_many(&keys, f, &mut found);
+    }
+    let mut slot_of: HashMap<Arc<str>, usize> = HashMap::new();
+    let mut distinct: Vec<(Vec<u8>, Arc<str>)> = Vec::new();
+    let mut slots: Vec<(u32, usize)> = Vec::with_capacity(found.len());
+    for (id, v) in found {
+        let n = match slot_of.get(&v) {
+            Some(&n) => n,
+            None => {
+                distinct.push((fnc_core::fold::fold_str(&v).into_bytes(), v.clone()));
+                slot_of.insert(v, distinct.len() - 1);
+                distinct.len() - 1
+            }
+        };
+        slots.push((id, n));
+    }
+    let mut order: Vec<usize> = (0..distinct.len()).collect();
+    order.sort_by(|&a, &b| {
+        fnc_core::natsort::natural_cmp(&distinct[a].0, &distinct[b].0).then_with(|| distinct[a].1.cmp(&distinct[b].1))
+    });
+    let mut rank = vec![0i64; distinct.len()];
+    for (r, &i) in order.iter().enumerate() {
+        rank[i] = r as i64;
+    }
+    for (id, n) in slots {
+        if let Some(o) = out.get_mut(id as usize) {
+            *o = rank[n];
+        }
+    }
+    out
 }
 
 /// Ranks of the type descriptions of `ids` (natural order of the folded descriptions;
@@ -468,28 +573,35 @@ pub fn sort_ids_with(
     }
     let props = ext.props;
     // Property keys: dense key columns for the results (unknown = i64::MIN, first).
-    let prop_keys: Vec<Option<Vec<i64>>> = if spec.props.iter().any(Option::is_some) {
-        let st = props.filter(|p| p.instance() == s.instance());
-        spec.props
-            .iter()
-            .map(|p| {
-                p.map(|p| {
-                    let ranks = st.map(|st| st.text_ranks(p)).unwrap_or_default();
-                    let mut v = vec![i64::MIN; s.len()];
-                    if let Some(st) = st {
-                        for &id in ids.iter() {
-                            if let Some(slot) = v.get_mut(id.idx()) {
-                                *slot = st.sort_key(id, p, &ranks);
+    let prop_keys: Vec<Option<Vec<i64>>> =
+        if spec.props.iter().any(Option::is_some) || spec.files.iter().any(Option::is_some) {
+            let st = props.filter(|p| p.instance() == s.instance());
+            spec.props
+                .iter()
+                .zip(spec.files)
+                .map(|(p, f)| {
+                    if p.is_none()
+                        && let Some(f) = f
+                    {
+                        return Some(file_keys(ids, s, ext.files, f, cancel));
+                    }
+                    p.map(|p| {
+                        let ranks = st.map(|st| st.text_ranks(p)).unwrap_or_default();
+                        let mut v = vec![i64::MIN; s.len()];
+                        if let Some(st) = st {
+                            for &id in ids.iter() {
+                                if let Some(slot) = v.get_mut(id.idx()) {
+                                    *slot = st.sort_key(id, p, &ranks);
+                                }
                             }
                         }
-                    }
-                    v
+                        v
+                    })
                 })
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+                .collect()
+        } else {
+            Vec::new()
+        };
     // Custom formula keys: ranks of the values computed in parallel.
     let custom_keys: Vec<Option<Vec<u32>>> = if spec.custom.iter().any(Option::is_some) {
         let st = props.filter(|p| p.instance() == s.instance());
@@ -694,7 +806,15 @@ mod tests {
     ) -> Vec<String> {
         let mut ids: Vec<EntryId> =
             (0..s.len() as u32).map(EntryId).filter(|&i| s.is_live(i) && s.parent(i).is_some()).collect();
-        sort_ids_with(&mut ids, spec, s, caches, &CancelToken::default(), SortExt { props: None, formulas }).unwrap();
+        sort_ids_with(
+            &mut ids,
+            spec,
+            s,
+            caches,
+            &CancelToken::default(),
+            SortExt { props: None, formulas, files: None },
+        )
+        .unwrap();
         ids.iter().map(|&i| s.name_string(i)).collect()
     }
 
@@ -742,6 +862,58 @@ mod tests {
         assert_eq!(two.sort_keys().nth(1), Some((SortKey::Column(SortColumn::Type), true)));
         assert_eq!(SortColumn::parse("type"), Some(SortColumn::Type));
         assert_eq!(SortColumn::parse("extension"), Some(SortColumn::Extension));
+    }
+
+    #[test]
+    fn file_value_columns_sort_by_the_cache() {
+        let s = typed_store();
+        let caches = Caches::new();
+        let cache = FileValueCache::new();
+        let id = |n: &str| (0..s.len() as u32).map(EntryId).find(|&i| s.name_string(i) == n).unwrap();
+        let mut buf = Vec::new();
+        let put = |n: &str, v: &str, buf: &mut Vec<u8>| {
+            cache.insert(file_key(&s, id(n), buf).unwrap(), FileField::Signature, v);
+        };
+        put("b.zip", "zip", &mut buf);
+        put("photo.jpg", "JPEG", &mut buf);
+        put("c.log", "jpeg", &mut buf);
+        put("a.txt", "", &mut buf);
+        // A value cached for a folder is never used (folders have no signature).
+        cache.insert(file_key(&s, id("sub"), &mut buf).unwrap(), FileField::Signature, "aaa");
+        let sorted = |spec: &SortSpec, files: Option<&FileValueCache>| {
+            let mut ids: Vec<EntryId> =
+                (0..s.len() as u32).map(EntryId).filter(|&i| s.is_live(i) && s.parent(i).is_some()).collect();
+            let sx = SortExt { props: None, formulas: &[], files };
+            sort_ids_with(&mut ids, spec, &s, &caches, &CancelToken::default(), sx).unwrap();
+            ids.iter().map(|&i| s.name_string(i)).collect::<Vec<_>>()
+        };
+        let never = FoldersFirst::Never;
+        // Without a value (not read, empty, not applicable) first, then natural and
+        // case-insensitive order (ties by the exact text), ties by name.
+        let asc = SortSpec::by_file(FileField::Signature, true, never);
+        assert_eq!(sorted(&asc, Some(&cache)), ["a.txt", "d", "README", "sub", "photo.jpg", "c.log", "b.zip"]);
+        let desc = SortSpec::by_file(FileField::Signature, false, never);
+        assert_eq!(sorted(&desc, Some(&cache)), ["b.zip", "c.log", "photo.jpg", "sub", "README", "d", "a.txt"]);
+        // Without a cache: name order.
+        assert_eq!(sorted(&asc, None), sorted(&SortSpec::by(SortColumn::Name, true, never), None));
+        // Other fields have no values here.
+        let link = SortSpec::by_file(FileField::LinkTarget, true, never);
+        assert_eq!(sorted(&link, Some(&cache)), sorted(&SortSpec::by(SortColumn::Name, true, never), None));
+        // As a secondary key, and keys round-trip through `sort_keys`.
+        let mut two = SortSpec::by(SortColumn::Size, true, never);
+        two.push_sort_key(SortKey::File(FileField::Signature), false);
+        assert_eq!(two.sort_keys().nth(1), Some((SortKey::File(FileField::Signature), false)));
+        assert_eq!(two.file_fields().collect::<Vec<_>>(), [FileField::Signature]);
+        assert_eq!(
+            SortSpec::by_key(SortKey::File(FileField::RecycleOrigin), true, never).files[0],
+            Some(FileField::RecycleOrigin)
+        );
+        let mut three = SortSpec::by(SortColumn::Size, true, never);
+        three.push_key(SortColumn::Extension, true);
+        three.push_sort_key(SortKey::File(FileField::LinkTarget), true);
+        assert_eq!(three.files, [None, None, Some(FileField::LinkTarget)]);
+        three.push_key(SortColumn::DateModified, true);
+        assert_eq!(three.files, [None; 3], "replaced key clears its file slot");
     }
 
     #[test]

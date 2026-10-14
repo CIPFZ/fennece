@@ -277,6 +277,8 @@ SVC ..> MFT : 代读 MFT/USN 并通过管道转发
 
 - 安装模式：`%APPDATA%\Fennec\{settings.toml, index.fnx, content.fnx, vectors/, logs/}`。
 - 便携模式：可执行文件同目录存在 `portable` 空文件时，所有数据写入同目录 `data/`。
+- 便携目录不可写（如解压到 `C:\Program Files` 下且以普通用户运行，或 ACL 拒绝写入）：启动时以探测文件检测，数据改写到 `%LOCALAPPDATA%\Fennec\portable`（多实例为其下 `instances/<name>`），状态栏常驻警告并在悬停提示中给出被拒绝的目录；不静默退出、不丢数据。程序目录本身从不被写入。（0.2.0，REL-07）
+- 卸载（MSI）：删除程序文件、服务（先停止）、HKLM 右键菜单键、HKLM `Run` 值、开始菜单快捷方式与 `%ProgramData%\Fennec`（服务日志）；`%APPDATA%\Fennec` 默认保留，维护界面"删除"页勾选或 `msiexec /x … REMOVEUSERDATA=1` 时删除卸载者本人的数据（其他用户、便携数据、`-install-*` 命令行开关写入的 HKCU 项不动）。
 - 多实例：`-instance <name>` 使用独立数据目录与互斥量。
 
 ### 6.5 兼容性承诺
@@ -450,7 +452,7 @@ Volume {
 
 - 启动 ≤ 2 s 可搜索：采用自描述、按列分段的二进制文件，`memmap2` 映射后直接使用（零拷贝）；需要可变的列在加载时拷贝。
 - 原子写：写入 `index.fnx.tmp` 后 `rename`；保留上一个版本 `index.fnx.bak`。
-- 校验：每段 xxh3 校验和；版本号；损坏时自动重建并保留日志。
+- 校验：每段 xxh3 校验和；版本号；损坏时自动重建并保留日志。版本号可读则加载，旧版不可读/未来版本/损坏时原文件改名为 `index.fnx.v<N>.bak` / `index.fnx.corrupt.bak` 后重建并在状态栏提示（ADR-038，其他存储同样处理）。
 
 ### 5.2 布局
 
@@ -949,7 +951,7 @@ enum Value { Text(String), List(Vec<Value>) /* ; */, Range(Box<Value>, Box<Value
 | 文件夹索引条目的文件号 | — | 文件夹索引的条目号由"父条目号 + 折叠名称"的哈希得出（62 位，同一文件夹内冲突线性探测，文件夹号全局唯一），每次遍历与实时新建得到同一值，`props.fnx`/`content.fnx` 重启后直接重新挂接；极少数跨文件夹哈希冲突的文件获得新号并在后台重新提取 | 无原生文件号 |
 | 文件夹索引与卷索引重叠 | — | 位于已索引 NTFS/ReFS 卷上的文件夹、以及位于另一个已配置文件夹内的文件夹不再单独遍历（否则每个条目出现两次），日志记一条 | — |
 | 属性列标题与值 | 本地化 | 全部 305 个属性的列标题（按资源管理器各语言列名翻译）、是/否、像素、星级随界面语言；其他单位用国际缩写（kbps、Hz、mm、f/2.8、fps）；列选择器的属性子菜单顶部有筛选框（按标题或搜索名）| — |
-| 未索引属性列 / 读文件的列 | 可见行按需读取 | 属性库未覆盖的条目（属性未索引、不在范围内或尚未提取）在可见行上由后台线程读取（`cells::LazyCells`：最新请求优先、队列 256、缓存 2 万项、按修改时间与大小失效），UI 线程不读盘；另有"链接目标""文件签名""回收站原位置"三列（同一机制，不可排序）；云占位文件不读取 | 按这些列排序只用属性库中的值 |
+| 未索引属性列 / 读文件的列 | 可见行按需读取 | 属性库未覆盖的条目（属性未索引、不在范围内或尚未提取）在可见行上由后台线程读取（`cells::LazyCells`：最新请求优先、队列 256、缓存 2 万项、按修改时间与大小失效），UI 线程不读盘；另有"链接目标""文件签名""回收站原位置"三列（同一机制，值另存于按卷/FRN（或路径）+大小+修改时间失效的持久缓存 `files.fnx`）；云占位文件不读取 | 按属性列排序只用属性库中的值。按三列读文件的列排序（REL-06）：点击列头（含 Ctrl+点击次级排序）时后台统计**整个结果**中未缓存的文件数，全部已缓存则立即排序，否则弹窗"需读取 N 个文件（预计 X 秒），继续？"（X = 实测平均单文件耗时（不足 8 次时取 1 ms）× N ÷ 4 个读取线程）；确认后后台读取（状态栏"正在读取 i / N"+取消按钮，Esc 或新搜索也取消，取消后顺序不变），读完再排序；排序在搜索线程按缓存值的自然序（不区分大小写）进行，无值（未读、为空、不适用、云占位文件）与属性列未知值一样升序在前；排序键名 `linktarget` / `filesignature` / `recyclebinoriginalpath`（`-ascending`/`-descending`）与其他列一样保存在设置与会话中，启动时恢复的此类排序直接使用缓存值不再询问；ETP 远程结果不可按这三列排序 |
 | `count:<max>`（结果数上限）| 搜索函数，限制结果数 | `count:` 后紧跟纯数字时为结果上限（`FuncId::Count` → `SetKind::Limit`），作为最后一个集合函数在排序后截断，UI 与 IPC/HTTP/fes/兼容层一致（es 1.1.0.38 的 `-n` 以 `< count:N >` 发送）；只能在顶层；其余情况（`count:tags:>2`）仍是比较修饰符 | 同名的修饰符与函数按值区分 |
 | Everything IPC 报告版本 | Everything 自身版本 | `1.4.1.<Fennec 版本>`（0.2.0 → `1.4.1.200`），`Host::everything_version` 可改 | 客户端按 ≥ 1.4.1 启用 QUERY2/IS_DB_LOADED（ADR-031）|
 | IPC `A` 变体字符串 | ANSI 代码页 | UTF-8（失败回退 Latin-1）| 无 Win32 代码页转换（SPEC-GAP）|
@@ -1378,7 +1380,8 @@ Response { id, status, payload: Columns as arrays (列式) }
 
 ## 9. 更新与打包 `[SHOULD]`
 
-- 便携 zip（`fennec.exe`、`fes.exe`、`fennec-service.exe`、`languages/`、`LICENSE`）与 MSI（`cargo-wix`）；`x64` 与 `arm64`。
+- 便携 zip（`fennec.exe`、`fes.exe`、`fennec-service.exe`、`LICENSE-MIT`/`LICENSE-APACHE`、`README.md`、`portable` 标记；语言文件嵌入 `fennec.exe`，无 `languages/` 目录）与 MSI（WiX 3，`packaging/wix/fennec.wxs`）；`x64` 与 `arm64`。
+  - 0.2.0 实际产物（`packaging/build.ps1`，REL-07）：`fennec-<版本>-x64-standard.msi` / `-standard-portable.zip`（`--no-default-features`，不含语义搜索）与 `fennec-<版本>-x64-experimental.msi` / `-experimental-portable.zip`（默认 feature，含 `semantic`），外加 `SHA256SUMS.txt`。两个 MSI 共用 UpgradeCode（并允许同版本升级）：安装其一即替换另一个，并可从 0.1.0 升级；"应用和功能"中显示为 "Fennec" / "Fennec (experimental)"。已知缺口：未构建 `arm64`；未签名。
 - 可选检查更新（默认关闭，无遥测，仅 GET 版本 JSON）。
 - 代码签名位（CI 中注入）。
 
@@ -1711,7 +1714,7 @@ UI 与引擎通过 `crossbeam-channel` 消息通信：`UiMsg::{QueryResult, Inde
 
 ## 5. 编码规范
 
-- `#![deny(unsafe_op_in_unsafe_fn)]`，`unsafe` 仅限 `fnc-ntfs`/`fnc-platform`，每处注释安全性论证。
+- `#![deny(unsafe_op_in_unsafe_fn)]`，`unsafe` 仅限 `fnc-ntfs`/`fnc-platform`/`fnc-ipc`/`fnc-sdk`/`fnc-service`（范围与理由见 ADR-037，新增 crate 需先写 ADR），每处注释安全性论证。
 - 无 `unwrap()` 于非测试代码（`clippy::unwrap_used` 报错），错误用 `thiserror` 定义，UI 层 `anyhow` 汇报。
 - 热路径禁止分配：匹配、排序比较、路径拼接使用复用缓冲。
 - 所有可配置项集中在 `Settings` 结构，字段带 `#[setting(key="search_delay", default=0, page="search")]` 派生宏生成"高级"页与文档。

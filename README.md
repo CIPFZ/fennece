@@ -14,8 +14,18 @@ cargo build --release            # fennec (GUI), fes (CLI), fennec-service
 cargo test --workspace
 cargo run --release -p gen-fixtures -- --count 1000000      # fixtures/fixture-1m.efu
 cargo run --release -p bench --bin bench-report             # bench/results.md
-powershell -File packaging\build.ps1 -Wix <WiX 3 folder>    # dist\: portable zip + MSI (Windows)
+powershell -File packaging\build.ps1 -Wix <WiX 3 folder>    # dist\: release packages (Windows, below)
 ```
+
+`packaging\build.ps1 [-Variant standard|experimental|all] [-Wix <folder>] [-SkipBuild]` writes
+`fennec-<version>-x64-{standard,experimental}.msi`, the matching `-portable.zip` files and `SHA256SUMS.txt`
+(`sha256sum -c` format) to `dist\`. *standard* is `fnc-app --no-default-features` (no semantic search, no
+llama.cpp); *experimental* has the default features (semantic search). Each variant builds in its own target
+folder (`target\standard`, `target\experimental`); `fes.exe` and `fennec-service.exe` are built once and
+shipped in both. Both MSIs share one upgrade code: installing one replaces the other (shown as "Fennec" or
+"Fennec (experimental)" in Apps & features) and upgrades 0.1.0. Uninstalling keeps `%APPDATA%\Fennec`
+unless the box on the Remove page is ticked or `msiexec /x <msi> REMOVEUSERDATA=1` is used. x64 only (no
+arm64 build yet).
 
 Toolchain: Rust 1.99.0 (pinned in `rust-toolchain.toml`), targets `x86_64-pc-windows-msvc` and Linux.
 Semantic search (cargo feature `semantic`, on by default) compiles the vendored llama.cpp: it needs CMake, a C++

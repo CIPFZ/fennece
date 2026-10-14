@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use parking_lot::lock_api::ArcRwLockReadGuard;
-use parking_lot::{RawRwLock, RwLock, RwLockWriteGuard};
+use parking_lot::{RawRwLock, RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
 
 use crate::store::IndexStore;
 
@@ -43,6 +43,14 @@ impl SharedIndex {
     pub fn write_in(&self, epoch: u64) -> Option<RwLockWriteGuard<'_, IndexStore>> {
         let w = self.inner.write();
         (self.epoch.load(std::sync::atomic::Ordering::Acquire) == epoch).then_some(w)
+    }
+
+    /// Read access that excludes every other writer of `epoch` while readers continue
+    /// (upgrade it to write with [`RwLockUpgradableReadGuard::upgrade`]); `None` if that
+    /// epoch was retired. For long work on a copy that must not miss concurrent changes.
+    pub fn upgradable_in(&self, epoch: u64) -> Option<RwLockUpgradableReadGuard<'_, IndexStore>> {
+        let g = self.inner.upgradable_read();
+        (self.epoch.load(std::sync::atomic::Ordering::Acquire) == epoch).then_some(g)
     }
 
     /// Takes a read snapshot (blocks while a writer holds the lock, which is kept
@@ -101,6 +109,12 @@ impl EpochIndex {
         self.shared.write_in(self.epoch)
     }
 
+    /// Read access that holds off other writers, or `None` if this writer was retired
+    /// ([`SharedIndex::upgradable_in`]).
+    pub fn upgradable(&self) -> Option<RwLockUpgradableReadGuard<'_, IndexStore>> {
+        self.shared.upgradable_in(self.epoch)
+    }
+
     /// `true` while this writer may write.
     pub fn is_current(&self) -> bool {
         self.shared.epoch() == self.epoch
@@ -119,5 +133,31 @@ mod tests {
         let e2 = s.new_epoch();
         assert!(s.write_in(e).is_none());
         assert!(s.write_in(e2).is_some());
+    }
+
+    #[test]
+    fn upgradable_holds_off_writers_but_not_readers() {
+        let s = SharedIndex::default();
+        let g = s.upgradable_in(s.epoch()).unwrap();
+        let wrote = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (s, wrote) = (s.clone(), wrote.clone());
+            std::thread::spawn(move || {
+                let _w = s.write();
+                wrote.store(true, std::sync::atomic::Ordering::SeqCst);
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!wrote.load(std::sync::atomic::Ordering::SeqCst), "writer waits");
+        // A parked writer must not block readers (searches and the UI keep running).
+        let reader = {
+            let s = s.clone();
+            std::thread::spawn(move || s.try_snapshot_for(std::time::Duration::from_millis(500)).is_some())
+        };
+        assert!(reader.join().unwrap(), "reader got a snapshot");
+        drop(RwLockUpgradableReadGuard::upgrade(g));
+        writer.join().unwrap();
+        assert!(wrote.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(s.upgradable_in(s.epoch() + 1).is_none(), "retired epoch");
     }
 }

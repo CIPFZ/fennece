@@ -179,7 +179,7 @@ impl Drop for RemoteSession {
 /// The ETP sort of a view sort (`None`: not available, sort locally).
 pub fn etp_sort(sort: &SortSpec) -> Option<(Column, bool)> {
     use fnc_exec::SortColumn as S;
-    if sort.props[0].is_some() || sort.custom[0].is_some() {
+    if sort.props[0].is_some() || sort.custom[0].is_some() || sort.files[0].is_some() {
         return None;
     }
     let col = match sort.column {
@@ -247,7 +247,7 @@ pub fn build_results(
     let mut ids: Vec<_> =
         paths.iter().filter_map(|p| fnc_ipc::rows::resolve_path(&store, p)).filter(|id| seen.insert(*id)).collect();
     if etp_sort(&req.sort).is_none() {
-        let sx = fnc_exec::SortExt { props: None, formulas: &[] };
+        let sx = fnc_exec::SortExt { props: None, formulas: &[], files: None };
         let _ = fnc_exec::sort_ids_with(
             &mut ids,
             &req.sort,

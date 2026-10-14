@@ -59,6 +59,8 @@ fn w(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// # Safety
+/// `p` must point to a NUL-terminated UTF-16 string.
 unsafe fn from_w(p: *const u16) -> String {
     assert!(!p.is_null());
     let mut n = 0;

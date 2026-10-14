@@ -17,7 +17,14 @@ index-building = Индексация { $volume }: обработано { $done 
 index-meta = Чтение размеров и дат: { $percent }%
 index-ready = Проиндексировано записей: { $count } за { $seconds } s
 index-error = Ошибка индекса: { $message }
-index-db-rebuild = Не удалось прочитать базу данных индекса, она создается заново ({ $message }).
+upgrade-rebuild-old = { $file } имеет старый формат (версия { $version }), который эта версия не читает; файл сохранён как { $backup } и создаётся заново.
+upgrade-rebuild-future = { $file } записан более новой версией Fennec (формат { $version }); файл сохранён как { $backup } и создаётся заново.
+upgrade-rebuild-corrupt = { $file } повреждён; файл сохранён как { $backup } и создаётся заново.
+upgrade-data-old = { $file } имеет старый формат (версия { $version }); прочитанное загружено, оригинал сохранён как { $backup }.
+upgrade-data-future = { $file } записан более новой версией Fennec (формат { $version }); понятное этой версии загружено, оригинал сохранён как { $backup }.
+upgrade-data-corrupt = Не удалось прочитать { $file }; файл сохранён как { $backup }, используются значения по умолчанию.
+upgrade-backup-failed = Не удалось ни прочитать, ни сохранить копию { $file } ({ $message }).
+upgrade-settings-reset = Некоторые параметры не удалось прочитать, они сброшены ({ $keys }); исходный файл сохранён как { $backup }.
 index-volume-rebuild = Журнал изменений тома { $volume } изменился; том индексируется заново.
 index-volume-added = { $volume } добавлен в индекс.
 index-watch-error = Отслеживание { $volume } остановлено: { $message }
@@ -873,7 +880,12 @@ options-page-etp = Сервер ETP/FTP
 options-desc-etp = Позволяет клиентам Everything и FTP искать и просматривать этот индекс (ETP — это FTP с расширением Everything); здесь же настройки команды «Сервис → Подключиться к ETP-серверу». Имя пользователя и пароль передаются открытым текстом.
 status-etp = ETP/FTP: { $url }
 status-etp-failed = Сервер ETP/FTP: { $error }
+status-portable-fallback = Портативная папка только для чтения: данные хранятся в профиле пользователя
+status-portable-fallback-tip = Запись в { $refused } невозможна, поэтому настройки, индекс и журналы хранятся в { $path }. Переместите Fennec в папку с правом записи, чтобы данные хранились рядом с программой.
 status-etp-remote = ETP: { $host } (результатов: { $total })
+status-crash-prompt = Прошлый сеанс Fennec завершился аварийно — открыть журнал
+status-crash-tooltip = Отчётов о сбое: { $count } в { $dir }. Щелчок открывает папку, правый щелчок скрывает уведомление.
+msg-crash-open-failed = Не удалось открыть папку журналов: { $error }
 msg-etp-bad-bind = Недопустимый адрес привязки ETP/FTP: { $value }
 msg-etp-no-password = требуется пароль (Параметры → Сервер ETP/FTP)
 msg-etp-bad-port = Недопустимый номер порта
@@ -896,3 +908,13 @@ etp-link-share = \\Сервер\C (общие папки Windows)
 etp-link-admin-share = \\Сервер\C$ (административные общие ресурсы)
 etp-plain-text-warning = Имя пользователя и пароль передаются открытым текстом.
 etp-connect = Подключиться
+
+# Sorting by the file-reading columns (REL-06)
+dialog-read-files-title = Сортировка по содержимому файлов
+dialog-read-files = { $count ->
+    [one] Нужно прочитать { $count } файл (около { $secs } с). Продолжить?
+    [few] Нужно прочитать { $count } файла (около { $secs } с). Продолжить?
+   *[other] Нужно прочитать { $count } файлов (около { $secs } с). Продолжить?
+}
+dialog-continue = Продолжить
+status-reading-files = Чтение { $done } / { $total }
