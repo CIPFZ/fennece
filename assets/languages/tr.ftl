@@ -811,3 +811,9 @@ etp-link-share = \\Sunucu\C (Windows paylaşımları)
 etp-link-admin-share = \\Sunucu\C$ (yönetim paylaşımları)
 etp-plain-text-warning = Kullanıcı adı ve parola düz metin olarak gönderilir.
 etp-connect = Bağlan
+
+# Sorting by the file-reading columns (REL-06)
+dialog-read-files-title = Dosya içeriğine göre sırala
+dialog-read-files = { $count } dosyanın okunması gerekiyor (yaklaşık { $secs } sn). Devam edilsin mi?
+dialog-continue = Devam
+status-reading-files = Okunuyor { $done } / { $total }

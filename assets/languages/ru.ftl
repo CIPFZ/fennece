@@ -899,3 +899,13 @@ etp-link-share = \\Сервер\C (общие папки Windows)
 etp-link-admin-share = \\Сервер\C$ (административные общие ресурсы)
 etp-plain-text-warning = Имя пользователя и пароль передаются открытым текстом.
 etp-connect = Подключиться
+
+# Sorting by the file-reading columns (REL-06)
+dialog-read-files-title = Сортировка по содержимому файлов
+dialog-read-files = { $count ->
+    [one] Нужно прочитать { $count } файл (около { $secs } с). Продолжить?
+    [few] Нужно прочитать { $count } файла (около { $secs } с). Продолжить?
+   *[other] Нужно прочитать { $count } файлов (около { $secs } с). Продолжить?
+}
+dialog-continue = Продолжить
+status-reading-files = Чтение { $done } / { $total }

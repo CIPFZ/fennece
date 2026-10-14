@@ -871,3 +871,12 @@ etp-link-share = \\Server\C (Windows-Freigaben)
 etp-link-admin-share = \\Server\C$ (administrative Freigaben)
 etp-plain-text-warning = Benutzername und Kennwort werden im Klartext übertragen.
 etp-connect = Verbinden
+
+# Sorting by the file-reading columns (REL-06)
+dialog-read-files-title = Nach Dateiinhalt sortieren
+dialog-read-files = { $count ->
+    [one] 1 Datei muss gelesen werden (etwa { $secs } s). Fortfahren?
+   *[other] { $count } Dateien müssen gelesen werden (etwa { $secs } s). Fortfahren?
+}
+dialog-continue = Fortfahren
+status-reading-files = Lese { $done } / { $total }

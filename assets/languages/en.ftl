@@ -838,3 +838,12 @@ etp-link-share = \\Server\C (Windows shares)
 etp-link-admin-share = \\Server\C$ (administrative shares)
 etp-plain-text-warning = The user name and password are sent as plain text.
 etp-connect = Connect
+
+# Sorting by the file-reading columns (REL-06)
+dialog-read-files-title = Sort by file contents
+dialog-read-files = { $count ->
+    [one] 1 file needs to be read (about { $secs } s). Continue?
+   *[other] { $count } files need to be read (about { $secs } s). Continue?
+}
+dialog-continue = Continue
+status-reading-files = Reading { $done } / { $total }

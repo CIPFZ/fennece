@@ -525,7 +525,11 @@ impl IndexBackend {
             let ctx = ExecCtx { cancel: &cancel, prev: None, caches: &self.caches };
             // Set functions (`dupe:`, the `count:` result limit) apply after sorting.
             let mut rs = execute_filter(&planned, &snap, &ctx, &ext)?;
-            let sx = fnc_exec::SortExt { props: ext.props, formulas: &options.formulas };
+            let sx = fnc_exec::SortExt {
+                props: ext.props,
+                formulas: &options.formulas,
+                files: options.file_values.as_ref().map(|f| &*f.0),
+            };
             fnc_exec::sort_ids_with(&mut rs.ids, &key.sort, &snap, &self.caches, &cancel, sx)?;
             apply_post(&planned, &mut rs, &snap, &self.caches, &ext, &cancel)?;
             Ok::<_, fnc_exec::Cancelled>((rs, planned, snap.instance(), snap.generation()))

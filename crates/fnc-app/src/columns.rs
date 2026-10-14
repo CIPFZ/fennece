@@ -9,6 +9,7 @@ use fnc_core::settings::{DateFormat, SizeFormat};
 use fnc_core::{EntryFlags, EntryId, FileTime};
 use fnc_exec::{ResultSet, Shared, SortColumn, SortKey};
 use fnc_index::IndexSnapshot;
+use fnc_props::filecache::FileField;
 use fnc_props::{PropType, PropertyId, PropertyStore};
 
 use crate::cells::{LazyCol, LazyVal};
@@ -257,13 +258,18 @@ impl ColumnId {
     }
 
     /// Sort key of this column (`None`: not sortable). Custom columns sort by their
-    /// formula's value (computed by the engine), `Type` by the type description.
+    /// formula's value (computed by the engine), `Type` by the type description, the
+    /// file-reading columns by the values cached in `files.fnx` (the window reads the
+    /// missing ones first, after asking).
     pub fn sort(self) -> Option<SortKey> {
         match self {
             ColumnId::Property(p) => Some(SortKey::Property(p)),
             ColumnId::Custom(i) => Some(SortKey::Custom(i)),
-            // Read per visible row, not known for the whole result.
-            ColumnId::DupeGroup | ColumnId::LinkTarget | ColumnId::FileSignature | ColumnId::RecycleOrigin => None,
+            ColumnId::LinkTarget => Some(SortKey::File(FileField::LinkTarget)),
+            ColumnId::FileSignature => Some(SortKey::File(FileField::Signature)),
+            ColumnId::RecycleOrigin => Some(SortKey::File(FileField::RecycleOrigin)),
+            // Only known for the results of a `dupe:` search.
+            ColumnId::DupeGroup => None,
             c => Some(SortKey::Column(c.sort_column())),
         }
     }
@@ -314,6 +320,9 @@ impl ColumnId {
                 | ColumnId::IndexSource
                 | ColumnId::Volume
                 | ColumnId::Custom(_)
+                | ColumnId::LinkTarget
+                | ColumnId::FileSignature
+                | ColumnId::RecycleOrigin
         )
     }
 }
@@ -387,6 +396,7 @@ pub fn parse_sort(s: &str) -> Vec<(SortKey, bool)> {
             SortColumn::parse(col)
                 .map(SortKey::Column)
                 .or_else(|| CUSTOM_KEYS.iter().position(|c| *c == col).map(|i| SortKey::Custom(i as u8)))
+                .or_else(|| FileField::lookup(col).map(SortKey::File))
                 .or_else(|| PropertyId::lookup(col).map(SortKey::Property))
                 .map(|c| (c, asc))
         })
@@ -413,6 +423,7 @@ pub fn sort_setting(spec: &fnc_exec::SortSpec) -> String {
                 SortKey::Column(c) => sort_key(c),
                 SortKey::Property(p) => p.name(),
                 SortKey::Custom(i) => ColumnId::Custom(i).key(),
+                SortKey::File(f) => f.name(),
             };
             format!("{name}-{}", if asc { "ascending" } else { "descending" })
         })
@@ -687,6 +698,27 @@ mod tests {
         assert_eq!(sort_spec(&text, ff), Some(spec));
         assert_eq!(parse_sort("custom3"), [(SortKey::Custom(2), true)]);
         assert!(parse_sort("custom10").is_empty());
+    }
+
+    #[test]
+    fn file_columns_sort_and_persist() {
+        let ff = fnc_core::settings::FoldersFirst::Ascending;
+        for (c, f) in [
+            (ColumnId::LinkTarget, FileField::LinkTarget),
+            (ColumnId::FileSignature, FileField::Signature),
+            (ColumnId::RecycleOrigin, FileField::RecycleOrigin),
+        ] {
+            assert_eq!(c.sort(), Some(SortKey::File(f)));
+            assert!(!c.sort_descending_first(), "text: ascending first");
+            assert_eq!(f.name(), c.key(), "sort key name = column key");
+        }
+        let mut spec = fnc_exec::SortSpec::by_file(FileField::LinkTarget, false, ff);
+        spec.push_key(SortColumn::Size, true);
+        spec.push_sort_key(SortKey::File(FileField::RecycleOrigin), true);
+        let text = sort_setting(&spec);
+        assert_eq!(text, "linktarget-descending;size-ascending;recyclebinoriginalpath-ascending");
+        assert_eq!(sort_spec(&text, ff), Some(spec));
+        assert_eq!(parse_sort("filesignature"), [(SortKey::File(FileField::Signature), true)]);
     }
 
     #[test]

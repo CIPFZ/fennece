@@ -898,3 +898,13 @@ etp-link-share = \\Serwer\C (udziały Windows)
 etp-link-admin-share = \\Serwer\C$ (udziały administracyjne)
 etp-plain-text-warning = Nazwa użytkownika i hasło są przesyłane jawnym tekstem.
 etp-connect = Połącz
+
+# Sorting by the file-reading columns (REL-06)
+dialog-read-files-title = Sortuj według zawartości plików
+dialog-read-files = { $count ->
+    [one] Trzeba odczytać 1 plik (około { $secs } s). Kontynuować?
+    [few] Trzeba odczytać { $count } pliki (około { $secs } s). Kontynuować?
+   *[other] Trzeba odczytać { $count } plików (około { $secs } s). Kontynuować?
+}
+dialog-continue = Kontynuuj
+status-reading-files = Odczyt { $done } / { $total }

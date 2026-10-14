@@ -10,6 +10,7 @@
 mod complete;
 mod dialogs;
 mod edit_ui;
+mod filesort;
 mod findbar;
 mod grid;
 mod integration;
@@ -236,6 +237,8 @@ pub(super) struct View {
     nav: toolbar::Nav,
     /// Connected to an ETP server: searches run there (Tools → Connect to ETP Server).
     remote: Option<remote_ui::RemoteView>,
+    /// A sort by a file-reading column waiting for its values (REL-06).
+    file_sort: Option<filesort::FileSort>,
 }
 
 /// Main application state.
@@ -431,6 +434,7 @@ impl FennecApp {
                 preview: preview::PreviewState::default(),
                 stale_refresh: None,
                 sort_before_semantic: None,
+                file_sort: None,
                 find: Default::default(),
                 nav: Default::default(),
                 remote: None,
@@ -495,6 +499,8 @@ impl FennecApp {
     }
 
     fn send_search(&mut self) {
+        // A new search (or sort) supersedes a file column sort waiting for its values.
+        self.cancel_file_sort();
         let id = self.v.next_id;
         self.v.next_id += 1;
         // Searches by meaning list the most similar first (SPEC ch.5 §3.1); the previous
@@ -645,6 +651,7 @@ impl FennecApp {
             self.on_outcome(o);
         }
         self.drain_remote();
+        self.poll_file_sort();
         while let Ok(ev) = self.index_rx.try_recv() {
             match ev {
                 IndexEvent::Status(s) => {
@@ -1610,6 +1617,9 @@ impl FennecApp {
     }
 
     fn on_escape(&mut self, ctx: &egui::Context) {
+        if self.escape_file_read() {
+            return;
+        }
         if self.options_window.is_some() {
             self.options_window = None;
             return;
@@ -1856,6 +1866,7 @@ impl FennecApp {
             if let Some(m) = self.crash.ui(ui) {
                 self.say(m);
             }
+            self.file_sort_status(ui);
             if let Some(d) = self.v.diagnostics.first() {
                 ui.separator();
                 ui.colored_label(ui.visuals().warn_fg_color, d);
@@ -2400,6 +2411,8 @@ mod tests;
 mod tests_edit;
 #[cfg(test)]
 mod tests_etp;
+#[cfg(test)]
+mod tests_filesort;
 #[cfg(all(test, feature = "semantic"))]
 mod tests_semantic;
 #[cfg(test)]

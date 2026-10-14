@@ -14,6 +14,8 @@
 //! * [`ondemand`] — [`ondemand::OnDemand`]: file reads for searches on unindexed entries.
 //! * [`link`] / [`signature`] / [`recycle`] — `target:` (shell links, internet shortcuts,
 //!   reparse targets), `fsi:` (magic numbers) and `recycled:` (`$I` records) parsers.
+//! * [`filecache`] — the cache of values the file-reading result columns show and sort by
+//!   (`files.fnx`, keyed by file identity like the hash cache).
 //! * [`fnx`] / [`rows`] — the `props.fnx` / `content.fnx` / `hashes.fnx` container and the
 //!   entry ↔ row mapping that survives index compaction and restarts.
 //!
@@ -81,6 +83,7 @@ pub mod config;
 pub mod content;
 #[cfg(feature = "extract")]
 pub mod extract;
+pub mod filecache;
 pub mod fnx;
 pub mod hash;
 pub mod link;
