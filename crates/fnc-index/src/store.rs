@@ -344,6 +344,7 @@ impl IndexStore {
         let attributes = meta.attributes.unwrap_or(0);
         let flags = EntryFlags::from_attributes(attributes).union(extra);
         let ext = if flags.contains(EntryFlags::IS_DIR) { NO_EXT } else { self.ext_dict.intern(ext_of(&self.scratch)) };
+        self.reserve_rows_quarter();
         self.parent.push(parent);
         self.volume.push(vol);
         self.flags.push(flags);
@@ -361,6 +362,27 @@ impl IndexStore {
             self.folders += 1;
         }
         Ok(id)
+    }
+
+    /// Grows every row column by a quarter instead of doubling (see
+    /// [`fnc_core::arena::reserve_quarter`]): after a load or a live compaction the
+    /// columns are exactly full, and the next created entry would otherwise commit
+    /// twice their size (REL-05).
+    #[inline]
+    fn reserve_rows_quarter(&mut self) {
+        use fnc_core::arena::reserve_quarter;
+        reserve_quarter(&mut self.parent, 1);
+        reserve_quarter(&mut self.volume, 1);
+        reserve_quarter(&mut self.flags, 1);
+        reserve_quarter(&mut self.frn, 1);
+        reserve_quarter(&mut self.ext, 1);
+        reserve_quarter(&mut self.size, 1);
+        reserve_quarter(&mut self.dm, 1);
+        reserve_quarter(&mut self.dc, 1);
+        if let Some(da) = &mut self.da {
+            reserve_quarter(da, 1);
+        }
+        reserve_quarter(&mut self.attr, 1);
     }
 
     fn bump(&mut self, tree: bool) {
@@ -1353,6 +1375,16 @@ impl IndexStore {
     /// Removes tombstones and garbage, renumbering entries. Returns the old→new id map
     /// (`u32::MAX` for removed rows); result sets must be re-run afterwards.
     pub fn compact(&mut self) -> Vec<u32> {
+        let (compacted, remap) = self.compacted();
+        *self = compacted;
+        remap
+    }
+
+    /// A compacted copy of this index (see [`IndexStore::compact`]) and the old→new id
+    /// map, built straight from `self`: a live compaction needs no full clone first, so
+    /// it holds the old index and the compacted one, not three copies (REL-05). The copy
+    /// is a new id space ([`IndexStore::instance`]).
+    pub fn compacted(&self) -> (Self, Vec<u32>) {
         let mut remap = vec![u32::MAX; self.len()];
         let mut order = Vec::with_capacity(self.live);
         for (i, slot) in remap.iter_mut().enumerate() {
@@ -1367,40 +1399,57 @@ impl IndexStore {
         let map_id = |id: EntryId| {
             if id.is_some() { EntryId(remap[id.idx()]) } else { EntryId::NONE }
         };
-        self.names = self.names.permuted(&order);
-        self.folds = self.folds.permuted(&order);
-        self.parent = order.iter().map(|&i| map_id(self.parent[i as usize])).collect();
-        self.volume = pick(&self.volume, &order);
-        self.flags = pick(&self.flags, &order);
-        self.frn = pick(&self.frn, &order);
-        self.ext = pick(&self.ext, &order);
-        self.size = pick(&self.size, &order);
-        self.dm = pick(&self.dm, &order);
-        self.dc = pick(&self.dc, &order);
-        if let Some(da) = &self.da {
-            self.da = Some(pick(da, &order));
-        }
-        self.attr = pick(&self.attr, &order);
-        self.run = self.run.iter().filter(|(k, _)| remap[k.idx()] != u32::MAX).map(|(k, v)| (map_id(*k), *v)).collect();
-        self.recent =
-            self.recent.iter().filter(|(k, _)| remap[k.idx()] != u32::MAX).map(|(k, v)| (map_id(*k), *v)).collect();
-        self.links = std::mem::take(&mut self.links)
-            .into_iter()
-            .filter_map(|(k, v)| {
-                let v: Vec<EntryId> = v.into_iter().map(map_id).filter(|e| e.is_some()).collect();
-                (!v.is_empty()).then_some((k, v))
-            })
-            .collect();
-        for v in &mut self.volumes {
+        let mut volumes = self.volumes.clone();
+        for v in &mut volumes {
             v.roots = v.roots.iter().map(|&r| map_id(r)).filter(|r| r.is_some()).collect();
         }
-        self.orphans = self.orphans.iter().map(|o| o.map(map_id).filter(|e| e.is_some())).collect();
-        self.rebuild_frn_maps();
-        self.rebuild_children();
-        self.name_order = self.name_order.remapped(&remap, order.len());
-        self.instance = next_instance();
-        self.bump(true);
-        remap
+        let mut out = Self {
+            volumes,
+            names: self.names.permuted(&order),
+            folds: self.folds.permuted(&order),
+            parent: order.iter().map(|&i| map_id(self.parent[i as usize])).collect(),
+            volume: pick(&self.volume, &order),
+            flags: pick(&self.flags, &order),
+            frn: pick(&self.frn, &order),
+            ext: pick(&self.ext, &order),
+            size: pick(&self.size, &order),
+            dm: pick(&self.dm, &order),
+            dc: pick(&self.dc, &order),
+            da: self.da.as_ref().map(|da| pick(da, &order)),
+            attr: pick(&self.attr, &order),
+            run: self.run.iter().filter(|(k, _)| remap[k.idx()] != u32::MAX).map(|(k, v)| (map_id(*k), *v)).collect(),
+            recent: self
+                .recent
+                .iter()
+                .filter(|(k, _)| remap[k.idx()] != u32::MAX)
+                .map(|(k, v)| (map_id(*k), *v))
+                .collect(),
+            ext_dict: self.ext_dict.clone(),
+            children: Children::default(),
+            frn_maps: Vec::new(),
+            orphans: self.orphans.iter().map(|o| o.map(map_id).filter(|e| e.is_some())).collect(),
+            name_order: self.name_order.remapped(&remap, order.len()),
+            links: self
+                .links
+                .iter()
+                .filter_map(|(k, v)| {
+                    let v: Vec<EntryId> = v.iter().copied().map(map_id).filter(|e| e.is_some()).collect();
+                    (!v.is_empty()).then_some((*k, v))
+                })
+                .collect(),
+            next_frn: self.next_frn.clone(),
+            record_recent: self.record_recent,
+            generation: self.generation,
+            tree_generation: self.tree_generation,
+            instance: next_instance(),
+            live: self.live,
+            folders: self.folders,
+            scratch: Vec::new(),
+        };
+        out.rebuild_frn_maps();
+        out.rebuild_children();
+        out.bump(true);
+        (out, remap)
     }
 
     /// Rebuilds every volume's FRN map from the columns (live primary rows only).

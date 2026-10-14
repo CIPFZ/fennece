@@ -17,6 +17,22 @@ use crate::error::{CoreError, Result};
 /// Maximum number of units in one item.
 pub const MAX_ITEM_LEN: usize = u16::MAX as usize;
 
+/// Length from which [`reserve_quarter`] grows by a quarter instead of doubling.
+pub const QUARTER_GROWTH_FROM: usize = 1 << 16;
+
+/// Makes room for `additional` more elements in `v`. Large vectors grow by a quarter
+/// of their length (at least `additional`) instead of `Vec`'s doubling: index columns
+/// of a long-running process are near-full after every compaction or load
+/// (`shrink_to_fit`), and doubling there would commit up to twice their size again
+/// that is never used (REL-05; Windows counts it in private bytes). Still amortised
+/// O(1) per element.
+#[inline]
+pub fn reserve_quarter<T>(v: &mut Vec<T>, additional: usize) {
+    if v.capacity() - v.len() < additional && v.len() >= QUARTER_GROWTH_FROM {
+        v.reserve_exact(additional.max(v.len() / 4));
+    }
+}
+
 /// A pool of variable-length slices of `T`, addressed by dense item index.
 #[derive(Clone, Default)]
 pub struct Arena<T: Copy> {
@@ -84,6 +100,7 @@ impl<T: Copy> Arena<T> {
         if (off as usize).saturating_add(s.len()) > u32::MAX as usize {
             return Err(CoreError::ArenaFull);
         }
+        reserve_quarter(&mut self.data, s.len());
         self.data.extend_from_slice(s);
         Ok(off)
     }
@@ -91,6 +108,8 @@ impl<T: Copy> Arena<T> {
     /// Appends a new item and returns its index.
     pub fn push(&mut self, s: &[T]) -> Result<usize> {
         let off = self.append_data(s)?;
+        reserve_quarter(&mut self.off, 1);
+        reserve_quarter(&mut self.len, 1);
         self.off.push(off);
         // Length checked in `append_data`.
         self.len.push(s.len() as u16);
@@ -238,6 +257,27 @@ mod tests {
         let mut o = String::new();
         a.write_str(i, &mut o);
         o
+    }
+
+    #[test]
+    fn large_arenas_and_vectors_grow_by_a_quarter() {
+        let mut v: Vec<u32> = vec![0; 100_000];
+        v.shrink_to_fit();
+        reserve_quarter(&mut v, 1);
+        assert_eq!(v.capacity(), 125_000);
+        let mut small: Vec<u32> = vec![0; 100];
+        small.shrink_to_fit();
+        reserve_quarter(&mut small, 1);
+        assert_eq!(small.capacity(), 100, "small vectors keep Vec's own growth");
+        let mut a = NameArena::new();
+        for i in 0..100_000 {
+            a.push_str(&format!("n{i:07}")).unwrap();
+        }
+        a.shrink_to_fit();
+        let exact = a.heap_bytes();
+        a.push_str("one more").unwrap();
+        assert!(a.heap_bytes() <= exact + exact / 4 + 64, "{exact} -> {}", a.heap_bytes());
+        assert_eq!(s(&a, 100_000), "one more");
     }
 
     #[test]
