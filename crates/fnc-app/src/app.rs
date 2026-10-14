@@ -287,6 +287,10 @@ pub struct FennecApp {
     data_warning: Option<(String, String)>,
     background: Arc<std::sync::atomic::AtomicBool>,
     hidden: bool,
+    /// Hide the window once more after the first frame (`-startup`): eframe creates every
+    /// window hidden and shows it after painting the first frame, whatever the viewport
+    /// builder asked for.
+    rehide: bool,
     dialog: Option<dialogs::Dialog>,
     options_window: Option<options::OptionsState>,
     /// Commands queued by menus, the tray and widgets (run after drawing).
@@ -403,6 +407,7 @@ impl FennecApp {
             // Start-hidden is applied by `main` via `ViewportBuilder::with_visible(false)`
             // (no flash of the window).
             hidden: deps.start_hidden,
+            rehide: deps.start_hidden,
             dialog: None,
             options_window: None,
             pending: Vec::new(),
@@ -2345,6 +2350,10 @@ const HISTORY_IDLE: Duration = Duration::from_secs(3);
 
 impl eframe::App for FennecApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Processed after eframe has shown the window following its first frame.
+        if std::mem::take(&mut self.rehide) && self.hidden {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
         self.drain_channels(ctx);
         let minimized = ctx.input(|i| i.viewport().minimized == Some(true));
         self.background.store(self.hidden || minimized, std::sync::atomic::Ordering::Relaxed);
@@ -2391,8 +2400,14 @@ impl eframe::App for FennecApp {
             fnc_platform::shell::watch_ctrl_v(hwnd);
         }
         self.hwnd = hwnd;
-        self.handle_keys(&ctx);
-        self.draw_main(ui, true);
+        // eframe runs the UI of a hidden (tray) window like a visible one: draw nothing,
+        // so no rows are formatted and no icons or thumbnails are read (each new result
+        // after a live compaction made the shell load ~40-80 handles on the thumbnail
+        // threads, REL-05).
+        if !self.hidden {
+            self.handle_keys(&ctx);
+            self.draw_main(ui, true);
+        }
         crate::crash::debug_panic_tick(&ctx, matches!(self.status, IndexStatus::Ready { .. }));
         self.dialogs(&ctx);
         self.options_viewport(&ctx);
