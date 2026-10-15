@@ -1,0 +1,83 @@
+name: Release
+
+# Pushing a tag `v<version>` builds the four packages (REL-07: standard and experimental,
+# MSI + portable zip) and SHA256SUMS.txt on Windows and publishes them as a GitHub
+# release whose text is docs/RELEASE-NOTES-<version>.md. `v<version>-rc.N` publishes a
+# pre-release from the same build (to try the pipeline before the final tag).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build and publish, e.g. v0.2.0
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  WIX_URL: https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Tag matches the workspace version
+        id: version
+        shell: pwsh
+        run: |
+          $tag = '${{ inputs.tag || github.ref_name }}'
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($tag -notmatch "^v$([regex]::Escape($version))(-rc\.\d+)?$") { throw "tag $tag does not match Cargo.toml version $version" }
+          "prerelease=$($tag -match '-rc\.')".ToLowerInvariant() >> $env:GITHUB_OUTPUT
+          if (-not (Test-Path "docs/RELEASE-NOTES-$version.md")) { throw "docs/RELEASE-NOTES-$version.md is missing" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - name: WiX 3 and libclang
+        shell: pwsh
+        run: |
+          $wix = Join-Path $env:RUNNER_TEMP 'wix'
+          Invoke-WebRequest $env:WIX_URL -OutFile "$wix.zip"
+          Expand-Archive "$wix.zip" -DestinationPath $wix
+          if (-not (Test-Path "$wix\candle.exe")) { throw "WiX download has no candle.exe" }
+          "WIX=$wix" >> $env:GITHUB_ENV
+          # bindgen (llama.cpp bindings of the experimental package) needs libclang.
+          $llvm = 'C:\Program Files\LLVM\bin'
+          if (-not (Test-Path "$llvm\libclang.dll")) { throw "libclang.dll not found in $llvm" }
+          "LIBCLANG_PATH=$llvm" >> $env:GITHUB_ENV
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the packages
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging\build.ps1 -Variant all -Wix $env:WIX
+      - name: Check the artifacts
+        shell: pwsh
+        run: |
+          $v = '${{ steps.version.outputs.version }}'
+          $names = 'standard.msi', 'standard-portable.zip', 'experimental.msi', 'experimental-portable.zip' |
+            ForEach-Object { "fennec-$v-x64-$_" }
+          foreach ($n in $names) { if (-not (Test-Path "dist\$n")) { throw "dist\$n is missing" } }
+          # Every line of SHA256SUMS.txt must match the file.
+          foreach ($line in Get-Content dist\SHA256SUMS.txt) {
+            $hash, $file = $line -split '  ', 2
+            $actual = (Get-FileHash "dist\$file" -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $hash) { throw "checksum mismatch: $file" }
+          }
+          Get-ChildItem dist -File | Format-Table Name, Length
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Fennec ${{ steps.version.outputs.tag }}
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+          body_path: docs/RELEASE-NOTES-${{ steps.version.outputs.version }}.md
+          files: |
+            dist/fennec-${{ steps.version.outputs.version }}-x64-*.msi
+            dist/fennec-${{ steps.version.outputs.version }}-x64-*-portable.zip
+            dist/SHA256SUMS.txt
