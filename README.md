@@ -3,7 +3,7 @@
 *Find anything in a blink.* — a local file search engine for Windows written in Rust and egui, modelled on
 voidtools Everything 1.5, with local semantic search (EmbeddingGemma-2) on top (see `docs/SPEC.md`).
 
-Status: **M0–M6** plus the after-M6 gap closing (`docs/reports/after-M6.md`) — see `docs/reports/` and `docs/CHANGELOG.md`.
+Status: **0.2.0** — first release for daily trial use (`docs/RELEASE-NOTES-0.2.0.md`, report `docs/reports/0.2.0.md`), after M0–M6 and the after-M6 gap closing; see `docs/reports/` and `docs/CHANGELOG.md`.
 
 ![search](docs/screenshots/m1-search-highlight.png)
 
