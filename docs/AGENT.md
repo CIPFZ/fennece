@@ -123,6 +123,7 @@ docs/    SPEC.md  AGENT.md  CHANGELOG.md  adr/(001–036)  reports/  screenshots
 [ ] 可配置项默认值与 Everything 一致
 [ ] UI 文案走 Fluent（9 种语言文件都补了 key，哪怕先用英文占位）
 [ ] CHANGELOG 已更新；需要时 ADR 已写；差异表（SPEC 第 2 章 §9）同步
+[ ] 推送后确认 GitHub Actions 已触发且全部通过（CI；打 tag 时还有 Release）
 ```
 
 ## 7. 当前阶段：发布 Fennec 0.2.0

@@ -181,6 +181,27 @@ pub fn slope_per_hour(t: &[f64], v: &[f64]) -> f64 {
     if den == 0.0 { 0.0 } else { num / den * 3600.0 }
 }
 
+/// Private-bytes valley after each live compaction: for every rise of the compaction
+/// count, the lowest private bytes from that sample until the next compaction (or the
+/// end) — `(elapsed s, compaction number, MiB)`. The valleys show the floor the process
+/// returns to once tombstones are reclaimed; a leak lifts them steadily.
+pub fn compaction_valleys(samples: &[Sample]) -> Vec<(f64, f64, f64)> {
+    let up: Vec<&Sample> = samples.iter().filter(|s| s.app_pid.is_some()).collect();
+    let mut out: Vec<(f64, f64, f64)> = Vec::new();
+    let mut seen = up.first().map_or(0.0, |s| s.compactions);
+    for s in &up {
+        if s.compactions > seen {
+            seen = s.compactions;
+            out.push((s.elapsed_s, s.compactions, s.app_private));
+        } else if let Some(last) = out.last_mut()
+            && s.app_private < last.2
+        {
+            *last = (s.elapsed_s, last.1, s.app_private);
+        }
+    }
+    out
+}
+
 /// Indices of the rows to print: all if ≤ `max_rows`, else the first, one per hour
 /// (the first sample at or after each full hour) and the last.
 pub fn table_rows(t: &[f64], max_rows: usize) -> Vec<usize> {
@@ -396,6 +417,27 @@ pub fn render(samples: &[Sample], c: &Criteria, title: &str, charts: &[(String, 
         cpu(app_cpu),
         cpu(svc_cpu)
     );
+
+    let valleys = compaction_valleys(samples);
+    if valleys.len() >= 2 {
+        let _ = writeln!(m, "## Private bytes after each compaction (valleys)\n");
+        let _ = writeln!(m, "| Compaction | At | Valley MiB |\n|---|---|---|");
+        for (t, n, v) in &valleys {
+            let at = crate::plan::hms(std::time::Duration::from_secs_f64((t - first.elapsed_s).max(0.0)));
+            let _ = writeln!(m, "| {n:.0} | {at} | {v:.1} |");
+        }
+        let (vt, vv): (Vec<f64>, Vec<f64>) = valleys.iter().map(|(t, _, v)| (*t, *v)).unzip();
+        let span_h = (vt[vt.len() - 1] - vt[0]) / 3600.0;
+        let slope = slope_per_hour(&vt, &vv);
+        let _ = writeln!(
+            m,
+            "\nLeast-squares slope of the valleys: {slope:+.2} MiB/h over {span_h:.1} h ({:+.1} MiB projected over 24 h); \
+             first → last valley {:.1} → {:.1} MiB.\n",
+            slope * 24.0,
+            vv[0],
+            vv[vv.len() - 1]
+        );
+    }
 
     for (alt, path) in charts {
         let _ = writeln!(m, "![{alt}]({path})\n");
@@ -660,6 +702,29 @@ mod tests {
             s.push('\n');
         }
         s
+    }
+
+    #[test]
+    fn valleys_follow_each_compaction() {
+        // Saw-tooth: private bytes rise 2 MiB per sample and drop at every 4th sample,
+        // where the compaction count goes up; the floor creeps up 0.5 MiB per cycle.
+        let text = csv(4.0, 0.0, |i, r| {
+            let cycle = i / 4;
+            r[4] = format!("{:.1}", 300.0 + 0.5 * cycle as f64 + 2.0 * (i % 4) as f64);
+            r[20] = cycle.to_string();
+        });
+        let samples = parse_csv(&text).unwrap();
+        let v = compaction_valleys(&samples);
+        assert_eq!(v.len(), 12, "{v:?}");
+        assert_eq!((v[0].1, v[0].2), (1.0, 300.5));
+        assert_eq!((v[11].1, v[11].2), (12.0, 306.0));
+        let (t, p): (Vec<f64>, Vec<f64>) = v.iter().map(|x| (x.0, x.2)).unzip();
+        // 0.5 MiB per 20 min = 1.5 MiB/h.
+        assert!((slope_per_hour(&t, &p) - 1.5).abs() < 1e-9);
+        let md = render(&samples, &Criteria::default(), "Soak", &[]);
+        assert!(md.contains("## Private bytes after each compaction (valleys)"));
+        assert!(md.contains("| 12 | 04:00:00 | 306.0 |"), "{md}");
+        assert!(md.contains("slope of the valleys: +1.50 MiB/h"), "{md}");
     }
 
     #[test]
