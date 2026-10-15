@@ -233,10 +233,23 @@ function Get-Compactions {
 }
 
 $runStart = Get-Date
+# PIDs of every fennec / fennec-service process the soak observed. Crash reports carry a
+# `pid:` line; only those of soaked processes count (a test elsewhere on the machine,
+# e.g. `-debug-panic`, also writes into ProgramData\Fennec\logs). Others are logged once.
+$soakedPids = @{}
+$foreignCrash = @{}
 function Get-CrashFiles {
     $n = 0
     foreach ($d in $logDirs) {
-        $n += @(Get-ChildItem -Path $d -Filter 'crash-*.log' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $runStart }).Count
+        foreach ($f in @(Get-ChildItem -Path $d -Filter 'crash-*.log' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -ge $runStart })) {
+            $line = Select-String -Path $f.FullName -Pattern '^pid:\s+(\d+)' | Select-Object -First 1
+            $crashPid = if ($line) { [int]$line.Matches[0].Groups[1].Value } else { 0 }
+            if ($crashPid -eq 0 -or $soakedPids.ContainsKey($crashPid)) { $n++ }
+            elseif (-not $foreignCrash.ContainsKey($f.FullName)) {
+                $foreignCrash[$f.FullName] = $true
+                Log "crash file of another process (pid $crashPid, not soaked), not counted: $($f.FullName)"
+            }
+        }
     }
     return $n
 }
@@ -269,6 +282,7 @@ $compactBase = 0
 function Write-Sample($appId, [string]$note) {
     $compactions = (Get-Compactions) - $script:compactBase
     $svcId = Get-ServicePid
+    foreach ($i in @($appId, $svcId)) { if ($i) { $script:soakedPids[[int]$i] = $true } }
     $a = Get-ProcSample 'app' $appId
     $s = Get-ProcSample 'svc' $svcId
     $entries = $null; $soak = $null
