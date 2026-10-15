@@ -123,15 +123,16 @@ fn hidden_window_draws_nothing_until_shown() {
     let mut deps = deps_for(Some(efu), SharedIndex::default());
     deps.start_hidden = true;
     let mut h = harness(deps);
-    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }) && a.v.results.len() == 7);
+    // Hidden windows do not re-run the search when the index changes, so the results
+    // may still be those of the empty index here (they catch up once shown).
+    wait_until(&mut h, "index ready", |a| matches!(a.status, IndexStatus::Ready { .. }));
     h.run_steps(3);
     assert!(!h.state().rehide, "hidden again after the first frame");
     assert!(h.state().v.rows.is_empty(), "no rows formatted while hidden");
     assert!(h.query_by_role(Role::TextInput).is_none(), "nothing drawn while hidden");
     let ctx = h.ctx.clone();
     h.state_mut().show_window(&ctx);
-    h.run_steps(3);
-    assert_eq!(h.state().v.rows.len(), 7, "rows drawn once shown");
+    wait_until(&mut h, "rows drawn once shown", |a| a.v.rows.len() == 7);
     h.get_by_role(Role::TextInput);
 }
 

@@ -202,7 +202,9 @@ fn browsing_comes_from_the_index() {
     assert_eq!(c.cmd("CDUP").code, 250);
     assert_eq!(c.cmd("PWD").text(), format!("\"{root}\" is current directory."));
     // Not in the index → not reachable, even with `..`.
-    assert_eq!(c.cmd("CWD ../../../../..").code, 250);
+    // As many `..` as the root is deep (temporary folders are nested deeper on CI runners).
+    let up = vec![".."; root.split('/').filter(|p| !p.is_empty()).count() + 3].join("/");
+    assert_eq!(c.cmd(&format!("CWD {up}")).code, 250);
     assert_eq!(c.cmd("PWD").text(), "\"/\" is current directory.");
     assert_eq!(c.data(&format!("LIST {root}/secret.txt")).1.code, 550);
     assert_eq!(c.cmd("MKD x").code, 550, "read-only");
