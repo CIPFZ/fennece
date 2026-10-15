@@ -15,6 +15,9 @@ ignore = [
     # proc-macro-error (unmaintained) is only reachable through tray-icon's GTK backend, which is
     # never built: tray-icon is a Windows-only dependency of fnc-app.
     { id = "RUSTSEC-2024-0370", reason = "Linux-only transitive dependency of tray-icon; not compiled" },
+    # paste (unmaintained, not a vulnerability) is a compile-time proc-macro of lofty (audio tags);
+    # replacing lofty is out of scope for 0.2.0 (AGENT.md iron rule 11).
+    { id = "RUSTSEC-2024-0436", reason = "unmaintained proc-macro used only at build time by lofty" },
 ]
 
 [licenses]
