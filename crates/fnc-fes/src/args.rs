@@ -121,6 +121,9 @@ pub struct Args {
     pub settings: Vec<String>,
     /// `-debug-panic` (hidden, not in the help): panic to test the crash report (REL-02).
     pub debug_panic: bool,
+    /// `-debug-crash` (hidden): unhandled structured exception, tests the native crash
+    /// report of the exception filter (REL-02).
+    pub debug_crash: bool,
 }
 
 impl Default for Args {
@@ -158,6 +161,7 @@ impl Default for Args {
             ignored: Vec::new(),
             settings: Vec::new(),
             debug_panic: false,
+            debug_crash: false,
         }
     }
 }
@@ -652,6 +656,8 @@ pub fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Args, ArgErro
             a.mode = Mode::Help;
         } else if option_eq(n, "debug-panic") {
             a.debug_panic = true;
+        } else if option_eq(n, "debug-crash") {
+            a.debug_crash = true;
         } else if option_eq(n, "version") {
             a.mode = Mode::Version;
         } else if option_eq(n, "get-everything-version") {
@@ -1016,6 +1022,7 @@ mod tests {
         assert_eq!(p(&["-get-everything-version"]).mode, Mode::EverythingVersion);
         assert_eq!(p(&["-version"]).mode, Mode::Version);
         assert!(p(&["-debug-panic"]).debug_panic && !p(&["-debug"]).debug_panic);
+        assert!(p(&["-debug-crash"]).debug_crash && !p(&["-debug-panic"]).debug_crash);
         assert_eq!(p(&["-help"]).mode, Mode::Help);
         assert_eq!(p(&["/?"]).mode, Mode::Help);
         assert_eq!(p(&["-set-run-count", "C:\\a", "3"]).mode, Mode::SetRunCount("C:\\a".into(), 3));

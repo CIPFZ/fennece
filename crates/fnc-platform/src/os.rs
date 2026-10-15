@@ -27,6 +27,13 @@ pub fn install_exception_filter() {
     imp::install_exception_filter();
 }
 
+/// Hidden crash-report test (`fes -debug-crash`): raises an unhandled, non-continuable
+/// structured exception with the access-violation code (no memory is touched), so the
+/// filter of [`install_exception_filter`] runs. Returns without effect off Windows.
+pub fn raise_debug_exception() {
+    imp::raise_debug_exception();
+}
+
 /// Joins the parts of a Windows version description (testable core of [`version`]).
 pub fn describe_windows(product: Option<&str>, display: Option<&str>, build: Option<&str>, ubr: Option<u32>) -> String {
     let mut s = product.filter(|p| !p.is_empty()).unwrap_or("Windows").to_string();
@@ -49,7 +56,7 @@ mod imp {
     use windows::Win32::Foundation::NTSTATUS;
     use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE};
     use windows::Win32::System::Diagnostics::Debug::{
-        EXCEPTION_POINTERS, LPTOP_LEVEL_EXCEPTION_FILTER, SetUnhandledExceptionFilter,
+        EXCEPTION_POINTERS, LPTOP_LEVEL_EXCEPTION_FILTER, RaiseException, SetUnhandledExceptionFilter,
     };
     use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegGetValueW};
     use windows::core::PCWSTR;
@@ -163,6 +170,17 @@ mod imp {
         let prev = unsafe { SetUnhandledExceptionFilter(Some(filter)) };
         let _ = PREVIOUS.set(prev);
     }
+
+    /// `STATUS_ACCESS_VIOLATION`.
+    const ACCESS_VIOLATION: u32 = 0xC000_0005;
+    /// `EXCEPTION_NONCONTINUABLE`.
+    const NONCONTINUABLE: u32 = 1;
+
+    pub fn raise_debug_exception() {
+        // SAFETY: raises a software exception without arguments; nothing is dereferenced.
+        // Unhandled, it ends the process through the installed filter (the purpose).
+        unsafe { RaiseException(ACCESS_VIOLATION, NONCONTINUABLE, None) };
+    }
 }
 
 #[cfg(not(windows))]
@@ -187,6 +205,8 @@ mod imp {
     }
 
     pub fn install_exception_filter() {}
+
+    pub fn raise_debug_exception() {}
 }
 
 #[cfg(test)]

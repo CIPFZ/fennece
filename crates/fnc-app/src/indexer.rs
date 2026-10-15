@@ -812,6 +812,8 @@ fn monitor_volumes(cfg: &IndexerConfig, w: &Arc<Workers>) {
         poll_interval: cfg.usn_poll,
     };
     let mut failed: std::collections::HashMap<String, Instant> = std::collections::HashMap::new();
+    // Volumes whose open failure was already logged at info (retries log at debug).
+    let mut reported: std::collections::HashSet<String> = std::collections::HashSet::new();
     while !w.stop.is_stopped() {
         for _ in 0..6 {
             std::thread::sleep(Duration::from_millis(500));
@@ -833,7 +835,11 @@ fn monitor_volumes(cfg: &IndexerConfig, w: &Arc<Workers>) {
             let mut src = match fnc_ntfs::NtfsSource::open(d, opts, &cfg.instance) {
                 Ok(s) => s,
                 Err(e) => {
-                    tracing::info!(volume = %letter, error = %e, "cannot open arrived volume");
+                    if reported.insert(guid.clone()) {
+                        tracing::info!(volume = %letter, error = %e, "cannot open arrived volume (retried every 60 s)");
+                    } else {
+                        tracing::debug!(volume = %letter, error = %e, "cannot open arrived volume");
+                    }
                     failed.insert(guid, Instant::now());
                     continue;
                 }

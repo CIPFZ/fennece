@@ -277,6 +277,9 @@ pub fn run_args(a: &Args, env: &Env, out: &mut dyn Write, conn: Option<&mut Conn
     if a.debug_panic {
         panic!("-debug-panic: deliberate panic in fes (crash report test)");
     }
+    if a.debug_crash {
+        fnc_platform::os::raise_debug_exception();
+    }
     let mut owned;
     let conn = match conn {
         Some(c) => c,

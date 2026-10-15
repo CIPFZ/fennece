@@ -201,5 +201,6 @@ fn debug_panic_and_version() {
     let r = std::panic::catch_unwind(|| fes(&["-debug-panic", "ext:iso"]));
     assert!(r.is_err());
     assert!(!args::HELP.contains("debug-panic"));
+    assert!(!args::HELP.contains("debug-crash"));
     assert_eq!(fes(&["-version"]).1.trim_end(), format!("fes {}", env!("CARGO_PKG_VERSION")));
 }

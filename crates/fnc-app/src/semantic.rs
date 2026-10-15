@@ -359,6 +359,8 @@ impl SemanticSearch {
             Status::Idle => t("sem-status-idle"),
             Status::NoModel(_) => t("sem-status-no-model"),
             Status::Loading => t("sem-status-loading"),
+            // The model is loaded lazily: "ready" without its file would mislead (REL-08).
+            Status::Ready { .. } if !self.model_present() => t("sem-status-no-model"),
             Status::Ready { chunks, .. } => t_args("sem-status-ready", &[("chunks", chunks.into())]),
             Status::Indexing { done, total, chunks } => t_args(
                 "sem-status-indexing",
@@ -589,6 +591,13 @@ mod tests {
         let q = SemPred { text: "budget".into(), kinds: fnc_query::semantic::kinds::ALL, min_score: None, top: None };
         let err = sem.source().search(&q, &IndexStore::default(), None, 10).unwrap_err();
         assert!(err.contains("embeddinggemma-2-Q8_0.gguf"), "{err}");
+        let t0 = std::time::Instant::now();
+        while matches!(sem.status(), Status::Loading | Status::Indexing { .. })
+            && t0.elapsed() < Duration::from_secs(10)
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(sem.status_text(), t("sem-status-no-model"), "status {:?}", sem.status());
         assert!(sem.reconfigure(&s, d.path()));
         sem.stop();
     }
